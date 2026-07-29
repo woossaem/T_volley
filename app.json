@@ -1,11 +1,17 @@
 {
   "expo": {
-    "name": "T_volley",
-    "slug": "T_volley",
+    "name": "티볼리",
+    "slug": "tivoli",
+    "scheme": "tivoli",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#1E3A5F"
+    },
     "ios": {
       "supportsTablet": true
     },
@@ -20,6 +26,11 @@
     },
     "web": {
       "favicon": "./assets/favicon.png"
-    }
+    },
+    "plugins": [
+      "expo-router",
+      "expo-splash-screen",
+      "expo-secure-store"
+    ]
   }
 }
