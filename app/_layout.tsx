@@ -10,17 +10,12 @@ export default function RootLayout() {
     const timer = setTimeout(() => {
       SplashScreen.hideAsync();
     }, 1500);
-
     return () => clearTimeout(timer);
   }, []);
 
   return (
     <AuthProvider>
-      <Stack screenOptions={{ headerShown: false }}>
-        <Stack.Screen name="index" />
-        <Stack.Screen name="login" />
-        <Stack.Screen name="home" />
-      </Stack>
+      <Stack screenOptions={{ headerShown: false }} />
     </AuthProvider>
   );
 }
