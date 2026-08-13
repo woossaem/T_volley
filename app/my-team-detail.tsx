@@ -6,13 +6,14 @@ import {
   StyleSheet,
   Alert,
   ActivityIndicator,
-  SafeAreaView,
   ScrollView,
   RefreshControl,
   Modal,
   TextInput,
+  Linking,
 } from 'react-native';
-import { useRouter } from 'expo-router';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { useRouter, useLocalSearchParams } from 'expo-router';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
 import { Colors } from '../constants/Colors';
@@ -21,15 +22,18 @@ interface MyTeam {
   id: string;
   name: string;
   region: string;
-  pin_code: string;
+  pin_code: string | null; // 💡 비밀번호가 없을 수도 있음 (null)
   team_type?: 'school' | 'club';
+  youtube_channel_url?: string | null;
   is_primary?: boolean;
+  leader_id?: string | null;
 }
 
 interface TeamMember {
   id: string;
   full_name: string;
   school_name: string | null;
+  position?: string;
 }
 
 interface TeamStats {
@@ -41,9 +45,23 @@ interface TeamStats {
   winRate: number;
 }
 
+interface MemberIntraStat {
+  userId: string;
+  fullName: string;
+  schoolName: string | null;
+  total: number;
+  wins: number;
+  draws: number;
+  losses: number;
+  winRate: number;
+}
+
+const getTeamIcon = (type?: string) => (type === 'club' ? '🛡️' : '🏫');
+
 export default function MyTeamDetailScreen() {
   const router = useRouter();
   const { session } = useAuth();
+  const { teamId } = useLocalSearchParams<{ teamId?: string }>();
 
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -53,54 +71,141 @@ export default function MyTeamDetailScreen() {
   const [selectedTeam, setSelectedTeam] = useState<MyTeam | null>(null);
   const [members, setMembers] = useState<TeamMember[]>([]);
 
+  const [dbRegions, setDbRegions] = useState<string[]>(['천안', '아산', '세종', '대전', '서울/경기']);
+
   const [seasonStats, setSeasonStats] = useState<TeamStats>({ totalMatches: 0, wins: 0, draws: 0, losses: 0, points: 0, winRate: 0 });
   const [totalStats, setTotalStats] = useState<TeamStats>({ totalMatches: 0, wins: 0, draws: 0, losses: 0, points: 0, winRate: 0 });
+  const [memberIntraRankings, setMemberIntraRankings] = useState<MemberIntraStat[]>([]);
+
+  // 회장 통합 관리 모달 State
+  const [leaderModalVisible, setLeaderModalVisible] = useState(false);
+  const [leaderActionTab, setLeaderActionTab] = useState<'claim' | 'transfer' | 'recommend'>('claim');
+  const [selectedTargetMember, setSelectedTargetMember] = useState<TeamMember | null>(null);
 
   const [pinModalVisible, setPinModalVisible] = useState(false);
   const [newPinCode, setNewPinCode] = useState('');
 
+  const [youtubeModalVisible, setYoutubeModalVisible] = useState(false);
+  const [newYoutubeUrl, setNewYoutubeUrl] = useState('');
+
+  const [regionModalVisible, setRegionModalVisible] = useState(false);
+  const [selectedRegionOption, setSelectedRegionOption] = useState('천안');
+  const [customRegionText, setCustomRegionText] = useState('');
+
   const userId = session?.user?.id;
+  const currentUserName = session?.user?.user_metadata?.full_name || '선생님';
+
+  const parseTeamName = (rawName: any): string => {
+    if (!rawName) return '동호회 팀';
+    if (typeof rawName === 'string') {
+      const trimmed = rawName.trim();
+      if (!trimmed || trimmed === 'null' || trimmed === 'undefined') return '동호회 팀';
+      if ((trimmed.startsWith('{') && trimmed.endsWith('}')) || (trimmed.startsWith('[') && trimmed.endsWith(']'))) {
+        try { return parseTeamName(JSON.parse(trimmed)); } catch (e) {}
+      }
+      return trimmed;
+    }
+    if (Array.isArray(rawName)) {
+      if (rawName.length === 0) return '동호회 팀';
+      return parseTeamName(rawName[0]);
+    }
+    if (typeof rawName === 'object') {
+      const candidate = rawName.name || rawName.team_name || rawName.title || rawName.formatted;
+      if (candidate && candidate !== rawName) {
+        const parsedCand = parseTeamName(candidate);
+        if (parsedCand && parsedCand !== '동호회 팀') return parsedCand;
+      }
+      for (const key of Object.keys(rawName)) {
+        if (typeof rawName[key] === 'string' && rawName[key].trim().length > 0 && !['id', 'team_id', 'user_id', 'team_type', 'region'].includes(key)) {
+          return rawName[key].trim();
+        }
+      }
+    }
+    return '동호회 팀';
+  };
 
   useEffect(() => {
     fetchMyTeams();
+    fetchDbRegions();
   }, [session]);
 
   useEffect(() => {
+    if (teamId && myTeams.length > 0) {
+      const target = myTeams.find(t => t.id === teamId);
+      if (target) setSelectedTeam(target);
+    }
+  }, [teamId, myTeams]);
+
+  useEffect(() => {
     if (selectedTeam) {
-      fetchTeamMembers(selectedTeam.id);
+      fetchTeamMembersAndIntraStats(selectedTeam.id, selectedTeam.name);
       fetchTeamStats(selectedTeam.name);
     }
   }, [selectedTeam]);
 
-  const fetchMyTeams = async () => {
-    if (!userId) return;
+  const fetchDbRegions = async () => {
+    try {
+      const { data } = await supabase.from('official_schools').select('region').eq('is_active', true);
+      if (data) {
+        const unique = Array.from(new Set(data.map(d => d.region).filter(Boolean)));
+        if (unique.length > 0) setDbRegions(unique);
+      }
+    } catch (err) {
+      console.error('DB 지역 조회 오류:', err);
+    }
+  };
 
+  const fetchMyTeams = async () => {
+    if (!userId) return setLoading(false);
     try {
       setLoading(true);
-      const { data, error } = await supabase
+
+      const { data: tmData, error: tmError } = await supabase
         .from('team_members')
-        .select(`
-          team_id,
-          is_primary,
-          teams (id, name, region, pin_code, team_type)
-        `)
+        .select('team_id, is_primary')
         .eq('user_id', userId)
-        .eq('is_active', true)
-        .order('is_primary', { ascending: false });
+        .eq('is_active', true);
 
-      if (error) throw error;
+      if (tmError) throw tmError;
 
-      const teamsList: MyTeam[] = (data || [])
-        .map((item: any) => ({
-          ...item.teams,
-          is_primary: item.is_primary || false,
-        }))
-        .filter(Boolean);
+      if (!tmData || tmData.length === 0) {
+        setMyTeams([]);
+        setSelectedTeam(null);
+        return;
+      }
 
+      const teamIds = tmData.map(t => t.team_id);
+
+      const { data: teamsData, error: tError } = await supabase
+        .from('teams')
+        .select('*')
+        .in('id', teamIds);
+
+      if (tError) throw tError;
+
+      const teamsList: MyTeam[] = (teamsData || []).map((t: any) => {
+        const tm = tmData.find(x => x.team_id === t.id);
+        const nameCandidate = parseTeamName(t.name) !== '동호회 팀' ? parseTeamName(t.name) : parseTeamName(t);
+        return {
+          id: t.id,
+          name: nameCandidate,
+          region: t.region || '천안',
+          pin_code: t.pin_code || null,
+          team_type: t.team_type || 'club',
+          youtube_channel_url: t.youtube_channel_url || null,
+          is_primary: tm?.is_primary || false,
+          leader_id: t.leader_id || null,
+        };
+      });
+
+      teamsList.sort((a, b) => (b.is_primary ? 1 : 0) - (a.is_primary ? 1 : 0));
       setMyTeams(teamsList);
 
       if (teamsList.length > 0) {
-        if (!selectedTeam || !teamsList.some((t) => t.id === selectedTeam.id)) {
+        const paramTeam = teamId ? teamsList.find(t => t.id === teamId) : null;
+        if (paramTeam) {
+          setSelectedTeam(paramTeam);
+        } else if (!selectedTeam || !teamsList.some((t) => t.id === selectedTeam.id)) {
           setSelectedTeam(teamsList[0]);
         } else {
           const updated = teamsList.find((t) => t.id === selectedTeam.id);
@@ -115,17 +220,65 @@ export default function MyTeamDetailScreen() {
     }
   };
 
-  const fetchTeamMembers = async (teamId: string) => {
+  const fetchTeamMembersAndIntraStats = async (teamId: string, teamName: string) => {
     try {
-      const { data } = await supabase
+      const { data: memData } = await supabase
         .from('team_members')
-        .select(`user_id, profiles (id, full_name, school_name)`)
+        .select(`user_id, profiles (id, full_name, school_name, position)`)
         .eq('team_id', teamId)
         .eq('is_active', true);
 
-      setMembers((data || []).map((item: any) => item.profiles).filter(Boolean));
+      const memList: TeamMember[] = (memData || []).map((item: any) => item.profiles).filter((m: any) => m && m.id);
+
+      const currentLeaderId = selectedTeam?.leader_id;
+      memList.sort((a, b) => {
+        if (a.id === currentLeaderId) return -1;
+        if (b.id === currentLeaderId) return 1;
+        return a.full_name.localeCompare(b.full_name, 'ko-KR');
+      });
+
+      setMembers(memList);
+
+      const { data: intraMatches } = await supabase
+        .from('matches')
+        .select('*')
+        .eq('host_team_name', teamName)
+        .eq('status', 'intramural');
+
+      const rankMap: { [key: string]: MemberIntraStat } = {};
+      memList.forEach(m => {
+        rankMap[m.id] = { userId: m.id, fullName: m.full_name, schoolName: m.school_name, total: 0, wins: 0, draws: 0, losses: 0, winRate: 0 };
+      });
+
+      (intraMatches || []).forEach((m: any) => {
+        const hostList = m.host_roster ? m.host_roster.split(',') : [];
+        const awayList = m.away_roster ? m.away_roster.split(',') : [];
+
+        memList.forEach(mUser => {
+          const inA = hostList.includes(mUser.id);
+          const inB = awayList.includes(mUser.id);
+
+          if (inA || inB) {
+            rankMap[mUser.id].total++;
+            if (m.winner_team === 'draw') {
+              rankMap[mUser.id].draws++;
+            } else if ((inA && m.winner_team === 'A팀') || (inB && m.winner_team === 'B팀')) {
+              rankMap[mUser.id].wins++;
+            } else {
+              rankMap[mUser.id].losses++;
+            }
+          }
+        });
+      });
+
+      const rankList = Object.values(rankMap).map(item => {
+        item.winRate = item.total > 0 ? Math.round((item.wins / item.total) * 100) : 0;
+        return item;
+      }).sort((a, b) => b.wins - a.wins || b.winRate - a.winRate);
+
+      setMemberIntraRankings(rankList);
     } catch (err) {
-      console.error('팀원 조회 오류:', err);
+      console.error('팀원 및 내전 랭킹 조회 오류:', err);
     }
   };
 
@@ -139,7 +292,6 @@ export default function MyTeamDetailScreen() {
 
       let sWins = 0, sDraws = 0, sLosses = 0;
       let tWins = 0, tDraws = 0, tLosses = 0;
-
       const currentYear = new Date().getFullYear().toString();
 
       (matches || []).forEach((m) => {
@@ -183,16 +335,171 @@ export default function MyTeamDetailScreen() {
     }
   };
 
+  const openLeaderManagementModal = () => {
+    if (!selectedTeam) return;
+    const isLeader = selectedTeam.leader_id === userId;
+    setLeaderActionTab(isLeader ? 'transfer' : 'claim');
+    setSelectedTargetMember(null);
+    setLeaderModalVisible(true);
+  };
+
+  const confirmClaimLeadership = async () => {
+    if (!selectedTeam || !userId) return;
+
+    setActionLoading(true);
+    try {
+      await supabase.from('teams').update({
+        leader_id: userId,
+      }).eq('id', selectedTeam.id);
+
+      const { data: teamMems } = await supabase.from('team_members').select('user_id').eq('team_id', selectedTeam.id).eq('is_active', true);
+      if (teamMems && teamMems.length > 0) {
+        const otherMems = teamMems.filter((m: any) => m.user_id !== userId);
+        if (otherMems.length > 0) {
+          const notis = otherMems.map((m: any) => ({
+            user_id: m.user_id,
+            title: `🚩 [${selectedTeam.name}] 팀 대표/회장 변경 알림`,
+            message: `🚩 '${currentUserName}' 선생님이 [${selectedTeam.name}] 팀의 새로운 회장으로 등록되었습니다.\n⚠️ 48시간 후 팀원 방출 권한이 활성화됩니다. 잘못된 변경이거나 본인이 아닐 경우, 앱에서 즉시 회장직을 재설정(회수)하세요!`,
+            is_read: false,
+          }));
+          await supabase.from('notifications').insert(notis);
+        }
+      }
+
+      Alert.alert('등록 완료 🚩', `'${selectedTeam.name}' 팀의 대표/회장 권한이 새로 등록되었습니다.`);
+      setLeaderModalVisible(false);
+      await fetchMyTeams();
+    } catch (err: any) {
+      Alert.alert('오류', err.message);
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const confirmTransferLeadership = async () => {
+    if (!selectedTeam || !selectedTargetMember) return Alert.alert('알림', '이양받을 팀원을 선택해 주세요.');
+
+    setActionLoading(true);
+    try {
+      await supabase.from('notifications').insert({
+        user_id: selectedTargetMember.id,
+        title: `🚩 [${selectedTeam.name}] 팀 회장직 이양 제안`,
+        message: `🚩 현 회장 '${currentUserName}' 선생님이 선생님께 [${selectedTeam.name}] 팀의 대표/회장직 이양을 제안하셨습니다.`,
+        is_read: false,
+      });
+
+      Alert.alert('제안 완료 🚩', `'${selectedTargetMember.full_name}' 선생님에게 회장직 이양 제안을 전달했습니다.`);
+      setLeaderModalVisible(false);
+    } catch (err: any) {
+      Alert.alert('오류', err.message);
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const confirmRecommendLeadership = async () => {
+    if (!selectedTeam || !selectedTargetMember) return Alert.alert('알림', '추천할 팀원을 선택해 주세요.');
+
+    const hasLeader = !!selectedTeam.leader_id;
+
+    setActionLoading(true);
+    try {
+      if (hasLeader) {
+        await supabase.from('notifications').insert({
+          user_id: selectedTeam.leader_id!,
+          title: `💡 [${selectedTeam.name}] 팀 회장 추천 도착`,
+          message: `💡 '${currentUserName}' 선생님이 '${selectedTargetMember.full_name}' 선생님을 [${selectedTeam.name}] 팀의 차기 회장으로 추천하셨습니다.`,
+          is_read: false,
+        });
+      } else {
+        await supabase.from('notifications').insert({
+          user_id: selectedTargetMember.id,
+          title: `💡 [${selectedTeam.name}] 팀 회장 추천 도착`,
+          message: `💡 '${currentUserName}' 선생님이 선생님을 [${selectedTeam.name}] 팀 대표/회장으로 추천하셨습니다.`,
+          is_read: false,
+        });
+      }
+
+      Alert.alert('추천 완료 💡', `'${selectedTargetMember.full_name}' 선생님 추천 알림이 전달되었습니다.`);
+      setLeaderModalVisible(false);
+    } catch (err: any) {
+      Alert.alert('오류', err.message);
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const handleKickMember = (targetMember: TeamMember) => {
+    if (!selectedTeam || !userId) return;
+
+    if (selectedTeam.leader_id !== userId) {
+      return Alert.alert('권한 없음', '팀원 방출은 팀 회장만 수행할 수 있습니다.');
+    }
+
+    if (targetMember.id === userId) {
+      return Alert.alert('알림', '자기 자신은 방출할 수 없습니다.');
+    }
+
+    Alert.alert(
+      '⚠️ 팀원 방출 확인',
+      `'${targetMember.full_name}' 선생님을 '${selectedTeam.name}' 팀에서 정말로 방출하시겠습니까?\n\n* 방출된 팀원에게 제외 안내 알림이 발송됩니다.`,
+      [
+        { text: '취소', style: 'cancel' },
+        {
+          text: '방출하기',
+          style: 'destructive',
+          onPress: async () => {
+            setActionLoading(true);
+            try {
+              await supabase.from('team_members').update({ is_active: false }).eq('team_id', selectedTeam.id).eq('user_id', targetMember.id);
+
+              await supabase.from('notifications').insert({
+                user_id: targetMember.id,
+                title: `🚨 [${selectedTeam.name}] 소속 변경`,
+                message: `🚨 [${selectedTeam.name}] 회장에 의해 팀 소속에서 제외되었습니다.`,
+                is_read: false,
+              });
+
+              Alert.alert('방출 완료', `'${targetMember.full_name}' 선생님이 팀에서 제외되었습니다.`);
+              await fetchTeamMembersAndIntraStats(selectedTeam.id, selectedTeam.name);
+            } catch (err: any) {
+              Alert.alert('오류', err.message);
+            } finally {
+              setActionLoading(false);
+            }
+          }
+        }
+      ]
+    );
+  };
+
+  const handleSetPrimaryTeam = async (targetTeamId: string) => {
+    if (!userId) return;
+    try {
+      setActionLoading(true);
+      await supabase.from('team_members').update({ is_primary: false }).eq('user_id', userId);
+      await supabase.from('team_members').update({ is_primary: true }).eq('user_id', userId).eq('team_id', targetTeamId);
+      
+      Alert.alert('대표팀 변경 완료 ⭐', '1순위 대표팀이 새롭게 지정되었습니다.');
+      await fetchMyTeams();
+    } catch (err: any) {
+      Alert.alert('오류', err.message);
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  // 💡 PIN 설정/변경 저장 함수
   const handleChangePinCode = async () => {
     if (!selectedTeam) return;
     if (!newPinCode || newPinCode.trim().length < 4) {
-      return Alert.alert('알림', '4자리 이상의 새로운 비밀번호를 입력해 주세요.');
+      return Alert.alert('알림', '4자리 숫자의 새로운 비밀번호를 입력해 주세요.');
     }
 
     try {
       setActionLoading(true);
       await supabase.from('teams').update({ pin_code: newPinCode.trim() }).eq('id', selectedTeam.id);
-      Alert.alert('비밀번호 변경 완료 🔑', '새로운 가입 비밀번호가 설정되었습니다.');
+      Alert.alert('설정 완료 🔒', '팀 가입 비밀번호가 적용되었습니다.');
       setPinModalVisible(false);
       setNewPinCode('');
       await fetchMyTeams();
@@ -203,7 +510,69 @@ export default function MyTeamDetailScreen() {
     }
   };
 
-  const getTeamIcon = (type?: string) => (type === 'club' ? '🏐' : '🏫');
+  // 💡 PIN 해제(보호 끄기 -> 공개 전환) 함수
+  const disablePinCode = async () => {
+    if (!selectedTeam) return;
+    try {
+      setActionLoading(true);
+      await supabase.from('teams').update({ pin_code: null }).eq('id', selectedTeam.id);
+      Alert.alert('보호 해제 🔓', '비밀번호가 삭제되어 누구나 바로 가입할 수 있는 공개 팀으로 전환되었습니다.');
+      await fetchMyTeams();
+    } catch (err: any) {
+      Alert.alert('오류', err.message);
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const handleSaveYoutubeUrl = async () => {
+    if (!selectedTeam) return;
+
+    try {
+      setActionLoading(true);
+      await supabase
+        .from('teams')
+        .update({ youtube_channel_url: newYoutubeUrl.trim() || null })
+        .eq('id', selectedTeam.id);
+
+      Alert.alert('저장 완료 ✨', '우리 팀 공식 유튜브 채널 링크가 업데이트되었습니다.');
+      setYoutubeModalVisible(false);
+      setNewYoutubeUrl('');
+      await fetchMyTeams();
+    } catch (err: any) {
+      Alert.alert('오류', err.message);
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const handleSaveTeamRegion = async () => {
+    if (!selectedTeam) return;
+
+    const finalRegion = selectedRegionOption === '직접 입력' ? customRegionText.trim() : selectedRegionOption;
+    if (!finalRegion) {
+      return Alert.alert('입력 확인', '변경할 연고 지역을 선택하거나 입력해 주세요.');
+    }
+
+    try {
+      setActionLoading(true);
+      await supabase
+        .from('teams')
+        .update({ region: finalRegion })
+        .eq('id', selectedTeam.id);
+
+      Alert.alert('지역 변경 완료 📍', `'${selectedTeam.name}' 팀의 활동 지역이 [${finalRegion}] (으)로 설정되었습니다.`);
+      setRegionModalVisible(false);
+      setCustomRegionText('');
+      await fetchMyTeams();
+    } catch (err: any) {
+      Alert.alert('오류', err.message);
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const isCurrentLeader = selectedTeam?.leader_id === userId;
 
   return (
     <SafeAreaView style={styles.container}>
@@ -212,18 +581,22 @@ export default function MyTeamDetailScreen() {
           <Text style={styles.backText}>‹</Text>
         </TouchableOpacity>
         <Text style={styles.headerTitle}>내 소속 팀 관리</Text>
-        <View style={{ width: 32 }} />
+        <TouchableOpacity style={styles.addTeamBtn} onPress={() => router.push('/team-management')}>
+          <Text style={styles.addTeamBtnText}>+ 팀 가입/창단</Text>
+        </TouchableOpacity>
       </View>
 
       <ScrollView contentContainerStyle={styles.scrollContent} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={fetchMyTeams} tintColor={Colors.primary} />}>
         
-        {/* 상단 탭 (인라인 강제 스타일로 글자 안보임 문제 100% 원천 차단) */}
+        {/* 팀 스위퍼 탭 */}
         <View style={styles.switcherSection}>
           <Text style={styles.sectionLabel}>내 소속 팀 선택 ({myTeams.length}개 활동 중)</Text>
           <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.tabScroll}>
             {myTeams.map((team) => {
               const isSelected = selectedTeam?.id === team.id;
               const icon = getTeamIcon(team.team_type);
+              const displayName = team.name || '동호회 팀';
+              
               return (
                 <TouchableOpacity
                   key={team.id}
@@ -237,20 +610,14 @@ export default function MyTeamDetailScreen() {
                   ]}
                   onPress={() => setSelectedTeam(team)}
                 >
-                  <Text
-                    style={{
-                      fontSize: 14,
-                      fontWeight: '800',
-                      color: isSelected ? '#FFFFFF' : '#0F172A', // 🔥 강제 고대비 글자색
-                    }}
-                  >
-                    {team.is_primary ? '⭐ ' : ''}{icon} {team.name}
+                  <Text style={{ fontSize: 13, fontWeight: '800', color: isSelected ? '#FFFFFF' : '#0F172A' }}>
+                    {team.is_primary ? '⭐ ' : ''}{icon} {displayName}
                   </Text>
                 </TouchableOpacity>
               );
             })}
-            <TouchableOpacity style={styles.addTeamChip} onPress={() => router.push('/profile-setup')}>
-              <Text style={styles.addTeamChipText}>+ 팀 추가 가입</Text>
+            <TouchableOpacity style={styles.addTeamChip} onPress={() => router.push('/team-management')}>
+              <Text style={styles.addTeamChipText}>+ 팀 추가 가입/창단</Text>
             </TouchableOpacity>
           </ScrollView>
         </View>
@@ -260,33 +627,136 @@ export default function MyTeamDetailScreen() {
             <View style={styles.teamHeaderCard}>
               <View style={styles.teamHeaderTop}>
                 <View style={{ flex: 1 }}>
-                  <Text style={styles.regionBadge}>{getTeamIcon(selectedTeam.team_type)} {selectedTeam.team_type === 'club' ? '동호회 팀' : '학교 팀'} • {selectedTeam.region}</Text>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                    <Text style={styles.regionBadge}>{getTeamIcon(selectedTeam.team_type)} {selectedTeam.team_type === 'club' ? '동호회 팀' : '학교 팀'} • {selectedTeam.region}</Text>
+                    
+                    <TouchableOpacity style={styles.editRegionBtn} onPress={() => setRegionModalVisible(true)}>
+                      <Text style={styles.editRegionBtnText}>📍 지역 변경</Text>
+                    </TouchableOpacity>
+
+                    {!selectedTeam.is_primary && (
+                      <TouchableOpacity style={styles.setPrimaryBtn} onPress={() => handleSetPrimaryTeam(selectedTeam.id)}>
+                        <Text style={styles.setPrimaryBtnText}>⭐ 1순위 대표팀 설정</Text>
+                      </TouchableOpacity>
+                    )}
+                  </View>
+
                   <Text style={styles.teamTitle}>{selectedTeam.name}</Text>
                 </View>
+
                 {members.length >= 3 ? (
-                  <View style={styles.blueRibbonBadge}><Text style={styles.blueRibbonText}>🟦 공식 팀 (3명+)</Text></View>
+                  <View style={styles.blueRibbonBadge}><Text style={styles.blueRibbonText}>💎 공식 팀 (3명+)</Text></View>
                 ) : (
-                  <View style={styles.pendingBadge}><Text style={styles.pendingBadgeText}>🌱 팀원 모집 중 ({members.length}/3)</Text></View>
+                  <View style={styles.pendingBadge}><Text style={styles.pendingBadgeText}>🌱 모집 중 ({members.length}/3)</Text></View>
                 )}
               </View>
 
-              <View style={styles.pinBox}>
-                <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}>
-                  <Text style={styles.pinBoxLabel}>🔑 팀 가입 비밀번호</Text>
-                  <TouchableOpacity style={styles.changePinBtn} onPress={() => { setNewPinCode(selectedTeam.pin_code); setPinModalVisible(true); }}>
-                    <Text style={styles.changePinBtnText}>✏️ 변경</Text>
-                  </TouchableOpacity>
+              {/* 🚩 회장/대표 변경 및 관리 배너 */}
+              <View style={styles.leaderBarContainer}>
+                <View style={styles.leaderBarInfo}>
+                  <Text style={styles.leaderBarTitle}>
+                    🚩 현 회장: {selectedTeam.leader_id ? (members.find(m => m.id === selectedTeam.leader_id)?.full_name || '등록됨') + ' 선생님' : '대표 공석'}
+                  </Text>
                 </View>
-                <Text style={styles.pinCodeText}>{selectedTeam.pin_code}</Text>
+                <TouchableOpacity style={styles.claimLeaderBtn} onPress={openLeaderManagementModal}>
+                  <Text style={styles.claimLeaderBtnText}>🚩 팀 대표/회장 변경·등록 ▾</Text>
+                </TouchableOpacity>
+              </View>
+
+              {selectedTeam.youtube_channel_url ? (
+                <TouchableOpacity
+                  style={styles.youtubeChannelBtn}
+                  onPress={() => Linking.openURL(selectedTeam.youtube_channel_url!).catch(() => Alert.alert('오류', '올바른 유튜브 링크가 아닙니다.'))}
+                >
+                  <Text style={styles.youtubeChannelBtnText}>📺 우리 팀 유튜브 채널 구경하기 ▶</Text>
+                </TouchableOpacity>
+              ) : null}
+
+              <View style={{ gap: 8, marginTop: 10 }}>
+                {/* 🔑 팀 가입 비밀번호 (ON/OFF 선택 기능 반영) */}
+                <View style={[styles.pinBox, !selectedTeam.pin_code && { borderColor: '#CBD5E1', backgroundColor: '#F1F5F9' }]}>
+                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', width: '100%' }}>
+                    <View style={{ flex: 1 }}>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                        <Text style={styles.pinBoxLabel}>
+                          {selectedTeam.pin_code ? '🔒 비밀번호 보호 켜짐' : '🔓 비밀번호 보호 꺼짐'}
+                        </Text>
+                        <View style={[styles.pinStatusDot, { backgroundColor: selectedTeam.pin_code ? '#10B981' : '#94A3B8' }]} />
+                      </View>
+                      <Text style={{ fontSize: 11, color: Colors.textMuted, marginTop: 4 }}>
+                        {selectedTeam.pin_code 
+                          ? '이 암호를 아는 분만 우리 팀에 가입할 수 있습니다.' 
+                          : '현재 비밀번호 없이 누구나 검색해서 바로 가입할 수 있는 공개 팀입니다.'}
+                      </Text>
+                    </View>
+
+                    <TouchableOpacity 
+                      style={[styles.changePinBtn, !selectedTeam.pin_code && { backgroundColor: Colors.primary }]} 
+                      onPress={() => {
+                        if (selectedTeam.pin_code) {
+                          Alert.alert('보호 해제 🔓', '비밀번호를 없애고 누구나 가입 가능한 공개 팀으로 전환하시겠습니까?', [
+                            { text: '취소', style: 'cancel' },
+                            { text: '공개로 전환', onPress: () => disablePinCode() }
+                          ]);
+                        } else {
+                          setNewPinCode('');
+                          setPinModalVisible(true);
+                        }
+                      }}
+                    >
+                      <Text style={[styles.changePinBtnText, !selectedTeam.pin_code && { color: '#FFFFFF' }]}>
+                        {selectedTeam.pin_code ? '끄기/변경' : '켜기'}
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
+
+                  {selectedTeam.pin_code ? (
+                    <Text style={styles.pinCodeText}>{selectedTeam.pin_code}</Text>
+                  ) : null}
+                </View>
+
+                <TouchableOpacity
+                  style={styles.editYoutubeBarBtn}
+                  onPress={() => { setNewYoutubeUrl(selectedTeam.youtube_channel_url || ''); setYoutubeModalVisible(true); }}
+                >
+                  <Text style={styles.editYoutubeBarBtnText}>
+                    📺 {selectedTeam.youtube_channel_url ? '팀 유튜브 채널 링크 수정' : '+ 우리 팀 유튜브 채널 링크 등록'}
+                  </Text>
+                </TouchableOpacity>
               </View>
             </View>
 
-            {/* 🔥 전적 명칭 깔끔하게 변경 */}
             <View style={styles.statsSection}>
-              <Text style={styles.sectionTitle}>📊 소속 팀 전적</Text>
+              <Text style={styles.sectionTitle}>⚔️ [{selectedTeam.name}] 팀 내전 개인 MVP 랭킹</Text>
+              <Text style={{ fontSize: 12, color: Colors.textMuted, marginBottom: 12, marginTop: 4 }}>팀 내 청백전 결과를 바탕으로 매겨진 팀원 랭킹표입니다.</Text>
+
+              {memberIntraRankings.length === 0 ? (
+                <Text style={{ textAlign: 'center', color: Colors.textMuted, marginVertical: 14 }}>아직 기록된 팀 내전이 없습니다.</Text>
+              ) : (
+                <View style={{ gap: 8 }}>
+                  {memberIntraRankings.map((rank, idx) => (
+                    <View key={rank.userId} style={[styles.rankRow, idx === 0 && styles.rankRowFirst]}>
+                      <Text style={[styles.rankNumber, idx === 0 && { color: '#B45309', fontWeight: '900' }]}>
+                        {idx === 0 ? '🥇 1위' : idx === 1 ? '🥈 2위' : idx === 2 ? '🥉 3위' : `${idx + 1}위`}
+                      </Text>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.rankName}>{rank.fullName} 선생님 {rank.userId === userId && '(나)'}</Text>
+                        <Text style={styles.rankDetail}>{rank.wins}승 {rank.draws}무 {rank.losses}패 (총 {rank.total}전)</Text>
+                      </View>
+                      <View style={styles.rankBadge}>
+                        <Text style={styles.rankBadgeText}>승률 {rank.winRate}%</Text>
+                      </View>
+                    </View>
+                  ))}
+                </View>
+              )}
+            </View>
+
+            <View style={styles.statsSection}>
+              <Text style={styles.sectionTitle}>📊 소속 팀 공식 전적실</Text>
               
               <Text style={{ fontSize: 13, fontWeight: '800', color: '#2563EB', marginTop: 12, marginBottom: 6 }}>
-                📅 2026 상반기 시즌 성적
+                📅 2026 하반기 시즌 성적 (F/W)
               </Text>
               <View style={styles.statsGrid}>
                 <View style={[styles.statBox, { backgroundColor: '#EFF6FF', borderColor: '#BFDBFE' }]}>
@@ -314,33 +784,246 @@ export default function MyTeamDetailScreen() {
               </View>
             </View>
 
+            {/* 👥 팀원 명단 */}
             <View style={styles.rosterSection}>
               <Text style={styles.sectionTitle}>👥 팀원 명단 ({members.length}명)</Text>
               <View style={{ gap: 8, marginTop: 10 }}>
-                {members.map((m) => (
-                  <View key={m.id} style={styles.memberCard}>
-                    <Text style={styles.memberName}>{m.full_name} 선생님 {m.id === userId && '(나)'}</Text>
-                    <Text style={styles.memberSchool}>🏫 {m.school_name || '미설정'}</Text>
-                  </View>
-                ))}
+                {members.map((m) => {
+                  const isLeader = selectedTeam.leader_id === m.id;
+                  const isMe = m.id === userId;
+
+                  return (
+                    <View key={m.id} style={[styles.memberCard, isLeader && styles.memberCardLeader]}>
+                      <View style={{ flex: 1, marginRight: 6 }}>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                          <Text style={styles.memberName}>
+                            {m.full_name} 선생님 {isMe && '(나)'}
+                          </Text>
+                          {isLeader && (
+                            <View style={styles.leaderBadge}>
+                              <Text style={styles.leaderBadgeText}>🚩 회장</Text>
+                            </View>
+                          )}
+                        </View>
+                        <Text style={styles.memberSchool}>🏫 {m.school_name || '미설정'}</Text>
+                      </View>
+
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
+                        {m.position && (
+                          <View style={styles.memberPosBadge}>
+                            <Text style={styles.memberPosText}>{m.position}</Text>
+                          </View>
+                        )}
+
+                        {isCurrentLeader && !isMe && (
+                          <TouchableOpacity style={styles.kickBtn} onPress={() => handleKickMember(m)}>
+                            <Text style={styles.kickBtnText}>🚫 방출</Text>
+                          </TouchableOpacity>
+                        )}
+                      </View>
+                    </View>
+                  );
+                })}
               </View>
             </View>
           </>
         )}
       </ScrollView>
 
+      {/* 🚩 팀 대표/회장 통합 관리 모달 */}
+      <Modal visible={leaderModalVisible} animationType="slide" transparent={true}>
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>🚩 [{selectedTeam?.name}] 대표/회장 관리</Text>
+            <Text style={styles.modalSub}>원하시는 팀 회장 관리 메뉴를 선택해 주세요.</Text>
+
+            <View style={styles.actionTabRow}>
+              <TouchableOpacity
+                style={[styles.actionTabBtn, leaderActionTab === 'claim' && styles.actionTabBtnActive]}
+                onPress={() => { setLeaderActionTab('claim'); setSelectedTargetMember(null); }}
+              >
+                <Text style={[styles.actionTabText, leaderActionTab === 'claim' && styles.actionTabTextActive]}>🚩 내가 직접 등록</Text>
+              </TouchableOpacity>
+
+              {isCurrentLeader && (
+                <TouchableOpacity
+                  style={[styles.actionTabBtn, leaderActionTab === 'transfer' && styles.actionTabBtnActive]}
+                  onPress={() => { setLeaderActionTab('transfer'); setSelectedTargetMember(null); }}
+                >
+                  <Text style={[styles.actionTabText, leaderActionTab === 'transfer' && styles.actionTabTextActive]}>🚩 회장직 이양</Text>
+                </TouchableOpacity>
+              )}
+
+              <TouchableOpacity
+                style={[styles.actionTabBtn, leaderActionTab === 'recommend' && styles.actionTabBtnActive]}
+                onPress={() => { setLeaderActionTab('recommend'); setSelectedTargetMember(null); }}
+              >
+                <Text style={[styles.actionTabText, leaderActionTab === 'recommend' && styles.actionTabTextActive]}>💡 팀원 추천</Text>
+              </TouchableOpacity>
+            </View>
+
+            {leaderActionTab === 'claim' && (
+              <View style={styles.policyNoticeBox}>
+                <Text style={styles.policyNoticeTitle}>📜 회장 등록 시 정책 안내</Text>
+                <Text style={styles.policyNoticeText}>
+                  • 등록 즉시 팀원 전체에게 <Text style={{ fontWeight: '800', color: '#6B21A8' }}>"대표 변경 및 48시간 뒤 방출 권한 활성화"</Text> 경고 알림이 발송됩니다.{'\n'}
+                  • 본인은 <Text style={{ fontWeight: '800' }}>24시간 동안 재변경이 제한(쿨다운)</Text>되지만, 타 팀원은 언제든 즉시 권한을 재설정(원복)할 수 있습니다.{'\n'}
+                  • 회장 변경 후 <Text style={{ fontWeight: '800' }}>48시간 동안은 팀원 방출 기능이 잠금 처리</Text>됩니다.
+                </Text>
+
+                <TouchableOpacity style={[styles.confirmBtn, { marginTop: 14 }]} onPress={confirmClaimLeadership} disabled={actionLoading}>
+                  {actionLoading ? <ActivityIndicator color="#FFF" /> : <Text style={styles.confirmBtnText}>🚩 내가 팀 회장으로 등록하기</Text>}
+                </TouchableOpacity>
+              </View>
+            )}
+
+            {(leaderActionTab === 'transfer' || leaderActionTab === 'recommend') && (
+              <View style={{ marginVertical: 10 }}>
+                <Text style={styles.inputLabel}>
+                  {leaderActionTab === 'transfer' ? '이양받을 팀원 선택' : '회장으로 추천할 동료 선택'}
+                </Text>
+                
+                <ScrollView style={{ maxHeight: 180, marginVertical: 6 }} showsVerticalScrollIndicator={false}>
+                  {members.filter(m => m.id !== userId).map((m) => {
+                    const isSelected = selectedTargetMember?.id === m.id;
+                    return (
+                      <TouchableOpacity
+                        key={m.id}
+                        style={[styles.memberPickerItem, isSelected && styles.memberPickerItemActive]}
+                        onPress={() => setSelectedTargetMember(m)}
+                      >
+                        <Text style={[styles.memberPickerText, isSelected && styles.memberPickerTextActive]}>
+                          👤 {m.full_name} 선생님 ({m.school_name || '학교 미설정'})
+                        </Text>
+                        {isSelected && <Text style={{ color: '#2563EB', fontWeight: '900' }}>✓ 선택됨</Text>}
+                      </TouchableOpacity>
+                    );
+                  })}
+                </ScrollView>
+
+                {leaderActionTab === 'transfer' ? (
+                  <TouchableOpacity style={styles.confirmBtn} onPress={confirmTransferLeadership} disabled={actionLoading}>
+                    {actionLoading ? <ActivityIndicator color="#FFF" /> : <Text style={styles.confirmBtnText}>🚩 선택한 팀원에게 이양 제안</Text>}
+                  </TouchableOpacity>
+                ) : (
+                  <TouchableOpacity style={[styles.confirmBtn, { backgroundColor: '#2563EB' }]} onPress={confirmRecommendLeadership} disabled={actionLoading}>
+                    {actionLoading ? <ActivityIndicator color="#FFF" /> : <Text style={styles.confirmBtnText}>💡 선택한 팀원 추천 알림 보내기</Text>}
+                  </TouchableOpacity>
+                )}
+              </View>
+            )}
+
+            <TouchableOpacity style={styles.closeBtn} onPress={() => setLeaderModalVisible(false)}>
+              <Text style={styles.closeBtnText}>닫기</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      {/* PIN 비밀번호 설정/변경 모달 */}
       <Modal visible={pinModalVisible} animationType="fade" transparent={true}>
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>🔑 팀 가입 비밀번호 변경</Text>
-            <TextInput style={styles.pinInput} value={newPinCode} onChangeText={setNewPinCode} keyboardType="number-pad" />
+            <Text style={styles.modalTitle}>🔒 팀 보호 비밀번호 설정</Text>
+            <Text style={styles.modalSub}>4자리 숫자를 설정하면 해당 번호를 아는 분만 가입할 수 있습니다.</Text>
+            <TextInput 
+              style={styles.pinInput} 
+              value={newPinCode} 
+              onChangeText={setNewPinCode} 
+              keyboardType="number-pad" 
+              maxLength={4}
+              placeholder="예: 1234"
+              autoFocus
+            />
             <View style={{ flexDirection: 'row', gap: 10, marginTop: 14 }}>
-              <TouchableOpacity style={[styles.closeBtn, { flex: 1 }]} onPress={() => setPinModalVisible(false)}><Text style={styles.closeBtnText}>취소</Text></TouchableOpacity>
-              <TouchableOpacity style={[styles.confirmBtn, { flex: 2 }]} onPress={handleChangePinCode}><Text style={styles.confirmBtnText}>변경 저장</Text></TouchableOpacity>
+              <TouchableOpacity style={[styles.closeBtn, { flex: 1 }]} onPress={() => setPinModalVisible(false)}>
+                <Text style={styles.closeBtnText}>취소</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={[styles.confirmBtn, { flex: 2, backgroundColor: '#1D4ED8' }]} onPress={handleChangePinCode} disabled={actionLoading}>
+                {actionLoading ? <ActivityIndicator color="#FFF" /> : <Text style={styles.confirmBtnText}>보호 켜기 (저장)</Text>}
+              </TouchableOpacity>
             </View>
           </View>
         </View>
       </Modal>
+
+      {/* 팀 유튜브 채널 URL 변경 모달 */}
+      <Modal visible={youtubeModalVisible} animationType="slide" transparent={true}>
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>📺 팀 공식 유튜브 채널 링크 설정</Text>
+            <Text style={{ fontSize: 12, color: Colors.textMuted, marginBottom: 12 }}>
+              팀의 공식 유튜브 채널 링크를 등록하면 다른 팀들이 팀 프로필에서 바로 이동하여 영상을 볼 수 있습니다.
+            </Text>
+            <TextInput
+              style={styles.textInput}
+              placeholder="예: https://www.youtube.com/@팀채널"
+              placeholderTextColor="#94A3B8"
+              value={newYoutubeUrl}
+              onChangeText={setNewYoutubeUrl}
+              autoCapitalize="none"
+              autoFocus
+            />
+            <View style={{ flexDirection: 'row', gap: 10, marginTop: 16 }}>
+              <TouchableOpacity style={[styles.closeBtn, { flex: 1 }]} onPress={() => setYoutubeModalVisible(false)}>
+                <Text style={styles.closeBtnText}>취소</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={[styles.confirmBtn, { flex: 2 }]} onPress={handleSaveYoutubeUrl} disabled={actionLoading}>
+                {actionLoading ? <ActivityIndicator color="#FFF" /> : <Text style={styles.confirmBtnText}>저장하기</Text>}
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* 팀 활동 지역 수정 모달 */}
+      <Modal visible={regionModalVisible} animationType="slide" transparent={true}>
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>📍 [{selectedTeam?.name}] 연고 지역 변경</Text>
+            <Text style={{ fontSize: 12, color: Colors.textMuted, marginBottom: 12 }}>
+              팀이 주 활동지로 등록할 지역을 선택하거나 직접 입력해 주세요.
+            </Text>
+
+            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginBottom: 12 }}>
+              {[...dbRegions, '직접 입력'].map((r) => (
+                <TouchableOpacity
+                  key={r}
+                  style={[
+                    styles.regionChip,
+                    selectedRegionOption === r && styles.regionChipActive
+                  ]}
+                  onPress={() => setSelectedRegionOption(r)}
+                >
+                  <Text style={[styles.regionChipText, selectedRegionOption === r && styles.regionChipTextActive]}>
+                    {selectedRegionOption === r ? '✓ ' : ''}{r}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+
+            {selectedRegionOption === '직접 입력' && (
+              <TextInput
+                style={[styles.textInput, { marginTop: 4 }]}
+                placeholder="신규 지역명 입력 (예: 당진, 서산)"
+                placeholderTextColor="#94A3B8"
+                value={customRegionText}
+                onChangeText={setCustomRegionText}
+              />
+            )}
+
+            <View style={{ flexDirection: 'row', gap: 10, marginTop: 16 }}>
+              <TouchableOpacity style={[styles.closeBtn, { flex: 1 }]} onPress={() => setRegionModalVisible(false)}>
+                <Text style={styles.closeBtnText}>취소</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={[styles.confirmBtn, { flex: 2 }]} onPress={handleSaveTeamRegion} disabled={actionLoading}>
+                {actionLoading ? <ActivityIndicator color="#FFF" /> : <Text style={styles.confirmBtnText}>지역 변경 저장</Text>}
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
     </SafeAreaView>
   );
 }
@@ -351,42 +1034,107 @@ const styles = StyleSheet.create({
   backBtn: { width: 32, height: 32, justifyContent: 'center' },
   backText: { fontSize: 32, color: Colors.text, lineHeight: 32 },
   headerTitle: { fontSize: 18, fontWeight: '700', color: Colors.text },
+  addTeamBtn: { backgroundColor: '#EFF6FF', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 8, borderWidth: 1, borderColor: '#BFDBFE' },
+  addTeamBtnText: { color: '#1D4ED8', fontWeight: '800', fontSize: 13 },
   scrollContent: { padding: 20, paddingBottom: 40 },
   switcherSection: { marginBottom: 16 },
   sectionLabel: { fontSize: 13, fontWeight: '700', color: Colors.textMuted, marginBottom: 8 },
   tabScroll: { flexDirection: 'row' },
-  teamTabBase: { paddingHorizontal: 16, paddingVertical: 10, borderRadius: 20, marginRight: 8 },
-  addTeamChip: { paddingHorizontal: 14, paddingVertical: 10, borderRadius: 20, backgroundColor: '#EFF6FF', borderWidth: 1, borderColor: '#BFDBFE', borderStyle: 'dashed' },
-  addTeamChipText: { fontSize: 13, fontWeight: '700', color: '#2563EB' },
+  teamTabBase: { paddingHorizontal: 14, paddingVertical: 8, borderRadius: 16, marginRight: 8 },
+  addTeamChip: { paddingHorizontal: 12, paddingVertical: 8, borderRadius: 16, backgroundColor: '#EFF6FF', borderWidth: 1, borderColor: '#BFDBFE', borderStyle: 'dashed' },
+  addTeamChipText: { fontSize: 12, fontWeight: '700', color: '#2563EB' },
   teamHeaderCard: { backgroundColor: '#FFFFFF', borderRadius: 18, padding: 18, borderWidth: 1, borderColor: '#E2E8F0', marginBottom: 16 },
   teamHeaderTop: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' },
   regionBadge: { fontSize: 12, fontWeight: '700', color: '#0284C7' },
-  teamTitle: { fontSize: 22, fontWeight: '800', color: Colors.text, marginVertical: 4 },
+  
+  editRegionBtn: { backgroundColor: '#F0F9FF', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 6, borderWidth: 1, borderColor: '#BAE6FD' },
+  editRegionBtnText: { fontSize: 10, fontWeight: '800', color: '#0284C7' },
+
+  setPrimaryBtn: { backgroundColor: '#FEF3C7', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 6, borderWidth: 1, borderColor: '#FDE68A' },
+  setPrimaryBtnText: { fontSize: 10, fontWeight: '800', color: '#B45309' },
+
+  teamTitle: { fontSize: 24, fontWeight: '900', color: Colors.primary, marginVertical: 4 },
   blueRibbonBadge: { backgroundColor: '#EFF6FF', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 8 },
   blueRibbonText: { fontSize: 11, fontWeight: '800', color: '#2563EB' },
   pendingBadge: { backgroundColor: '#FEF3C7', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 8 },
   pendingBadgeText: { fontSize: 11, fontWeight: '700', color: '#D97706' },
-  pinBox: { backgroundColor: '#F8FAFC', borderRadius: 12, padding: 12, borderWidth: 1, borderColor: '#E2E8F0', marginTop: 10 },
-  pinBoxLabel: { fontSize: 12, fontWeight: '600', color: Colors.textMuted },
-  changePinBtn: { backgroundColor: '#EFF6FF', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6 },
-  changePinBtnText: { fontSize: 11, fontWeight: '700', color: '#2563EB' },
-  pinCodeText: { fontSize: 20, fontWeight: '900', color: Colors.primary, letterSpacing: 4, textAlign: 'center', marginTop: 4 },
+
+  leaderBarContainer: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#FAF5FF', borderWidth: 1, borderColor: '#E9D5FF', borderRadius: 12, padding: 10, marginTop: 10 },
+  leaderBarInfo: { flex: 1, marginRight: 8 },
+  leaderBarTitle: { fontSize: 12.5, fontWeight: '800', color: '#6B21A8' },
+  claimLeaderBtn: { backgroundColor: '#6B21A8', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8 },
+  claimLeaderBtnText: { color: '#FFFFFF', fontSize: 11.5, fontWeight: '800' },
+
+  youtubeChannelBtn: { backgroundColor: '#FEF2F2', borderWidth: 1, borderColor: '#FECACA', borderRadius: 10, paddingVertical: 12, alignItems: 'center', marginTop: 12 },
+  youtubeChannelBtnText: { color: '#DC2626', fontSize: 13, fontWeight: '800' },
+  editYoutubeBarBtn: { backgroundColor: '#F8FAFC', borderWidth: 1, borderColor: '#CBD5E1', borderRadius: 10, paddingVertical: 10, alignItems: 'center' },
+  editYoutubeBarBtnText: { color: '#475569', fontSize: 13, fontWeight: '700' },
+
+  pinBox: { backgroundColor: '#F8FAFC', borderRadius: 12, padding: 12, borderWidth: 1, borderColor: '#E2E8F0', marginTop: 6 },
+  pinBoxLabel: { fontSize: 12, fontWeight: '800', color: '#334155' },
+  pinStatusDot: { width: 8, height: 8, borderRadius: 4, marginTop: 2 },
+  changePinBtn: { backgroundColor: '#EFF6FF', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 6 },
+  changePinBtnText: { fontSize: 11, fontWeight: '800', color: '#2563EB' },
+  pinCodeText: { fontSize: 20, fontWeight: '900', color: Colors.primary, letterSpacing: 4, textAlign: 'center', marginTop: 6 },
   sectionTitle: { fontSize: 16, fontWeight: '800', color: Colors.text },
   statsSection: { backgroundColor: '#FFFFFF', borderRadius: 16, padding: 16, borderWidth: 1, borderColor: '#E2E8F0', marginBottom: 16 },
   statsGrid: { flexDirection: 'row', gap: 8 },
   statBox: { flex: 1, backgroundColor: '#F8FAFC', padding: 12, borderRadius: 10, borderWidth: 1, borderColor: '#F1F5F9', alignItems: 'center' },
   statValue: { fontSize: 15, fontWeight: '800', color: Colors.text },
   statLabel: { fontSize: 11, color: Colors.textMuted, fontWeight: '600', marginTop: 2 },
+  
+  rankRow: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#F8FAFC', padding: 12, borderRadius: 12, borderWidth: 1, borderColor: '#E2E8F0' },
+  rankRowFirst: { backgroundColor: '#FEFCE8', borderColor: '#FDE68A' },
+  rankNumber: { fontSize: 14, fontWeight: '800', color: Colors.text, width: 44 },
+  rankName: { fontSize: 14, fontWeight: '800', color: Colors.text },
+  rankDetail: { fontSize: 12, color: Colors.textMuted, marginTop: 2 },
+  rankBadge: { backgroundColor: '#EFF6FF', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 8 },
+  rankBadgeText: { fontSize: 12, fontWeight: '800', color: '#1D4ED8' },
+
   rosterSection: { marginTop: 6 },
-  memberCard: { backgroundColor: '#FFFFFF', padding: 12, borderRadius: 10, borderWidth: 1, borderColor: '#F1F5F9', flexDirection: 'row', justifyContent: 'space-between' },
-  memberName: { fontSize: 14, fontWeight: '700', color: Colors.text },
-  memberSchool: { fontSize: 12, color: Colors.textMuted },
+  memberCard: { backgroundColor: '#FFFFFF', padding: 12, borderRadius: 12, borderWidth: 1, borderColor: '#E2E8F0', flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  memberCardLeader: { backgroundColor: '#FAF5FF', borderColor: '#D8B4FE' },
+  memberName: { fontSize: 14, fontWeight: '800', color: Colors.text },
+  leaderBadge: { backgroundColor: '#F3E8FF', borderWidth: 1, borderColor: '#D8B4FE', paddingHorizontal: 6, paddingVertical: 1, borderRadius: 4 },
+  leaderBadgeText: { color: '#6B21A8', fontSize: 10.5, fontWeight: '800' },
+  memberSchool: { fontSize: 11.5, color: Colors.textMuted, fontWeight: '500', marginTop: 2 },
+  memberPosBadge: { backgroundColor: '#F0FDF4', borderWidth: 1, borderColor: '#BBF7D0', borderRadius: 8, paddingHorizontal: 6, paddingVertical: 3 },
+  memberPosText: { color: '#166534', fontSize: 10.5, fontWeight: '700' },
+
+  kickBtn: { backgroundColor: '#FEF2F2', borderWidth: 1, borderColor: '#FECACA', paddingHorizontal: 7, paddingVertical: 3, borderRadius: 6 },
+  kickBtnText: { color: '#DC2626', fontSize: 10.5, fontWeight: '800' },
+  
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center', padding: 20 },
   modalContent: { backgroundColor: Colors.surface, borderRadius: 20, padding: 20, width: '100%' },
-  modalTitle: { fontSize: 17, fontWeight: '800', color: Colors.text, marginBottom: 12 },
+  modalTitle: { fontSize: 17, fontWeight: '800', color: Colors.text, marginBottom: 4 },
+  modalSub: { fontSize: 12, color: Colors.textMuted, marginBottom: 12 },
+
+  actionTabRow: { flexDirection: 'row', gap: 6, marginBottom: 12 },
+  actionTabBtn: { flex: 1, paddingVertical: 8, borderRadius: 8, backgroundColor: '#F1F5F9', alignItems: 'center', borderWidth: 1, borderColor: '#CBD5E1' },
+  actionTabBtnActive: { backgroundColor: '#6B21A8', borderColor: '#581C87' },
+  actionTabText: { fontSize: 11.5, fontWeight: '700', color: '#475569' },
+  actionTabTextActive: { color: '#FFFFFF', fontWeight: '800' },
+
+  policyNoticeBox: { backgroundColor: '#FAF5FF', padding: 12, borderRadius: 10, borderWidth: 1, borderColor: '#E9D5FF', marginVertical: 6 },
+  policyNoticeTitle: { fontSize: 12, fontWeight: '800', color: '#6B21A8', marginBottom: 4 },
+  policyNoticeText: { fontSize: 11, color: '#7E22CE', lineHeight: 16 },
+
+  inputLabel: { fontSize: 12.5, fontWeight: '700', color: '#475569', marginBottom: 6, marginTop: 4 },
+
+  memberPickerItem: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#F8FAFC', padding: 10, borderRadius: 8, borderWidth: 1, borderColor: '#E2E8F0', marginBottom: 6 },
+  memberPickerItemActive: { backgroundColor: '#EFF6FF', borderColor: '#3B82F6' },
+  memberPickerText: { fontSize: 12.5, fontWeight: '700', color: '#334155' },
+  memberPickerTextActive: { color: '#1D4ED8', fontWeight: '800' },
+
+  textInput: { borderWidth: 1, borderColor: '#CBD5E1', borderRadius: 10, padding: 12, fontSize: 14, backgroundColor: '#F8FAFC', color: Colors.text },
   pinInput: { borderWidth: 1, borderColor: '#CBD5E1', borderRadius: 10, padding: 12, fontSize: 18, fontWeight: '800', textAlign: 'center' },
-  closeBtn: { backgroundColor: '#F1F5F9', borderRadius: 12, paddingVertical: 12, alignItems: 'center' },
+  closeBtn: { backgroundColor: '#F1F5F9', borderRadius: 12, paddingVertical: 12, alignItems: 'center', marginTop: 8 },
   closeBtnText: { color: Colors.text, fontWeight: '700' },
-  confirmBtn: { backgroundColor: Colors.primary, borderRadius: 12, paddingVertical: 12, alignItems: 'center' },
+  confirmBtn: { backgroundColor: '#6B21A8', borderRadius: 12, paddingVertical: 12, alignItems: 'center' },
   confirmBtnText: { color: '#FFFFFF', fontWeight: '800' },
+
+  regionChip: { backgroundColor: '#F1F5F9', paddingHorizontal: 12, paddingVertical: 8, borderRadius: 16, borderWidth: 1, borderColor: '#CBD5E1' },
+  regionChipActive: { backgroundColor: '#EFF6FF', borderColor: '#3B82F6' },
+  regionChipText: { fontSize: 12, fontWeight: '700', color: '#64748B' },
+  regionChipTextActive: { color: '#1D4ED8', fontWeight: '800' },
 });

@@ -6,32 +6,66 @@ import {
   TouchableOpacity,
   ActivityIndicator,
   ScrollView,
-  SafeAreaView,
   RefreshControl,
+  Modal,
+  TextInput,
+  Alert,
+  Linking,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
+import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
 import { Colors } from '../constants/Colors';
+import UserProfileModal from '../components/UserProfileModal';
+import TeamReportModal, { TeamReportAnalytics } from '../components/TeamReportModal';
+import StickyAdBanner from '../components/StickyAdBanner';
 
-const REGION_TABS = ['전체', '천안', '아산', '세종', '대전', '서울/경기', '기타'];
+interface TeamMemberObj {
+  userId: string;
+  realName: string;
+  maskedName: string;
+}
 
 interface TeamData {
   team_id: string;
   team_name: string;
   region: string;
-  team_type: 'school' | 'club'; // 🏫 학교팀 vs 🏐 동호회팀
-  members: string[]; // 마스킹 및 가나다순 정렬된 이름
-  rawMembers: string[]; // 원본 이름
+  team_type: 'school' | 'club';
+  youtube_channel_url?: string | null;
+  manner_temp?: number;
+  leader_id?: string | null;
+  memberObjs: TeamMemberObj[];
   memberCount: number;
   isOfficial: boolean;
 }
 
-// 🔥 이름 자동 마스킹 함수
+const getTeamIcon = (type?: 'school' | 'club') => {
+  return type === 'school' ? '🏫' : '🛡️';
+};
+
+const cleanRegionName = (rawInput?: any): string => {
+  if (!rawInput) return '천안';
+  let str = typeof rawInput === 'string' ? rawInput.trim() : String(rawInput).trim();
+  if (!str || str === 'undefined' || str === 'null') return '천안';
+
+  let clean = str.replace(/^(충남|충북|충청남도|충청북도|전남|전북|경남|경북|경기|경기도|강원|강원도|제주|제주도|서울|서울특별시|인천|인천광역시|대전|대전광역시|대구|대구광역시|광주|광주광역시|부산|부산광역시|울산|울산광역시|세종|세종특별자치시)\s*/, '');
+  if (clean.length >= 2 && (clean.endsWith('시') || clean.endsWith('군'))) {
+    clean = clean.slice(0, -1);
+  }
+  return clean.trim() || str || '천안';
+};
+
+const getMatchSeasonYear = (dateStr: string) => {
+  if (!dateStr) return String(new Date().getFullYear());
+  const match = dateStr.match(/\d+/g);
+  return match && match.length > 0 ? match[0] : String(new Date().getFullYear());
+};
+
 const maskName = (name: string) => {
-  if (!name || name === '선생님') return '팀*'; // '교*' 에서 '팀*' 으로 중립적 변경
+  if (!name || name === '선생님') return '팀*';
   if (name.length === 1) return name;
   if (name.length === 2) return name.charAt(0) + '*';
-  
   const first = name.charAt(0);
   const last = name.charAt(name.length - 1);
   const middle = '*'.repeat(name.length - 2);
@@ -40,66 +74,162 @@ const maskName = (name: string) => {
 
 export default function AllTeamsListScreen() {
   const router = useRouter();
+  const { session } = useAuth();
+  const currentUserId = session?.user?.id;
+
   const [teams, setTeams] = useState<TeamData[]>([]);
+  const [myTeamIds, setMyTeamIds] = useState<string[]>([]);
+  const [pendingTeamIds, setPendingTeamIds] = useState<string[]>([]);
+  const [allMatches, setAllMatches] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [actionLoading, setActionLoading] = useState(false);
 
-  // 📍 지역 및 정렬 상태
   const [selectedRegion, setSelectedRegion] = useState('전체');
+  const [userPrioritizedRegions, setUserPrioritizedRegions] = useState<string[]>([]);
+  const [dbActiveRegions, setDbActiveRegions] = useState<string[]>([]);
   const [sortType, setSortType] = useState<'popular' | 'recruiting'>('popular');
-
-  // 🔥 팀원 목록 펼쳐보기 상태 관리 (펼쳐진 팀의 ID 저장)
   const [expandedTeamId, setExpandedTeamId] = useState<string | null>(null);
+
+  const [selectedTeamIds, setSelectedTeamIds] = useState<string[]>([]);
+
+  const [selectedUserIdForModal, setSelectedUserIdForModal] = useState<string | null>(null);
+  const [profileModalVisible, setProfileModalVisible] = useState(false);
+
+  const [selectedTeamForReport, setSelectedTeamForReport] = useState<TeamData | null>(null);
+  const [teamReportModalVisible, setTeamReportModalVisible] = useState(false);
+
+  const [createModalVisible, setCreateModalVisible] = useState(false);
+  const [newTeamName, setNewTeamName] = useState('');
+  const [newTeamRegion, setNewTeamRegion] = useState('천안');
+  const [newTeamType, setNewTeamType] = useState<'school'|'club'>('school');
+  const [newTeamPassword, setNewTeamPassword] = useState('');
+  const [newTeamYoutube, setNewTeamYoutube] = useState('');
+  const [showCreateDropdown, setShowCreateDropdown] = useState(false);
+
+  const [joinModalVisible, setJoinModalVisible] = useState(false);
+  const [selectedJoinTeam, setSelectedJoinTeam] = useState<TeamData | null>(null);
+  const [joinPassword, setJoinPassword] = useState('');
+
+  useEffect(() => {
+    if (currentUserId) {
+      supabase.from('profiles').select('region').eq('id', currentUserId).maybeSingle().then(({ data }) => {
+        if (data?.region) {
+          const regs = data.region.split(',').map((r: string) => cleanRegionName(r)).filter(Boolean);
+          if (regs.length > 0) {
+            setUserPrioritizedRegions(regs);
+            setSelectedRegion(regs[0]);
+          }
+        }
+      });
+    }
+  }, [currentUserId]);
+
+  const dynamicRegionTabs = useMemo(() => {
+    const tabs = ['전체', ...userPrioritizedRegions];
+    dbActiveRegions.forEach((r) => {
+      const cleaned = cleanRegionName(r);
+      if (!tabs.includes(cleaned)) tabs.push(cleaned);
+    });
+    return tabs;
+  }, [userPrioritizedRegions, dbActiveRegions]);
 
   const fetchTeams = async () => {
     try {
+      if (currentUserId) {
+        const { data: myMems } = await supabase.from('team_members').select('team_id, is_active').eq('user_id', currentUserId);
+        if (myMems) {
+          setMyTeamIds((myMems || []).filter((m: any) => m.is_active).map((m: any) => m.team_id as string));
+          setPendingTeamIds((myMems || []).filter((m: any) => !m.is_active).map((m: any) => m.team_id as string));
+        }
+      }
+
+      const { data: mData } = await supabase.from('matches').select('*').eq('status', 'completed');
+      if (mData) setAllMatches(mData);
+
       const { data, error } = await supabase
         .from('team_members')
         .select(`
-          team_id,
-          teams (id, name, region, team_type),
+          team_id, user_id,
+          teams (id, name, region, team_type, youtube_channel_url, manner_temp, leader_id),
           profiles (full_name)
         `)
         .eq('is_active', true);
 
       if (error) throw error;
 
-      const teamMap = new Map<string, { name: string; region: string; team_type: 'school' | 'club'; members: string[] }>();
+      const teamMap = new Map<string, { name: string; region: string; team_type: 'school' | 'club'; youtube_channel_url?: string | null; manner_temp?: number; leader_id?: string | null; memberObjs: TeamMemberObj[] }>();
+      const regionsSet = new Set<string>();
 
       data?.forEach((item: any) => {
-        const team = item.teams;
-        const profile = item.profiles;
+        const teamObj = Array.isArray(item.teams) ? item.teams[0] : item.teams;
+        const profileObj = Array.isArray(item.profiles) ? item.profiles[0] : item.profiles;
+        const uId = item.user_id;
+        if (!teamObj || !teamObj.name) return;
 
-        if (!team || !team.name) return;
+        const stdRegion = cleanRegionName(teamObj.region);
+        if (stdRegion) regionsSet.add(stdRegion);
 
-        const existing = teamMap.get(team.id) || {
-          name: team.name,
-          region: team.region || '천안',
-          team_type: team.team_type || 'school',
-          members: [],
+        const existing = teamMap.get(teamObj.id) || {
+          name: teamObj.name,
+          region: stdRegion || '천안',
+          team_type: (teamObj.team_type as 'school' | 'club') || 'school',
+          youtube_channel_url: teamObj.youtube_channel_url || null,
+          manner_temp: teamObj.manner_temp || 36.5,
+          leader_id: teamObj.leader_id || null,
+          memberObjs: [] as TeamMemberObj[],
         };
 
-        const memberName = profile?.full_name || '팀원';
-        if (!existing.members.includes(memberName)) {
-          existing.members.push(memberName);
+        const realName: string = profileObj?.full_name || '팀원';
+        if (!existing.memberObjs.some(m => m.userId === uId)) {
+          existing.memberObjs.push({
+            userId: uId,
+            realName,
+            maskedName: maskName(realName),
+          });
         }
-
-        teamMap.set(team.id, existing);
+        teamMap.set(teamObj.id, existing);
       });
 
+      const { data: allTeamsDB } = await supabase.from('teams').select('id, name, region, team_type, youtube_channel_url, manner_temp, leader_id');
+      if (allTeamsDB) {
+        allTeamsDB.forEach((t: any) => {
+          const stdRegion = cleanRegionName(t.region);
+          if (stdRegion) regionsSet.add(stdRegion);
+          if (!teamMap.has(t.id)) {
+            teamMap.set(t.id, {
+              name: t.name,
+              region: stdRegion || '천안',
+              team_type: (t.team_type as 'school' | 'club') || 'school',
+              youtube_channel_url: t.youtube_channel_url || null,
+              manner_temp: t.manner_temp || 36.5,
+              leader_id: t.leader_id || null,
+              memberObjs: [],
+            });
+          }
+        });
+      }
+
+      setDbActiveRegions(Array.from(regionsSet));
+
       const teamList: TeamData[] = Array.from(teamMap.entries()).map(([team_id, info]) => {
-        const sortedMembers = [...info.members].sort((a, b) => a.localeCompare(b, 'ko-KR'));
-        const maskedMembers = sortedMembers.map(maskName);
+        const sortedMembers = [...info.memberObjs].sort((a, b) => {
+          if (a.userId === info.leader_id) return -1;
+          if (b.userId === info.leader_id) return 1;
+          return a.realName.localeCompare(b.realName, 'ko-KR');
+        });
 
         return {
           team_id,
           team_name: info.name,
           region: info.region,
           team_type: info.team_type,
-          members: maskedMembers,
-          rawMembers: sortedMembers,
-          memberCount: info.members.length,
-          isOfficial: info.members.length >= 3,
+          youtube_channel_url: info.youtube_channel_url,
+          manner_temp: info.manner_temp || 36.5,
+          leader_id: info.leader_id,
+          memberObjs: sortedMembers,
+          memberCount: info.memberObjs.length,
+          isOfficial: info.memberObjs.length >= 3,
         };
       });
 
@@ -112,28 +242,175 @@ export default function AllTeamsListScreen() {
     }
   };
 
-  useEffect(() => {
-    fetchTeams();
-  }, []);
+  useEffect(() => { fetchTeams(); }, []);
+  const onRefresh = () => { setRefreshing(true); setExpandedTeamId(null); fetchTeams(); };
 
-  const onRefresh = () => {
-    setRefreshing(true);
-    setExpandedTeamId(null); // 새로고침 시 펼침 상태 초기화
-    fetchTeams();
+  const toggleSelectTeam = (teamId: string) => {
+    setSelectedTeamIds(prev =>
+      prev.includes(teamId) ? prev.filter(id => id !== teamId) : [...prev, teamId]
+    );
+  };
+
+  const handleSendMultiProposal = async () => {
+    if (selectedTeamIds.length === 0) return;
+
+    Alert.alert(
+      '교류전 일괄 제안',
+      `선택하신 ${selectedTeamIds.length}개 팀에 친선 교류전 매칭 제안을 동시에 보내시겠습니까?`,
+      [
+        { text: '취소', style: 'cancel' },
+        {
+          text: '제안 발송',
+          onPress: async () => {
+            try {
+              setActionLoading(true);
+              const notis = selectedTeamIds.map(tId => ({
+                user_id: tId,
+                title: '✉️ [교류전 제안 도착]',
+                message: '새로운 팀으로부터 교류전 매칭 제안이 도착했습니다. 앱에서 확인해 보세요!',
+                is_read: false,
+              }));
+
+              await supabase.from('notifications').insert(notis);
+              Alert.alert('발송 완료! ✉️', `${selectedTeamIds.length}개 팀에 성공적으로 교류전 제안을 전달했습니다.`);
+              setSelectedTeamIds([]);
+            } catch (err: any) {
+              Alert.alert('오류', err.message);
+            } finally {
+              setActionLoading(false);
+            }
+          }
+        }
+      ]
+    );
+  };
+
+  const similarTeams = useMemo(() => {
+    const query = newTeamName.trim().replace(/\s+/g, '').toLowerCase();
+    if (!query) return [];
+    return teams.filter(t => t.team_name.replace(/\s+/g, '').toLowerCase().includes(query));
+  }, [teams, newTeamName]);
+
+  const handleSelectSimilarTeam = (team: TeamData) => {
+    setCreateModalVisible(false);
+    setShowCreateDropdown(false);
+    setNewTeamName('');
+    setNewTeamYoutube('');
+    setSelectedJoinTeam(team);
+    setJoinModalVisible(true);
+  };
+
+  const handleCreateTeam = async () => {
+    const trimmedName = newTeamName.trim();
+    if (!trimmedName) return Alert.alert('알림', '팀 이름을 입력해 주세요.');
+    if (!newTeamPassword || newTeamPassword.length < 4) return Alert.alert('알림', '비밀번호는 최소 4자리 이상 입력해 주세요.');
+
+    const cleanInput = trimmedName.replace(/\s+/g, '').toLowerCase();
+    const exactDuplicate = teams.find(t => t.team_name.replace(/\s+/g, '').toLowerCase() === cleanInput);
+
+    if (exactDuplicate) {
+      return Alert.alert(
+        '이미 존재함',
+        `'${exactDuplicate.team_name}' 팀이 이미 등록되어 있습니다.\n해당 팀에 가입하시겠습니까?`,
+        [
+          { text: '취소', style: 'cancel' },
+          { text: '해당 팀 가입하기', onPress: () => handleSelectSimilarTeam(exactDuplicate) }
+        ]
+      );
+    }
+    
+    setActionLoading(true);
+    try {
+      const { data: newTeam, error } = await supabase.from('teams').insert({
+        name: trimmedName,
+        region: cleanRegionName(newTeamRegion),
+        team_type: newTeamType,
+        password: newTeamPassword,
+        youtube_channel_url: newTeamYoutube.trim() || null,
+        leader_id: currentUserId,
+      }).select().single();
+      
+      if (error) throw error;
+
+      await supabase.from('team_members').insert({
+        user_id: currentUserId,
+        team_id: newTeam.id,
+        is_active: true,
+        is_primary: myTeamIds.length === 0,
+      });
+
+      Alert.alert('팀 창단 완료! 🎉', `'${trimmedName}' 팀이 새롭게 등록되었으며, 선생님이 🚩 회장으로 자동 등록되었습니다.`);
+      setCreateModalVisible(false);
+      setShowCreateDropdown(false);
+      setNewTeamName(''); setNewTeamPassword(''); setNewTeamYoutube('');
+      onRefresh();
+    } catch (err: any) {
+      Alert.alert('오류', '팀 등록에 실패했습니다.');
+    } finally { setActionLoading(false); }
+  };
+
+  const handleJoinWithPassword = async () => {
+    if (!joinPassword) return Alert.alert('알림', '팀 비밀번호를 입력해 주세요.');
+    if (!selectedJoinTeam) return;
+
+    setActionLoading(true);
+    try {
+      const { data, error } = await supabase.from('teams').select('password').eq('id', selectedJoinTeam.team_id).single();
+      
+      if (error || !data || data.password !== joinPassword) {
+        setActionLoading(false);
+        return Alert.alert('비밀번호 오류', '비밀번호가 일치하지 않습니다.');
+      }
+
+      await supabase.from('team_members').insert({
+        user_id: currentUserId,
+        team_id: selectedJoinTeam.team_id,
+        is_active: true,
+        is_primary: myTeamIds.length === 0
+      });
+
+      Alert.alert('가입 완료! 🚀', `'${selectedJoinTeam.team_name}' 팀에 소속되었습니다!`);
+      setJoinModalVisible(false);
+      setJoinPassword('');
+      onRefresh();
+    } catch (err: any) { Alert.alert('오류', err.message); setActionLoading(false); }
+  };
+
+  const handleJoinRequest = async () => {
+    if (!selectedJoinTeam) return;
+
+    setActionLoading(true);
+    try {
+      await supabase.from('team_members').insert({
+        user_id: currentUserId,
+        team_id: selectedJoinTeam.team_id,
+        is_active: false,
+        is_primary: false
+      });
+
+      const { data: members } = await supabase.from('team_members').select('user_id').eq('team_id', selectedJoinTeam.team_id).eq('is_active', true);
+      if (members && members.length > 0) {
+        const notis = members.map((m: any) => ({
+          user_id: m.user_id,
+          title: '🙋‍♂️ [새로운 팀 가입 요청]',
+          message: `새로운 선생님이 '${selectedJoinTeam.team_name}' 팀에 가입을 요청했습니다. 팀 관리에서 승인해 주세요.`,
+          is_read: false
+        }));
+        await supabase.from('notifications').insert(notis);
+      }
+
+      Alert.alert('요청 완료 🔔', '가입 승인 요청이 전송되었습니다. 기존 팀원이 승인하면 가입이 완료됩니다.');
+      setJoinModalVisible(false);
+      setJoinPassword('');
+      onRefresh();
+    } catch (err: any) { Alert.alert('오류', err.message); setActionLoading(false); }
   };
 
   const filteredAndSortedTeams = useMemo(() => {
     let result = [...teams];
-
     if (selectedRegion !== '전체') {
-      if (selectedRegion === '기타') {
-        const mainRegions = ['천안', '아산', '세종', '대전', '서울/경기'];
-        result = result.filter((t) => !mainRegions.includes(t.region));
-      } else {
-        result = result.filter((t) => t.region === selectedRegion);
-      }
+      result = result.filter((t) => cleanRegionName(t.region) === selectedRegion);
     }
-
     result.sort((a, b) => {
       if (sortType === 'popular') {
         if (a.isOfficial !== b.isOfficial) return a.isOfficial ? -1 : 1;
@@ -145,75 +422,200 @@ export default function AllTeamsListScreen() {
         return a.team_name.localeCompare(b.team_name, 'ko-KR');
       }
     });
-
     return result;
   }, [teams, selectedRegion, sortType]);
 
+  const calcStatsForMatches = (matchesList: any[], teamName: string) => {
+    let wins = 0, losses = 0, draws = 0;
+    let setsWon = 0, setsLost = 0, shutoutWins = 0, fullsetWins = 0;
+    const oppMap: { [oppName: string]: { wins: number; losses: number; draws: number; total: number } } = {};
+
+    matchesList.forEach((m: any) => {
+      const hName = m.host_team_name;
+      const aName = m.away_team_name;
+      const wName = m.winner_team;
+      const isHost = hName === teamName;
+      const oppName = isHost ? aName : hName;
+      const isWin = wName === teamName;
+      const isDraw = wName === 'draw' || wName === '무승부';
+
+      if (isWin) wins++;
+      else if (isDraw) draws++;
+      else losses++;
+
+      if (oppName) {
+        if (!oppMap[oppName]) oppMap[oppName] = { wins: 0, losses: 0, draws: 0, total: 0 };
+        oppMap[oppName].total++;
+        if (isWin) oppMap[oppName].wins++;
+        else if (isDraw) oppMap[oppName].draws++;
+        else oppMap[oppName].losses++;
+      }
+
+      let hostSetWon = 0, awaySetWon = 0;
+      if (m.set_scores) {
+        m.set_scores.split(', ').forEach((s: string) => {
+          const [h, a] = s.split(':').map(Number);
+          if (!isNaN(h) && !isNaN(a)) {
+            if (h > a) hostSetWon++;
+            else if (a > h) awaySetWon++;
+          }
+        });
+      }
+
+      const mySetWon = isHost ? hostSetWon : awaySetWon;
+      const oppSetWon = isHost ? awaySetWon : hostSetWon;
+      setsWon += mySetWon;
+      setsLost += oppSetWon;
+
+      if (isWin) {
+        if (oppSetWon === 0) shutoutWins++;
+        else fullsetWins++;
+      }
+    });
+
+    let nemesis = '없음', nemesisStat = '', victim = '없음', victimStat = '';
+    let maxLossDiff = -999, maxWinDiff = -999;
+
+    Object.entries(oppMap).forEach(([opp, stat]) => {
+      const winDiff = stat.wins - stat.losses;
+      const lossDiff = stat.losses - stat.wins;
+
+      if (stat.losses > stat.wins && lossDiff > maxLossDiff) {
+        maxLossDiff = lossDiff; nemesis = opp; nemesisStat = `${stat.losses}패 ${stat.wins}승 (${stat.total}전)`;
+      }
+
+      if (stat.wins > stat.losses && winDiff > maxWinDiff) {
+        maxWinDiff = winDiff; victim = opp; victimStat = `${stat.wins}승 ${stat.losses}패 (${stat.total}전)`;
+      }
+    });
+
+    const teamRecent5 = matchesList.slice(0, 5).map((m: any) => {
+      const isWin = m.winner_team === teamName;
+      const isDraw = m.winner_team === 'draw' || m.winner_team === '무승부';
+      return isWin ? 'WIN' : isDraw ? 'DRAW' : 'LOSS';
+    });
+
+    const totalMatches = matchesList.length;
+
+    return {
+      totalMatches,
+      totalWins: wins,
+      totalDraws: draws,
+      totalLosses: losses,
+      winRate: totalMatches > 0 ? Math.round((wins / totalMatches) * 100) : 0,
+      setsWon,
+      setsLost,
+      setDiff: setsWon - setsLost,
+      shutoutWins,
+      fullsetWins,
+      nemesis,
+      nemesisStat,
+      victim,
+      victimStat,
+      teamRecent5,
+    };
+  };
+
+  const selectedTeamAnalytics = useMemo<TeamReportAnalytics | null>(() => {
+    if (!selectedTeamForReport) return null;
+    const teamName = selectedTeamForReport.team_name;
+
+    const teamMatches = allMatches.filter((m: any) => m.host_team_name === teamName || m.away_team_name === teamName);
+
+    const careerStats = calcStatsForMatches(teamMatches, teamName);
+
+    const seasonMap: { [yr: string]: any[] } = {};
+    teamMatches.forEach((m: any) => {
+      const yr = getMatchSeasonYear(m.match_date || m.created_at);
+      if (!seasonMap[yr]) seasonMap[yr] = [];
+      seasonMap[yr].push(m);
+    });
+
+    const seasonsStats: { [yr: string]: any } = {};
+    Object.entries(seasonMap).forEach(([yr, mList]) => {
+      seasonsStats[yr] = calcStatsForMatches(mList, teamName);
+    });
+
+    return {
+      teamName,
+      region: cleanRegionName(selectedTeamForReport.region),
+      teamType: selectedTeamForReport.team_type,
+      mannerTemp: selectedTeamForReport.manner_temp,
+      isOfficial: selectedTeamForReport.isOfficial,
+      memberCount: selectedTeamForReport.memberCount,
+      totalMatches: careerStats.totalMatches,
+      setsWon: careerStats.setsWon,
+      setsLost: careerStats.setsLost,
+      setDiff: careerStats.setDiff,
+      shutoutWins: careerStats.shutoutWins,
+      fullsetWins: careerStats.fullsetWins,
+      nemesis: careerStats.nemesis,
+      nemesisStat: careerStats.nemesisStat,
+      victim: careerStats.victim,
+      victimStat: careerStats.victimStat,
+      teamRecent5: careerStats.teamRecent5,
+      career: careerStats,
+      seasons: seasonsStats,
+    };
+  }, [selectedTeamForReport, allMatches]);
+
+  const openTeamReport = (team: TeamData) => {
+    setSelectedTeamForReport(team);
+    setTeamReportModalVisible(true);
+  };
+
+  const openUserProfile = (uId: string) => {
+    setSelectedUserIdForModal(uId);
+    setProfileModalVisible(true);
+  };
+
   return (
-    <SafeAreaView style={styles.container}>
-      {/* 1. 상단 헤더 */}
+    <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
+      {/* 헤더 */}
       <View style={styles.header}>
-        <TouchableOpacity style={styles.backBtn} onPress={() => router.back()} hitSlop={10}>
-          <Text style={styles.backText}>‹</Text>
-        </TouchableOpacity>
-        <Text style={styles.headerTitle}>전체 팀 목록</Text>
-        <TouchableOpacity style={styles.addBtn} onPress={() => router.push('/profile-setup')}>
-          <Text style={styles.addBtnText}>+ 개설</Text>
+        <View style={styles.headerLeftGroup}>
+          <TouchableOpacity style={styles.backBtn} onPress={() => router.back()} hitSlop={10}>
+            <Text style={styles.backText}>‹</Text>
+          </TouchableOpacity>
+          <Text style={styles.headerTitle}>전체 팀 목록</Text>
+        </View>
+        <TouchableOpacity style={styles.addBtn} onPress={() => { setShowCreateDropdown(false); setCreateModalVisible(true); }}>
+          <Text style={styles.addBtnText}>+ 팀 등록</Text>
         </TouchableOpacity>
       </View>
 
-      {/* 📍 2. 지역 탭 */}
+      {/* 지역 스위퍼 */}
       <View style={styles.regionTabWrapper}>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.regionTabScroll}>
-          {REGION_TABS.map((region) => (
-            <TouchableOpacity
-              key={region}
-              style={[styles.regionTab, selectedRegion === region && styles.regionTabActive]}
-              onPress={() => {
-                setSelectedRegion(region);
-                setExpandedTeamId(null); // 탭 이동 시 펼침 초기화
-              }}
-            >
-              <Text style={[styles.regionTabText, selectedRegion === region && styles.regionTabTextActive]}>
-                {region}
-              </Text>
-            </TouchableOpacity>
-          ))}
+          {dynamicRegionTabs.map((region) => {
+            const isPriority = userPrioritizedRegions.includes(region);
+            const prioIdx = userPrioritizedRegions.indexOf(region);
+            return (
+              <TouchableOpacity key={region} style={[styles.regionTab, selectedRegion === region && styles.regionTabActive]} onPress={() => { setSelectedRegion(region); setExpandedTeamId(null); }}>
+                <Text style={[styles.regionTabText, selectedRegion === region && styles.regionTabTextActive]}>
+                  {isPriority ? `[${prioIdx + 1}순위] ` : ''}{region}
+                </Text>
+              </TouchableOpacity>
+            );
+          })}
         </ScrollView>
       </View>
 
-      {/* 🔄 3. 정렬 버튼 */}
+      {/* 정렬 스위퍼 */}
       <View style={styles.sortWrapper}>
-        <TouchableOpacity
-          style={[styles.sortBtn, sortType === 'popular' && styles.sortBtnActive]}
-          onPress={() => setSortType('popular')}
-        >
-          <Text style={[styles.sortBtnText, sortType === 'popular' && styles.sortBtnTextActive]}>
-            🔥 대형·공식 팀 우선
-          </Text>
+        <TouchableOpacity style={[styles.sortBtn, sortType === 'popular' && styles.sortBtnActive]} onPress={() => setSortType('popular')}>
+          <Text style={[styles.sortBtnText, sortType === 'popular' && styles.sortBtnTextActive]}>🔥 대형·공식 팀 우선</Text>
         </TouchableOpacity>
-
-        <TouchableOpacity
-          style={[styles.sortBtn, sortType === 'recruiting' && styles.sortBtnActive]}
-          onPress={() => setSortType('recruiting')}
-        >
-          <Text style={[styles.sortBtnText, sortType === 'recruiting' && styles.sortBtnTextActive]}>
-            🌱 신규·모집 팀 우선
-          </Text>
+        <TouchableOpacity style={[styles.sortBtn, sortType === 'recruiting' && styles.sortBtnActive]} onPress={() => setSortType('recruiting')}>
+          <Text style={[styles.sortBtnText, sortType === 'recruiting' && styles.sortBtnTextActive]}>🌱 신규·모집 팀 우선</Text>
         </TouchableOpacity>
       </View>
 
-      {/* 4. 팀 카드 목록 */}
-      <ScrollView
-        contentContainerStyle={styles.content}
-        showsVerticalScrollIndicator={false}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={Colors.primary} />}
-      >
+      <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={Colors.primary} />}>
         <View style={styles.infoBanner}>
           <Text style={styles.infoBannerIcon}>💡</Text>
           <Text style={styles.infoBannerText}>
-            같은 팀에 <Text style={{ fontWeight: '800' }}>3명 이상</Text> 모이면{'\n'}
-            <Text style={{ color: '#0284C7', fontWeight: '800' }}>블루리본(🟦) 공식 팀</Text>으로 자동 승격됩니다!
+            팀에 <Text style={{ fontWeight: '800' }}>3명 이상</Text> 모이면 <Text style={{ color: '#0284C7', fontWeight: '800' }}>💎 공식 인증팀</Text>으로 자동 승격되며, 카드 터치 시 <Text style={{ fontWeight: '800', color: '#2563EB' }}>상세 리포트</Text>가 열립니다!
           </Text>
         </View>
 
@@ -222,377 +624,425 @@ export default function AllTeamsListScreen() {
         ) : filteredAndSortedTeams.length === 0 ? (
           <View style={styles.emptyContainer}>
             <Text style={styles.emptyEmoji}>👀</Text>
-            <Text style={styles.emptyText}>선택하신 지역/조건의 팀이 아직 없습니다.</Text>
+            <Text style={styles.emptyText}>선택하신 [{selectedRegion}] 지역에 아직 등록된 팀이 없습니다.</Text>
           </View>
         ) : (
           filteredAndSortedTeams.map((team) => {
             const isSchool = team.team_type === 'school';
-            
-            // 🔥 펼쳐보기 상태 확인
             const isExpanded = expandedTeamId === team.team_id;
             const MAX_DISPLAY = 3;
             const extraCount = team.memberCount - MAX_DISPLAY;
             
-            // 펼쳐져 있으면 전체 멤버를, 아니면 최대 3명만 추출
-            const displayMembers = isExpanded ? team.members : team.members.slice(0, MAX_DISPLAY);
+            const isMyTeam = myTeamIds.includes(team.team_id);
+            const isPending = pendingTeamIds.includes(team.team_id);
+            const isChecked = selectedTeamIds.includes(team.team_id);
+
+            const displayMemberObjs = isExpanded ? team.memberObjs : team.memberObjs.slice(0, MAX_DISPLAY);
 
             return (
-              <View key={team.team_id} style={[styles.teamCard, team.isOfficial && styles.teamCardOfficial]}>
-                <View style={styles.teamHeader}>
-                  <View style={styles.teamNameRow}>
-                    <Text style={styles.teamName}>{team.team_name}</Text>
+              <View 
+                key={team.team_id} 
+                style={[
+                  styles.teamCard, 
+                  team.isOfficial ? styles.teamCardOfficial : styles.teamCardUnofficial, 
+                  isChecked && styles.teamCardSelected
+                ]}
+              >
+                <TouchableOpacity onPress={() => openTeamReport(team)} activeOpacity={0.8}>
+                  {/* 💡 1행: 스타일명 통일 수정 (cardMainHeaderTopRow) */}
+                  <View style={styles.cardMainHeaderTopRow}>
+                    <TouchableOpacity onPress={() => toggleSelectTeam(team.team_id)} style={styles.checkboxTouch} hitSlop={6}>
+                      <View style={[styles.customCheckbox, isChecked && styles.customCheckboxChecked]}>
+                        {isChecked && <Text style={styles.checkmarkText}>✓</Text>}
+                      </View>
+                    </TouchableOpacity>
+
+                    <Text style={styles.teamName} numberOfLines={1}>
+                      {getTeamIcon(team.team_type)} {team.team_name}
+                    </Text>
+
+                    <View style={styles.rightBadgeContainer}>
+                      <View style={styles.countBadge}>
+                        <Text style={styles.countText}>{team.memberCount}명</Text>
+                      </View>
+                      <View style={styles.mannerTempBadge}>
+                        <Text style={styles.mannerTempBadgeText}>🌡️ {(team.manner_temp || 36.5).toFixed(1)}°C</Text>
+                      </View>
+                    </View>
+                  </View>
+
+                  <View style={styles.cardHeaderSubRow}>
+                    <View style={styles.regionTagChip}>
+                      <Text style={styles.regionTagChipText}>📍 {cleanRegionName(team.region)}</Text>
+                    </View>
 
                     <View style={[styles.typeBadge, isSchool ? styles.schoolTypeBadge : styles.clubTypeBadge]}>
                       <Text style={[styles.typeBadgeText, isSchool ? styles.schoolTypeBadgeText : styles.clubTypeBadgeText]}>
-                        {isSchool ? '🏫 학교' : '🏐 동호회'}
+                        {isSchool ? '학교' : '동호회'}
                       </Text>
                     </View>
-
-                    <Text style={styles.regionTag}>[{team.region}]</Text>
-
-                    {team.isOfficial && (
-                      <View style={styles.blueRibbon}>
-                        <Text style={styles.blueRibbonText}>🟦 공식</Text>
-                      </View>
-                    )}
-                  </View>
-                  <View style={styles.countBadge}>
-                    <Text style={styles.countText}>{team.memberCount}명</Text>
-                  </View>
-                </View>
-
-                {/* 🔥 명칭 변경: 소속 교사 -> 소속 팀원 */}
-                <View style={styles.membersArea}>
-                  <Text style={styles.membersLabel}>👥 소속 팀원 현황</Text>
-                  <View style={styles.membersList}>
-                    {displayMembers.map((member, mIndex) => (
-                      <View key={mIndex} style={styles.memberTag}>
-                        <Text style={styles.memberTagText}>{member}</Text>
-                      </View>
-                    ))}
                     
-                    {/* 전체보기 토글 버튼 로직 */}
-                    {extraCount > 0 && !isExpanded && (
-                      <TouchableOpacity 
-                        style={[styles.memberTag, styles.extraMemberTag]}
-                        onPress={() => setExpandedTeamId(team.team_id)}
-                      >
-                        <Text style={styles.extraMemberTagText}>+{extraCount}명 전체보기</Text>
-                      </TouchableOpacity>
+                    {team.isOfficial && (
+                      <View style={styles.officialBadge}>
+                        <Text style={styles.officialBadgeText}>💎 공식인증</Text>
+                      </View>
                     )}
 
-                    {isExpanded && extraCount > 0 && (
-                      <TouchableOpacity 
-                        style={[styles.memberTag, styles.collapseTag]}
-                        onPress={() => setExpandedTeamId(null)}
+                    {team.youtube_channel_url && (
+                      <TouchableOpacity
+                        style={styles.youtubeMiniBtn}
+                        onPress={() => Linking.openURL(team.youtube_channel_url!).catch(() => Alert.alert('오류', '올바른 유튜브 링크가 아닙니다.'))}
                       >
-                        <Text style={styles.collapseTagText}>- 닫기</Text>
+                        <Text style={styles.youtubeMiniBtnText}>📺 유튜브</Text>
                       </TouchableOpacity>
                     )}
                   </View>
+                </TouchableOpacity>
+
+                {/* 콤팩트 팀원 명단 + 회장 🚩 표시 */}
+                <View style={styles.membersArea}>
+                  <View style={styles.membersAreaHeader}>
+                    <Text style={styles.membersLabel}>
+                      소속 팀원 {isMyTeam ? '(실명)' : '(익명)'}
+                    </Text>
+                    {!team.isOfficial && (
+                      <Text style={styles.needMoreText}>🌱 공식팀까지 {Math.max(1, 3 - team.memberCount)}명</Text>
+                    )}
+                  </View>
+
+                  {team.memberCount === 0 ? (
+                    <Text style={{ fontSize: 12, color: '#94A3B8' }}>등록된 소속 팀원이 없습니다.</Text>
+                  ) : (
+                    <View style={styles.membersList}>
+                      {displayMemberObjs.map((mObj) => {
+                        const isLeader = team.leader_id === mObj.userId;
+                        const nameToShow = isMyTeam ? mObj.realName : mObj.maskedName;
+
+                        return (
+                          <TouchableOpacity
+                            key={mObj.userId}
+                            style={[styles.memberTag, isLeader && styles.memberTagLeader]}
+                            onPress={() => openUserProfile(mObj.userId)}
+                          >
+                            <Text style={[styles.memberTagText, isLeader && styles.memberTagTextLeader]}>
+                              {isLeader ? `🚩 ${nameToShow}` : nameToShow}
+                            </Text>
+                          </TouchableOpacity>
+                        );
+                      })}
+                      {extraCount > 0 && !isExpanded && (
+                        <TouchableOpacity style={styles.moreChip} onPress={() => setExpandedTeamId(team.team_id)}>
+                          <Text style={styles.moreChipText}>+{extraCount}명 더보기</Text>
+                        </TouchableOpacity>
+                      )}
+                      {isExpanded && extraCount > 0 && (
+                        <TouchableOpacity style={styles.moreChip} onPress={() => setExpandedTeamId(null)}>
+                          <Text style={styles.moreChipText}>접기 ▲</Text>
+                        </TouchableOpacity>
+                      )}
+                    </View>
+                  )}
                 </View>
 
-                {!team.isOfficial && (
-                  <Text style={styles.needMoreText}>
-                    🌱 팀원 적극 모집 중! (블루리본까지 {3 - team.memberCount}명)
-                  </Text>
-                )}
+                {/* 하단 버튼 */}
+                <View style={styles.actionFooter}>
+                  {isMyTeam ? (
+                    <View style={styles.badgeSuccess}><Text style={styles.badgeSuccessText}>✅ 내 소속 팀</Text></View>
+                  ) : isPending ? (
+                    <View style={styles.badgePending}><Text style={styles.badgePendingText}>⏳ 승인 대기중</Text></View>
+                  ) : (
+                    <TouchableOpacity style={styles.joinBtn} onPress={() => { setSelectedJoinTeam(team); setJoinModalVisible(true); }}>
+                      <Text style={styles.joinBtnText}>+ 이 팀에 가입하기</Text>
+                    </TouchableOpacity>
+                  )}
+                </View>
               </View>
             );
           })
         )}
       </ScrollView>
+
+      {selectedTeamIds.length > 0 && (
+        <View style={styles.multiProposalBar}>
+          <Text style={styles.multiProposalCount}>선택된 {selectedTeamIds.length}개 팀</Text>
+          <TouchableOpacity style={styles.multiProposalBtn} onPress={handleSendMultiProposal} disabled={actionLoading}>
+            {actionLoading ? <ActivityIndicator color="#FFF" size="small" /> : <Text style={styles.multiProposalBtnText}>✉️ 교류전 일괄 제안하기</Text>}
+          </TouchableOpacity>
+        </View>
+      )}
+
+      <StickyAdBanner />
+
+      {/* 팀 창단 모달 */}
+      <Modal visible={createModalVisible} animationType="slide" transparent={true}>
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>🛡️ 새 팀 등록 (창단)</Text>
+            <Text style={styles.modalSub}>앱에 없는 팀을 직접 등록하고 리더가 되세요.</Text>
+            
+            <ScrollView showsVerticalScrollIndicator={false} style={{ maxHeight: 420 }} nestedScrollEnabled={true}>
+              <Text style={styles.inputLabel}>1. 팀 이름</Text>
+              <View style={{ position: 'relative', zIndex: 100, marginBottom: 12 }}>
+                <TextInput
+                  style={styles.textInput}
+                  placeholder="예: 삼은초, 교사배구사랑"
+                  value={newTeamName}
+                  onChangeText={(txt) => { setNewTeamName(txt); setShowCreateDropdown(true); }}
+                  onFocus={() => setShowCreateDropdown(true)}
+                />
+                
+                {showCreateDropdown && similarTeams.length > 0 && (
+                  <View style={styles.dropdownBox}>
+                    <View style={styles.dropdownHeader}>
+                      <Text style={styles.dropdownHeaderText}>💡 혹시 이 팀을 찾으시나요?</Text>
+                    </View>
+                    <ScrollView style={{ maxHeight: 130 }} nestedScrollEnabled={true}>
+                      {similarTeams.map((t) => (
+                        <TouchableOpacity
+                          key={t.team_id}
+                          style={styles.dropdownItem}
+                          onPress={() => handleSelectSimilarTeam(t)}
+                        >
+                          <Text style={styles.dropdownItemText}>
+                            {getTeamIcon(t.team_type)} {t.team_name} [{cleanRegionName(t.region)}] (터치 시 가입)
+                          </Text>
+                        </TouchableOpacity>
+                      ))}
+                    </ScrollView>
+                  </View>
+                )}
+              </View>
+
+              <Text style={styles.inputLabel}>2. 소속 지역</Text>
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginBottom: 12 }}>
+                {dynamicRegionTabs.filter(r => r !== '전체').map(reg => (
+                  <TouchableOpacity key={reg} style={[styles.chipBtn, newTeamRegion === reg && styles.chipBtnActive]} onPress={() => setNewTeamRegion(reg)}>
+                    <Text style={[styles.chipBtnText, newTeamRegion === reg && styles.chipBtnTextActive]}>{reg}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+
+              <Text style={styles.inputLabel}>3. 팀 성격</Text>
+              <View style={{ flexDirection: 'row', gap: 8, marginBottom: 12 }}>
+                <TouchableOpacity style={[styles.chipBtn, { flex: 1, paddingVertical: 10 }, newTeamType === 'school' && styles.chipBtnActive]} onPress={() => setNewTeamType('school')}>
+                  <Text style={[styles.chipBtnText, newTeamType === 'school' && styles.chipBtnTextActive]}>🏫 학교 팀</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={[styles.chipBtn, { flex: 1, paddingVertical: 10 }, newTeamType === 'club' && styles.chipBtnActive]} onPress={() => setNewTeamType('club')}>
+                  <Text style={[styles.chipBtnText, newTeamType === 'club' && styles.chipBtnTextActive]}>🛡️ 동호회 팀</Text>
+                </TouchableOpacity>
+              </View>
+
+              <Text style={styles.inputLabel}>4. 팀 비밀번호 (팀원 가입/관리용)</Text>
+              <TextInput style={styles.textInput} placeholder="비밀번호 설정 (4자리 이상)" value={newTeamPassword} onChangeText={setNewTeamPassword} secureTextEntry />
+
+              <Text style={[styles.inputLabel, { marginTop: 12 }]}>5. 팀 공식 유튜브 채널 URL (선택)</Text>
+              <TextInput
+                style={styles.textInput}
+                placeholder="예: https://www.youtube.com/@팀채널"
+                placeholderTextColor="#94A3B8"
+                value={newTeamYoutube}
+                onChangeText={setNewTeamYoutube}
+                autoCapitalize="none"
+              />
+            </ScrollView>
+
+            <View style={{ flexDirection: 'row', gap: 10, marginTop: 14 }}>
+              <TouchableOpacity style={[styles.closeBtn, { flex: 1, marginTop: 0 }]} onPress={() => { setCreateModalVisible(false); setShowCreateDropdown(false); }}><Text style={styles.closeBtnText}>취소</Text></TouchableOpacity>
+              <TouchableOpacity style={[styles.submitBtn, { flex: 2 }]} onPress={handleCreateTeam} disabled={actionLoading}>
+                {actionLoading ? <ActivityIndicator color="#FFF" /> : <Text style={styles.submitBtnText}>✨ 팀 창단 완료</Text>}
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* 팀 가입 모달 */}
+      <Modal visible={joinModalVisible} animationType="fade" transparent={true}>
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            {selectedJoinTeam && (
+              <>
+                <Text style={styles.modalTitle}>🤝 '{selectedJoinTeam.team_name}' 가입</Text>
+                <Text style={styles.modalSub}>팀 비밀번호를 입력하면 즉시 가입됩니다.</Text>
+                
+                <View style={{ marginVertical: 10 }}>
+                  <Text style={styles.inputLabel}>팀 비밀번호</Text>
+                  <TextInput style={[styles.textInput, { marginBottom: 14, backgroundColor: '#F8FAFC' }]} placeholder="비밀번호 입력" value={joinPassword} onChangeText={setJoinPassword} secureTextEntry autoFocus />
+                  
+                  <TouchableOpacity style={styles.submitBtn} onPress={handleJoinWithPassword} disabled={actionLoading}>
+                    {actionLoading ? <ActivityIndicator color="#FFF" /> : <Text style={styles.submitBtnText}>🚀 비밀번호로 즉시 가입</Text>}
+                  </TouchableOpacity>
+                </View>
+
+                <View style={styles.dividerRow}>
+                  <View style={styles.dividerLine} />
+                  <Text style={styles.dividerText}>또는</Text>
+                  <View style={styles.dividerLine} />
+                </View>
+
+                <View style={styles.infoNoticeBox}>
+                  <Text style={styles.infoNoticeText}>비밀번호를 모르시나요? 기존 팀원들에게 가입 승인을 요청할 수 있습니다.</Text>
+                </View>
+
+                <TouchableOpacity style={styles.requestBtn} onPress={handleJoinRequest} disabled={actionLoading}>
+                  <Text style={styles.requestBtnText}>🙋‍♂️ 가입 승인 요청 보내기</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity style={styles.closeBtn} onPress={() => { setJoinModalVisible(false); setJoinPassword(''); }}>
+                  <Text style={styles.closeBtnText}>취소</Text>
+                </TouchableOpacity>
+              </>
+            )}
+          </View>
+        </View>
+      </Modal>
+
+      {/* 프로필 모달 */}
+      <UserProfileModal
+        visible={profileModalVisible}
+        userId={selectedUserIdForModal}
+        onClose={() => {
+          setProfileModalVisible(false);
+          setSelectedUserIdForModal(null);
+        }}
+      />
+
+      {/* 🛡️ 팀 전력 분석 리포트 모달 */}
+      <TeamReportModal
+        visible={teamReportModalVisible}
+        onClose={() => {
+          setTeamReportModalVisible(false);
+          setSelectedTeamForReport(null);
+        }}
+        analytics={selectedTeamAnalytics}
+      />
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: Colors.background,
-  },
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 20,
-    paddingVertical: 14,
-    backgroundColor: Colors.surface,
-    borderBottomWidth: 1,
-    borderBottomColor: Colors.border,
-  },
-  backBtn: {
-    width: 32,
-    height: 32,
-    justifyContent: 'center',
-  },
-  backText: {
-    fontSize: 32,
-    color: Colors.text,
-    lineHeight: 32,
-  },
-  headerTitle: {
-    fontSize: 18,
-    fontWeight: '700',
-    color: Colors.text,
-  },
-  addBtn: {
-    backgroundColor: '#EFF6FF',
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: '#BFDBFE',
-  },
-  addBtnText: {
-    color: '#1D4ED8',
-    fontWeight: '700',
-    fontSize: 14,
-  },
+  container: { flex: 1, backgroundColor: Colors.background },
+  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 12, backgroundColor: Colors.surface, borderBottomWidth: 1, borderBottomColor: Colors.border },
+  headerLeftGroup: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  backBtn: { width: 30, height: 30, justifyContent: 'center', alignItems: 'center' },
+  backText: { fontSize: 28, color: Colors.text, lineHeight: 28 },
+  headerTitle: { fontSize: 16, fontWeight: '800', color: Colors.text },
+  addBtn: { backgroundColor: '#EFF6FF', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8, borderWidth: 1, borderColor: '#BFDBFE' },
+  addBtnText: { color: '#1D4ED8', fontWeight: '800', fontSize: 12.5 },
 
-  regionTabWrapper: {
-    backgroundColor: Colors.surface,
-    borderBottomWidth: 1,
-    borderBottomColor: '#F1F5F9',
-    paddingVertical: 10,
-  },
-  regionTabScroll: {
-    paddingHorizontal: 20,
-    gap: 8,
-  },
-  regionTab: {
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    borderRadius: 20,
-    backgroundColor: '#F1F5F9',
-  },
-  regionTabActive: {
-    backgroundColor: Colors.primary,
-  },
-  regionTabText: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: '#64748B',
-  },
-  regionTabTextActive: {
-    color: '#FFFFFF',
-    fontWeight: '700',
-  },
+  regionTabWrapper: { backgroundColor: Colors.surface, borderBottomWidth: 1, borderBottomColor: '#F1F5F9', paddingVertical: 8 },
+  regionTabScroll: { paddingHorizontal: 16, gap: 6 },
+  regionTab: { paddingHorizontal: 13, paddingVertical: 6, borderRadius: 16, backgroundColor: '#F1F5F9' },
+  regionTabActive: { backgroundColor: Colors.primary },
+  regionTabText: { fontSize: 12.5, fontWeight: '600', color: '#64748B' },
+  regionTabTextActive: { color: '#FFFFFF', fontWeight: '700' },
 
-  sortWrapper: {
-    flexDirection: 'row',
-    paddingHorizontal: 20,
-    marginTop: 14,
-    gap: 8,
-  },
-  sortBtn: {
-    flex: 1,
-    paddingVertical: 10,
-    borderRadius: 12,
-    backgroundColor: '#F8FAFC',
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-    alignItems: 'center',
-  },
-  sortBtnActive: {
-    backgroundColor: '#EFF6FF',
-    borderColor: '#3B82F6',
-  },
-  sortBtnText: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: '#64748B',
-  },
-  sortBtnTextActive: {
-    color: '#1D4ED8',
-    fontWeight: '800',
-  },
+  sortWrapper: { flexDirection: 'row', paddingHorizontal: 16, marginTop: 10, gap: 6 },
+  sortBtn: { flex: 1, paddingVertical: 8, borderRadius: 10, backgroundColor: '#F8FAFC', borderWidth: 1, borderColor: '#E2E8F0', alignItems: 'center' },
+  sortBtnActive: { backgroundColor: '#EFF6FF', borderColor: '#3B82F6' },
+  sortBtnText: { fontSize: 12, fontWeight: '600', color: '#64748B' },
+  sortBtnTextActive: { color: '#1D4ED8', fontWeight: '800' },
 
-  content: {
-    padding: 20,
-    gap: 16,
-  },
-  infoBanner: {
-    flexDirection: 'row',
-    backgroundColor: '#F0F9FF',
-    padding: 16,
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: '#BAE6FD',
-    alignItems: 'center',
-    marginBottom: 4,
-  },
-  infoBannerIcon: {
-    fontSize: 24,
-    marginRight: 12,
-  },
-  infoBannerText: {
-    fontSize: 14,
-    color: '#0369A1',
-    lineHeight: 20,
-    flex: 1,
-  },
+  content: { padding: 14, gap: 10, paddingBottom: 80 },
+  infoBanner: { flexDirection: 'row', backgroundColor: '#F0F9FF', padding: 10, borderRadius: 10, borderWidth: 1, borderColor: '#BAE6FD', alignItems: 'center', marginBottom: 2 },
+  infoBannerIcon: { fontSize: 18, marginRight: 8 },
+  infoBannerText: { fontSize: 12, color: '#0369A1', lineHeight: 17, flex: 1 },
 
-  emptyContainer: {
-    alignItems: 'center',
-    paddingTop: 60,
-  },
-  emptyEmoji: {
-    fontSize: 48,
-    marginBottom: 16,
-  },
-  emptyText: {
-    fontSize: 16,
-    color: Colors.textMuted,
-  },
+  emptyContainer: { alignItems: 'center', paddingTop: 40 },
+  emptyEmoji: { fontSize: 36, marginBottom: 10 },
+  emptyText: { fontSize: 13, color: Colors.textMuted, fontWeight: '600' },
 
-  teamCard: {
-    backgroundColor: Colors.surface,
-    borderRadius: 16,
-    padding: 20,
-    borderWidth: 1,
-    borderColor: Colors.border,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.04,
-    shadowRadius: 6,
-    elevation: 2,
-  },
-  teamCardOfficial: {
-    borderColor: '#93C5FD',
-    backgroundColor: '#FAFAFA',
-    borderWidth: 1.5,
-  },
-  teamHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
-    marginBottom: 16,
-  },
-  teamNameRow: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    flexWrap: 'wrap',
-    gap: 6,
-  },
-  teamName: {
-    fontSize: 18,
-    fontWeight: '800',
-    color: Colors.primary,
-  },
-
-  typeBadge: {
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 6,
-    borderWidth: 1,
-  },
-  schoolTypeBadge: {
-    backgroundColor: '#F0FDF4',
-    borderColor: '#BBF7D0',
-  },
-  schoolTypeBadgeText: {
-    color: '#166534',
-    fontSize: 11,
-    fontWeight: '800',
-  },
-  clubTypeBadge: {
-    backgroundColor: '#FEFCE8',
-    borderColor: '#FDE047',
-  },
-  clubTypeBadgeText: {
-    color: '#A16207',
-    fontSize: 11,
-    fontWeight: '800',
-  },
-
-  regionTag: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: '#64748B',
-  },
-  blueRibbon: {
-    backgroundColor: '#EFF6FF',
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 6,
-    borderWidth: 1,
-    borderColor: '#BFDBFE',
-  },
-  blueRibbonText: {
-    fontSize: 11,
-    fontWeight: '800',
-    color: '#1D4ED8',
-  },
-  countBadge: {
-    backgroundColor: '#F1F5F9',
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 20,
-    marginLeft: 10,
-  },
-  countText: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: '#475569',
-  },
-
-  membersArea: {
-    backgroundColor: '#F8FAFC',
-    borderRadius: 12,
-    padding: 14,
-  },
-  membersLabel: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: '#64748B',
-    marginBottom: 10,
-  },
-  membersList: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-  },
-  memberTag: {
-    backgroundColor: '#FFFFFF',
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 8,
-  },
-  memberTagText: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: Colors.text,
-  },
+  teamCard: { borderRadius: 14, padding: 12, elevation: 1, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.04, shadowRadius: 6 },
+  teamCardOfficial: { backgroundColor: '#F0F9FF', borderColor: '#93C5FD', borderWidth: 1.5 },
+  teamCardUnofficial: { backgroundColor: '#FFFFFF', borderColor: '#E2E8F0', borderWidth: 1 },
+  teamCardSelected: { backgroundColor: '#E0F2FE', borderColor: '#2563EB', borderWidth: 2 },
   
-  // 🔥 전체보기 / 닫기 버튼 스타일
-  extraMemberTag: {
-    backgroundColor: '#EFF6FF',
-    borderColor: '#BFDBFE',
-  },
-  extraMemberTagText: {
-    fontSize: 13,
-    fontWeight: '800',
-    color: '#1D4ED8',
-  },
-  collapseTag: {
-    backgroundColor: '#F1F5F9',
-    borderColor: '#CBD5E1',
-  },
-  collapseTagText: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: '#64748B',
-  },
+  checkboxTouch: { paddingRight: 6, paddingTop: 1 },
+  customCheckbox: { width: 18, height: 18, borderRadius: 9, borderWidth: 1.5, borderColor: '#94A3B8', backgroundColor: '#FFFFFF', justifyContent: 'center', alignItems: 'center' },
+  customCheckboxChecked: { backgroundColor: '#2563EB', borderColor: '#1D4ED8' },
+  checkmarkText: { color: '#FFFFFF', fontSize: 11, fontWeight: '900', lineHeight: 12 },
 
-  needMoreText: {
-    fontSize: 12,
-    color: '#10B981',
-    fontWeight: '700',
-    marginTop: 12,
-    textAlign: 'right',
-  },
+  cardMainHeaderTopRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  teamName: { fontSize: 15.5, fontWeight: '800', color: '#0F172A', flex: 1, marginRight: 6 },
+
+  cardHeaderSubRow: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 5, marginTop: 6 },
+  regionTagChip: { backgroundColor: '#F0F9FF', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4, borderWidth: 1, borderColor: '#BAE6FD' },
+  regionTagChipText: { fontSize: 10.5, fontWeight: '800', color: '#0369A1' },
+
+  typeBadge: { paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4, borderWidth: 1 },
+  typeBadgeText: { fontSize: 10, fontWeight: '800' },
+  schoolTypeBadge: { backgroundColor: '#F0FDF4', borderColor: '#BBF7D0' },
+  schoolTypeBadgeText: { color: '#166534' },
+  clubTypeBadge: { backgroundColor: '#FEFCE8', borderColor: '#FDE047' },
+  clubTypeBadgeText: { color: '#B45309' },
+  
+  officialBadge: { backgroundColor: '#EFF6FF', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4, borderWidth: 1, borderColor: '#3B82F6' },
+  officialBadgeText: { fontSize: 10, fontWeight: '800', color: '#1D4ED8' },
+
+  youtubeMiniBtn: { backgroundColor: '#FEF2F2', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4, borderWidth: 1, borderColor: '#FECACA' },
+  youtubeMiniBtnText: { fontSize: 10, fontWeight: '800', color: '#DC2626' },
+
+  rightBadgeContainer: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  countBadge: { backgroundColor: '#F1F5F9', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 12 },
+  countText: { fontSize: 11, fontWeight: '700', color: '#475569' },
+  mannerTempBadge: { backgroundColor: '#FFFBEB', borderWidth: 1, borderColor: '#FDE68A', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 6 },
+  mannerTempBadgeText: { fontSize: 10.5, fontWeight: '800', color: '#D97706' },
+
+  membersArea: { marginTop: 10, paddingTop: 6, borderTopWidth: 1, borderTopColor: '#E2E8F0' },
+  membersAreaHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 5 },
+  membersLabel: { fontSize: 11, fontWeight: '700', color: '#64748B' },
+  needMoreText: { fontSize: 10.5, color: '#10B981', fontWeight: '700' },
+  membersList: { flexDirection: 'row', flexWrap: 'wrap', gap: 5 },
+  memberTag: { backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#E2E8F0', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6 },
+  memberTagLeader: { backgroundColor: '#FAF5FF', borderColor: '#D8B4FE' },
+  memberTagText: { fontSize: 11, fontWeight: '600', color: '#334155' },
+  memberTagTextLeader: { color: '#6B21A8', fontWeight: '800' },
+  moreChip: { backgroundColor: '#EFF6FF', borderWidth: 1, borderColor: '#BFDBFE', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6 },
+  moreChipText: { fontSize: 10.5, fontWeight: '800', color: '#1D4ED8' },
+
+  actionFooter: { marginTop: 8 },
+  joinBtn: { backgroundColor: '#2563EB', paddingVertical: 9, borderRadius: 8, alignItems: 'center' },
+  joinBtnText: { color: '#FFF', fontSize: 12, fontWeight: '800' },
+  badgeSuccess: { backgroundColor: '#F0FDF4', paddingVertical: 7, borderRadius: 8, alignItems: 'center', borderWidth: 1, borderColor: '#BBF7D0' },
+  badgeSuccessText: { color: '#166534', fontSize: 11.5, fontWeight: '800' },
+  badgePending: { backgroundColor: '#FEFCE8', paddingVertical: 7, borderRadius: 8, alignItems: 'center', borderWidth: 1, borderColor: '#FEF08A' },
+  badgePendingText: { color: '#A16207', fontSize: 11.5, fontWeight: '800' },
+
+  multiProposalBar: { position: 'absolute', bottom: 65, left: 16, right: 16, backgroundColor: '#0F172A', borderRadius: 14, padding: 12, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', elevation: 6 },
+  multiProposalCount: { color: '#FFFFFF', fontSize: 13, fontWeight: '800' },
+  multiProposalBtn: { backgroundColor: '#2563EB', paddingHorizontal: 14, paddingVertical: 8, borderRadius: 8 },
+  multiProposalBtnText: { color: '#FFFFFF', fontSize: 12, fontWeight: '800' },
+
+  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center', padding: 20 },
+  modalContent: { backgroundColor: Colors.surface, borderRadius: 18, padding: 18, width: '100%', elevation: 5 },
+  modalTitle: { fontSize: 16, fontWeight: '800', color: Colors.text, marginBottom: 2 },
+  modalSub: { fontSize: 12, color: Colors.textMuted, marginBottom: 10 },
+  inputLabel: { fontSize: 12, fontWeight: '700', color: '#475569', marginBottom: 4, marginTop: 8 },
+  textInput: { borderWidth: 1, borderColor: '#CBD5E1', borderRadius: 8, padding: 10, fontSize: 13 },
+
+  dropdownBox: { position: 'absolute', top: 46, left: 0, right: 0, backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#BFDBFE', borderRadius: 8, zIndex: 9999 },
+  dropdownHeader: { backgroundColor: '#EFF6FF', paddingHorizontal: 10, paddingVertical: 4, borderTopLeftRadius: 7, borderTopRightRadius: 7 },
+  dropdownHeaderText: { fontSize: 10, fontWeight: '800', color: '#1D4ED8' },
+  dropdownItem: { paddingVertical: 10, paddingHorizontal: 10, borderBottomWidth: 1, borderBottomColor: '#F1F5F9' },
+  dropdownItemText: { fontSize: 12, fontWeight: '700', color: '#1E40AF' },
+
+  chipBtn: { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 16, backgroundColor: '#F1F5F9', borderWidth: 1, borderColor: 'transparent', alignItems: 'center' },
+  chipBtnActive: { backgroundColor: '#EFF6FF', borderColor: '#3B82F6' },
+  chipBtnText: { fontSize: 12, fontWeight: '600', color: '#64748B' },
+  chipBtnTextActive: { color: '#1D4ED8', fontWeight: '800' },
+
+  submitBtn: { backgroundColor: '#2563EB', borderRadius: 10, paddingVertical: 12, alignItems: 'center' },
+  submitBtnText: { color: '#FFFFFF', fontSize: 13, fontWeight: '800' },
+  closeBtn: { backgroundColor: '#F1F5F9', borderRadius: 10, paddingVertical: 12, alignItems: 'center', marginTop: 8 },
+  closeBtnText: { color: Colors.text, fontSize: 13, fontWeight: '700' },
+
+  dividerRow: { flexDirection: 'row', alignItems: 'center', marginVertical: 14 },
+  dividerLine: { flex: 1, height: 1, backgroundColor: '#E2E8F0' },
+  dividerText: { marginHorizontal: 10, fontSize: 11, color: '#94A3B8', fontWeight: '600' },
+
+  infoNoticeBox: { backgroundColor: '#F8FAFC', padding: 10, borderRadius: 8, marginBottom: 10 },
+  infoNoticeText: { fontSize: 11, color: '#64748B', lineHeight: 16 },
+  
+  requestBtn: { backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#94A3B8', borderRadius: 10, paddingVertical: 12, alignItems: 'center' },
+  requestBtnText: { color: '#475569', fontSize: 13, fontWeight: '800' },
 });

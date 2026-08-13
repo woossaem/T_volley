@@ -7,16 +7,18 @@ import {
   StyleSheet,
   Alert,
   ActivityIndicator,
-  SafeAreaView,
   KeyboardAvoidingView,
   Platform,
   ScrollView,
+  Switch,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
 import { Colors } from '../constants/Colors';
+import StickyAdBanner from '../components/StickyAdBanner';
 
 const MATCH_FORMATS = ['3세트 매치', '5세트 매치', '2시간 교류전', '기타'];
 
@@ -47,7 +49,11 @@ export default function CreateMatchScreen() {
   const [description, setDescription] = useState('');
   const [contactInfo, setContactInfo] = useState('');
 
-  // 🔥 최근에 작성했던 경기 모집글 데이터 저장
+  // 용병 모집 기능 State
+  const [needMercenary, setNeedMercenary] = useState(false);
+  const [mercenaryDetails, setMercenaryDetails] = useState('');
+
+  // 최근에 작성했던 경기 모집글 데이터 저장
   const [lastMatch, setLastMatch] = useState<any>(null);
 
   const userId = session?.user?.id;
@@ -81,10 +87,9 @@ export default function CreateMatchScreen() {
         setSelectedTeam(teamsList[0]);
       }
 
-      // 🔥 내가 주최했던 가장 최근 모집글 불러오기
       const { data: last } = await supabase
         .from('matches')
-        .select('location, contact_info, description, format')
+        .select('location, contact_info, description, format, need_mercenary, mercenary_details')
         .eq('host_user_id', userId)
         .order('created_at', { ascending: false })
         .limit(1)
@@ -104,14 +109,15 @@ export default function CreateMatchScreen() {
     }
   }, [selectedTeam]);
 
-  // 🔥 최근 작성 내역 1초만에 자동입력 함수
   const applyLastMatchInfo = () => {
     if (!lastMatch) return;
     if (lastMatch.location) setLocation(lastMatch.location);
     if (lastMatch.contact_info) setContactInfo(lastMatch.contact_info);
     if (lastMatch.description) setDescription(lastMatch.description);
     if (lastMatch.format) setFormat(lastMatch.format);
-    Alert.alert('자동 입력 완료 ✨', '최근에 입력했던 장소, 연락처, 안내글이 채워졌습니다.');
+    if (lastMatch.need_mercenary !== undefined) setNeedMercenary(lastMatch.need_mercenary);
+    if (lastMatch.mercenary_details) setMercenaryDetails(lastMatch.mercenary_details);
+    Alert.alert('자동 입력 완료 ✨', '최근에 입력했던 장소, 연락처, 안내글, 용병조건이 채워졌습니다.');
   };
 
   const onChangeDate = (event: any, selectedDate?: Date) => {
@@ -170,6 +176,9 @@ export default function CreateMatchScreen() {
     if (!contactInfo.trim()) {
       return Alert.alert('알림', '매칭 성사 후 연락할 수 있는 연락망을 입력해 주세요.');
     }
+    if (needMercenary && !mercenaryDetails.trim()) {
+      return Alert.alert('알림', '용병 모집 조건(필요 포지션, 인원 등)을 작성해 주세요.');
+    }
 
     if (!userId) return;
 
@@ -186,15 +195,18 @@ export default function CreateMatchScreen() {
         description: description.trim(),
         contact_info: contactInfo.trim(),
         status: 'open',
+        need_mercenary: needMercenary,
+        mercenary_details: needMercenary ? mercenaryDetails.trim() : null,
       });
 
       if (error) throw error;
 
-      await sendTeamNotification(
-        selectedTeam.name,
-        '🏐 [팀 모집 알림] 신규 경기 등록',
-        `'${selectedTeam.name}' 팀의 새로운 경기 모집글이 등록되었습니다. (${formattedDate} ${formattedTime})`
-      );
+      const notiTitle = needMercenary ? '🛡️ [팀/용병 모집 알림] 신규 경기 등록' : '🛡️ [팀 모집 알림] 신규 경기 등록';
+      const notiBody = needMercenary
+        ? `'${selectedTeam.name}' 팀의 신규 경기 및 용병 모집글이 등록되었습니다. (${formattedDate} ${formattedTime})`
+        : `'${selectedTeam.name}' 팀의 새로운 경기 모집글이 등록되었습니다. (${formattedDate} ${formattedTime})`;
+
+      await sendTeamNotification(selectedTeam.name, notiTitle, notiBody);
 
       Alert.alert('등록 완료! 🏐', '경기 모집글이 등록되었으며, 팀원들에게 알림이 발송되었습니다.', [
         { text: '확인', onPress: () => router.replace('/matches') },
@@ -208,17 +220,17 @@ export default function CreateMatchScreen() {
 
   if (fetchingProfile) {
     return (
-      <SafeAreaView style={[styles.container, { justifyContent: 'center' }]}>
+      <SafeAreaView style={[styles.container, { justifyContent: 'center' }]} edges={['top', 'left', 'right']}>
         <ActivityIndicator size="large" color={Colors.primary} />
       </SafeAreaView>
     );
   }
 
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
       <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.inner}>
         <View style={styles.header}>
-          <TouchableOpacity style={styles.backBtn} onPress={() => router.back()}>
+          <TouchableOpacity style={styles.backBtn} onPress={() => router.back()} hitSlop={10}>
             <Text style={styles.backText}>‹</Text>
           </TouchableOpacity>
           <Text style={styles.headerTitle}>경기 매치 등록</Text>
@@ -226,17 +238,16 @@ export default function CreateMatchScreen() {
         </View>
 
         <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
-          {/* 🔥 최근 장소/연락처 자동입력 칩 */}
           {lastMatch && (
-            <TouchableOpacity style={styles.quickFillChip} onPress={applyLastMatchInfo}>
-              <Text style={styles.quickFillText}>✨ 최근에 썼던 장소/연락처 1초만에 자동 채우기</Text>
+            <TouchableOpacity style={styles.quickFillChip} onPress={applyLastMatchInfo} activeOpacity={0.8}>
+              <Text style={styles.quickFillText}>✨ 최근 입력했던 장소/연락처/조건 자동 채우기</Text>
             </TouchableOpacity>
           )}
 
           <View style={styles.formGroup}>
             <Text style={styles.label}>어느 팀 소속으로 모집하시나요?</Text>
             {myTeams.length > 1 ? (
-              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8 }}>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 6 }}>
                 {myTeams.map((team) => (
                   <TouchableOpacity
                     key={team.id}
@@ -244,7 +255,7 @@ export default function CreateMatchScreen() {
                     onPress={() => setSelectedTeam(team)}
                   >
                     <Text style={[styles.teamChipText, selectedTeam?.id === team.id && styles.teamChipTextActive]}>
-                      🏐 {team.name}
+                      🛡️ {team.name}
                     </Text>
                   </TouchableOpacity>
                 ))}
@@ -252,30 +263,30 @@ export default function CreateMatchScreen() {
             ) : (
               <View style={styles.hostInfo}>
                 <Text style={styles.hostInfoText}>초청 팀 ({selectedTeam?.region})</Text>
-                <Text style={styles.hostTeamName}>🏐 {selectedTeam?.name}</Text>
+                <Text style={styles.hostTeamName}>🛡️ {selectedTeam?.name}</Text>
               </View>
             )}
           </View>
 
-          {/* Native 날짜 선택 */}
-          <View style={styles.formGroup}>
-            <Text style={styles.label}>날짜 선택</Text>
-            <TouchableOpacity style={styles.datePickerBtn} onPress={() => setShowDatePicker(true)}>
-              <Text style={styles.datePickerText}>📅 {formattedDate}</Text>
-            </TouchableOpacity>
-            {showDatePicker && <DateTimePicker value={date} mode="date" display="default" onChange={onChangeDate} />}
+          <View style={styles.rowFormGroup}>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.label}>날짜 선택</Text>
+              <TouchableOpacity style={styles.compactPickerBtn} onPress={() => setShowDatePicker(true)}>
+                <Text style={styles.compactPickerText}>📅 {formattedDate}</Text>
+              </TouchableOpacity>
+            </View>
+
+            <View style={{ flex: 1 }}>
+              <Text style={styles.label}>시간 선택</Text>
+              <TouchableOpacity style={styles.compactPickerBtn} onPress={() => setShowTimePicker(true)}>
+                <Text style={styles.compactPickerText}>⏰ {formattedTime}</Text>
+              </TouchableOpacity>
+            </View>
           </View>
 
-          {/* Native 시간 선택 */}
-          <View style={styles.formGroup}>
-            <Text style={styles.label}>시간 선택</Text>
-            <TouchableOpacity style={styles.datePickerBtn} onPress={() => setShowTimePicker(true)}>
-              <Text style={styles.datePickerText}>⏰ {formattedTime}</Text>
-            </TouchableOpacity>
-            {showTimePicker && <DateTimePicker value={date} mode="time" display="default" onChange={onChangeTime} />}
-          </View>
+          {showDatePicker && <DateTimePicker value={date} mode="date" display="default" onChange={onChangeDate} />}
+          {showTimePicker && <DateTimePicker value={date} mode="time" display="default" onChange={onChangeTime} />}
 
-          {/* 체육관 장소 */}
           <View style={styles.formGroup}>
             <View style={styles.labelRow}>
               <Text style={styles.label}>장소 (체육관)</Text>
@@ -294,7 +305,6 @@ export default function CreateMatchScreen() {
             />
           </View>
 
-          {/* 경기 방식 */}
           <View style={styles.formGroup}>
             <Text style={styles.label}>경기 방식</Text>
             <View style={styles.formatChips}>
@@ -310,7 +320,34 @@ export default function CreateMatchScreen() {
             </View>
           </View>
 
-          {/* 남길 말 */}
+          <View style={[styles.formGroup, styles.mercenaryBox]}>
+            <View style={styles.switchRow}>
+              <View style={{ flex: 1, paddingRight: 8 }}>
+                <Text style={styles.mercenaryTitle}>🙋‍♂️ 개인 용병(게스트)도 함께 구하나요?</Text>
+                <Text style={styles.mercenarySub}>인원이 부족할 때 개인 참가자(용병)를 함께 모집합니다.</Text>
+              </View>
+              <Switch
+                value={needMercenary}
+                onValueChange={setNeedMercenary}
+                trackColor={{ false: '#CBD5E1', true: '#93C5FD' }}
+                thumbColor={needMercenary ? '#2563EB' : '#F1F5F9'}
+              />
+            </View>
+
+            {needMercenary && (
+              <View style={{ marginTop: 8 }}>
+                <Text style={styles.subInputLabel}>모집 조건 및 상세 내용</Text>
+                <TextInput
+                  style={[styles.input, { backgroundColor: '#FFFFFF' }]}
+                  placeholder="예: 센터 1명, 레프트 1명 모집 (회비 5,000원)"
+                  placeholderTextColor="#94A3B8"
+                  value={mercenaryDetails}
+                  onChangeText={setMercenaryDetails}
+                />
+              </View>
+            )}
+          </View>
+
           <View style={styles.formGroup}>
             <Text style={styles.label}>남기고 싶은 말 (선택)</Text>
             <TextInput
@@ -324,10 +361,9 @@ export default function CreateMatchScreen() {
             />
           </View>
 
-          {/* 연락처 */}
           <View style={styles.formGroup}>
             <Text style={styles.label}>대표자 연락처 또는 오픈채팅</Text>
-            <Text style={styles.subLabel}>※ 매칭이 성사된 상대팀에게만 안전하게 공개됩니다.</Text>
+            <Text style={styles.subLabel}>※ 매칭 성사된 상대에게 안전하게 공개됩니다.</Text>
             <TextInput
               style={styles.input}
               placeholder="예: 010-1234-5678 또는 카카오톡 오픈채팅 링크"
@@ -337,11 +373,13 @@ export default function CreateMatchScreen() {
             />
           </View>
 
-          <TouchableOpacity style={[styles.submitBtn, loading && styles.btnDisabled]} onPress={handleCreateMatch} disabled={loading}>
+          <TouchableOpacity style={[styles.submitBtn, loading && styles.btnDisabled]} onPress={handleCreateMatch} disabled={loading} activeOpacity={0.85}>
             {loading ? <ActivityIndicator color="#FFFFFF" /> : <Text style={styles.submitBtnText}>모집글 등록하기</Text>}
           </TouchableOpacity>
         </ScrollView>
       </KeyboardAvoidingView>
+
+      <StickyAdBanner />
     </SafeAreaView>
   );
 }
@@ -349,36 +387,54 @@ export default function CreateMatchScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: Colors.background },
   inner: { flex: 1 },
-  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 20, paddingVertical: 14, backgroundColor: Colors.surface, borderBottomWidth: 1, borderBottomColor: Colors.border },
+  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 12, backgroundColor: Colors.surface, borderBottomWidth: 1, borderBottomColor: Colors.border },
   backBtn: { width: 32, height: 32, justifyContent: 'center' },
-  backText: { fontSize: 32, color: Colors.text, lineHeight: 32 },
-  headerTitle: { fontSize: 18, fontWeight: '700', color: Colors.text },
-  scrollContent: { padding: 24, paddingBottom: 40 },
-  quickFillChip: { backgroundColor: '#FEF3C7', borderWidth: 1, borderColor: '#FDE68A', borderRadius: 12, padding: 12, alignItems: 'center', marginBottom: 16 },
-  quickFillText: { color: '#B45309', fontWeight: '800', fontSize: 13 },
-  hostInfo: { backgroundColor: '#F0F9FF', padding: 16, borderRadius: 12, borderWidth: 1, borderColor: '#BAE6FD' },
-  hostInfoText: { fontSize: 13, color: '#0369A1', fontWeight: '600', marginBottom: 4 },
-  hostTeamName: { fontSize: 18, fontWeight: '800', color: '#0284C7' },
-  teamChip: { paddingHorizontal: 16, paddingVertical: 12, borderRadius: 12, backgroundColor: '#F1F5F9', borderWidth: 1, borderColor: 'transparent' },
+  backText: { fontSize: 28, color: Colors.text, lineHeight: 28 },
+  headerTitle: { fontSize: 16, fontWeight: '800', color: Colors.text },
+
+  scrollContent: { padding: 14, paddingBottom: 30 },
+  quickFillChip: { backgroundColor: '#FEF3C7', borderWidth: 1, borderColor: '#FDE68A', borderRadius: 10, padding: 10, alignItems: 'center', marginBottom: 12 },
+  quickFillText: { color: '#B45309', fontWeight: '800', fontSize: 12 },
+  
+  hostInfo: { backgroundColor: '#F0F9FF', padding: 12, borderRadius: 10, borderWidth: 1, borderColor: '#BAE6FD' },
+  hostInfoText: { fontSize: 11, color: '#0369A1', fontWeight: '600', marginBottom: 2 },
+  hostTeamName: { fontSize: 16, fontWeight: '800', color: '#0284C7' },
+
+  teamChip: { paddingHorizontal: 12, paddingVertical: 8, borderRadius: 10, backgroundColor: '#F1F5F9', borderWidth: 1, borderColor: 'transparent' },
   teamChipActive: { backgroundColor: '#EFF6FF', borderColor: '#3B82F6' },
-  teamChipText: { fontSize: 15, fontWeight: '600', color: '#64748B' },
+  teamChipText: { fontSize: 13, fontWeight: '600', color: '#64748B' },
   teamChipTextActive: { color: '#1D4ED8', fontWeight: '800' },
-  formGroup: { marginBottom: 22 },
-  labelRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 },
-  quickInputBtn: { backgroundColor: '#EFF6FF', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 8, borderWidth: 1, borderColor: '#BFDBFE' },
-  quickInputText: { fontSize: 12, color: '#1D4ED8', fontWeight: '700' },
-  label: { fontSize: 15, fontWeight: '700', color: Colors.text, marginBottom: 8 },
-  subLabel: { fontSize: 12, color: '#059669', fontWeight: '600', marginBottom: 8 },
-  input: { backgroundColor: Colors.surface, borderWidth: 1, borderColor: Colors.border, borderRadius: 12, paddingHorizontal: 16, paddingVertical: 14, fontSize: 16, color: Colors.text },
-  datePickerBtn: { backgroundColor: Colors.surface, borderWidth: 1, borderColor: Colors.border, borderRadius: 12, paddingHorizontal: 16, paddingVertical: 16 },
-  datePickerText: { fontSize: 16, color: Colors.primary, fontWeight: '600' },
-  textArea: { height: 100, paddingTop: 14 },
-  formatChips: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
-  chip: { paddingHorizontal: 16, paddingVertical: 10, borderRadius: 20, backgroundColor: '#F1F5F9', borderWidth: 1, borderColor: 'transparent' },
+
+  formGroup: { marginBottom: 12 },
+  rowFormGroup: { flexDirection: 'row', gap: 10, marginBottom: 12 },
+
+  labelRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 },
+  quickInputBtn: { backgroundColor: '#EFF6FF', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6, borderWidth: 1, borderColor: '#BFDBFE' },
+  quickInputText: { fontSize: 11, color: '#1D4ED8', fontWeight: '700' },
+
+  label: { fontSize: 12, fontWeight: '800', color: '#475569', marginBottom: 4 },
+  subLabel: { fontSize: 10, color: '#059669', fontWeight: '600', marginBottom: 4 },
+
+  input: { backgroundColor: Colors.surface, borderWidth: 1, borderColor: Colors.border, borderRadius: 10, paddingHorizontal: 12, paddingVertical: 10, fontSize: 13, color: Colors.text },
+
+  compactPickerBtn: { backgroundColor: Colors.surface, borderWidth: 1, borderColor: Colors.border, borderRadius: 10, paddingHorizontal: 12, paddingVertical: 11, alignItems: 'center' },
+  compactPickerText: { fontSize: 13, color: Colors.primary, fontWeight: '700' },
+
+  textArea: { height: 68, paddingTop: 10 },
+
+  formatChips: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
+  chip: { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 14, backgroundColor: '#F1F5F9', borderWidth: 1, borderColor: 'transparent' },
   chipActive: { backgroundColor: '#EFF6FF', borderColor: '#3B82F6' },
-  chipText: { fontSize: 14, color: '#64748B', fontWeight: '600' },
-  chipTextActive: { color: '#2563EB', fontWeight: '700' },
-  submitBtn: { backgroundColor: Colors.primary, borderRadius: 14, paddingVertical: 18, alignItems: 'center', marginTop: 10, shadowColor: Colors.primary, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.2, shadowRadius: 8, elevation: 4 },
+  chipText: { fontSize: 12, color: '#64748B', fontWeight: '600' },
+  chipTextActive: { color: '#2563EB', fontWeight: '800' },
+
+  mercenaryBox: { backgroundColor: '#EFF6FF', padding: 12, borderRadius: 12, borderWidth: 1, borderColor: '#BFDBFE' },
+  switchRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  mercenaryTitle: { fontSize: 12, fontWeight: '800', color: '#1D4ED8' },
+  mercenarySub: { fontSize: 10, color: '#3B82F6', marginTop: 1, fontWeight: '600' },
+  subInputLabel: { fontSize: 11, fontWeight: '700', color: '#1E40AF', marginBottom: 4 },
+
+  submitBtn: { backgroundColor: Colors.primary, borderRadius: 12, paddingVertical: 14, alignItems: 'center', marginTop: 8, elevation: 2 },
   btnDisabled: { opacity: 0.7 },
-  submitBtnText: { color: '#FFFFFF', fontSize: 17, fontWeight: '700' },
+  submitBtnText: { color: '#FFFFFF', fontSize: 15, fontWeight: '800' },
 });

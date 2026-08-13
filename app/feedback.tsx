@@ -33,7 +33,6 @@ export default function FeedbackScreen() {
 
     setSubmitting(true);
     try {
-      // Supabase notifications 또는 전용 feedback 테이블로 보관
       const { error } = await supabase.from('notifications').insert({
         user_id: userId || 'anonymous',
         title: `[${category === 'bug' ? '오류제보' : category === 'feature' ? '기능제안' : '기타문의'}]`,
@@ -141,7 +140,7 @@ const styles = StyleSheet.create({
   header: {
     flexDirection: 'row',
     alignItems: 'center',
-    justify: 'space-between',
+    justifyContent: 'space-between',
     paddingHorizontal: 20,
     paddingVertical: 14,
     backgroundColor: Colors.surface,

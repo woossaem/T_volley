@@ -8,26 +8,31 @@ WebBrowser.maybeCompleteAuthSession();
 
 type AuthContextType = {
   session: Session | null;
+  loading: boolean;
   signInWithGoogle: () => Promise<void>;
   signOut: () => Promise<void>;
 };
 
 const AuthContext = createContext<AuthContextType>({
   session: null,
+  loading: true,
   signInWithGoogle: async () => {},
   signOut: async () => {},
 });
 
 export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   const [session, setSession] = useState<Session | null>(null);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session);
+      setLoading(false);
     });
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
       setSession(session);
+      setLoading(false);
     });
 
     return () => subscription.unsubscribe();
@@ -35,7 +40,6 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
 
   const signInWithGoogle = async () => {
     try {
-      // Expo Go 전용 리디렉션 주소 생성
       const redirectUrl = Linking.createURL('/login');
 
       const { data, error } = await supabase.auth.signInWithOAuth({
@@ -52,7 +56,6 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
         const result = await WebBrowser.openAuthSessionAsync(data.url, redirectUrl);
 
         if (result.type === 'success' && result.url) {
-          // 정규식을 사용한 안전한 토큰 추출 (Hermes 파싱 에러 방지)
           const extractParam = (url: string, param: string) => {
             const regex = new RegExp(`[#?&]${param}=([^&]*)`);
             const match = url.match(regex);
@@ -82,7 +85,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   };
 
   return (
-    <AuthContext.Provider value={{ session, signInWithGoogle, signOut }}>
+    <AuthContext.Provider value={{ session, loading, signInWithGoogle, signOut }}>
       {children}
     </AuthContext.Provider>
   );

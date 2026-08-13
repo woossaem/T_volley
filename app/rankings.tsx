@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useMemo } from 'react';
 import {
   View,
   Text,
@@ -6,13 +6,21 @@ import {
   TouchableOpacity,
   ActivityIndicator,
   ScrollView,
-  SafeAreaView,
   RefreshControl,
   Modal,
+  Image,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
+import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
 import { Colors } from '../constants/Colors';
+import UserProfileModal from '../components/UserProfileModal';
+import TeamReportModal from '../components/TeamReportModal';
+import StickyAdBanner from '../components/StickyAdBanner';
+import BadgeCollectionModal from '../components/BadgeCollectionModal';
+import { getCurrentSeasonInfo, getSeasonOptions } from '../lib/season';
+import { getAllBadgesWithStatus } from '../lib/badgeUtils';
 
 interface TeamRankingData {
   team_name: string;
@@ -27,6 +35,9 @@ interface TeamRankingData {
   isQualified: boolean;
   region: string;
   type: string;
+  careerWins: number;
+  mannerTemp: number;
+  created_at?: string;
 }
 
 interface PersonalRankingData {
@@ -34,68 +45,147 @@ interface PersonalRankingData {
   fullName: string;
   isPublic: boolean;
   schoolName: string;
+  region: string;
+  gender: string;
+  avatarIcon: string;
+  avatarUrl?: string;
   totalMatches: number;
   wins: number;
   losses: number;
   draws: number;
   winRate: number;
+  mannerTemp: number;
 }
 
-const PERIOD_OPTIONS = [
-  { id: '2026_1', label: '📅 2026 상반기 시즌' },
-  { id: '2025_2', label: '📅 2025 하반기 시즌' },
-  { id: '2025_1', label: '📅 2025 상반기 시즌' },
-  { id: 'hall_of_fame', label: '🏛️ 명예의 전당 (역대 통산)' },
-];
+const getMatchSeasonCode = (dateStr: string) => {
+  if (!dateStr) return '';
+  const numbers = dateStr.match(/\d+/g);
+  if (!numbers || numbers.length < 2) return '';
+  const year = parseInt(numbers[0], 10) || 0;
+  const month = parseInt(numbers[1], 10) || 0;
+  if (!year || !month) return '';
+
+  const seasonYear = month === 1 ? year - 1 : year;
+  const half = (month >= 2 && month <= 7) ? 1 : 2;
+  return `${seasonYear}_${half}`;
+};
 
 export default function RankingScreen() {
   const router = useRouter();
+  const { session } = useAuth();
+  const currentUserId = session?.user?.id;
+
+  const currentSeason = getCurrentSeasonInfo();
+  const periodOptions = useMemo(() => getSeasonOptions(), []);
+
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
   const [rankTab, setRankTab] = useState<'team' | 'personal'>('team');
-  const [selectedPeriod, setSelectedPeriod] = useState('2026_1');
+  const [selectedPeriod, setSelectedPeriod] = useState<string>(currentSeason.periodCode);
   const [selectedRegion, setSelectedRegion] = useState('전체');
 
-  // 🔥 유저 편의성 정렬 기준 State (기본값: 승점순)
-  const [sortCriterion, setSortCriterion] = useState<'points' | 'wins' | 'winRate'>('points');
+  const [genderFilter, setGenderFilter] = useState<'전체' | '남성' | '여성'>('전체');
 
-  // 시즌 선택 팝업 모달 State
+  const [userPrioritizedRegions, setUserPrioritizedRegions] = useState<string[]>([]);
+  const [dbActiveRegions, setDbActiveRegions] = useState<string[]>([]);
+
+  const [selectedUserIdForModal, setSelectedUserIdForModal] = useState<string | null>(null);
+  const [profileModalVisible, setProfileModalVisible] = useState(false);
+
+  const [selectedTeamForModal, setSelectedTeamForModal] = useState<string | null>(null);
+  const [teamReportModalVisible, setTeamReportModalVisible] = useState(false);
+
+  const [badgeModalVisible, setBadgeModalVisible] = useState(false); // 💡 칭호 도감 모달 State
+  const [selectedBadgeUserParams, setSelectedBadgeUserParams] = useState<any>(null);
+
+  const [sortCriterion, setSortCriterion] = useState<'points' | 'wins' | 'winRate'>('points');
   const [periodModalVisible, setPeriodModalVisible] = useState(false);
 
+  const [rawMatches, setRawMatches] = useState<any[]>([]);
   const [qualifiedTeamRanks, setQualifiedTeamRanks] = useState<TeamRankingData[]>([]);
   const [pendingTeamRanks, setPendingTeamRanks] = useState<TeamRankingData[]>([]);
   const [personalRanks, setPersonalRanks] = useState<PersonalRankingData[]>([]);
 
   useEffect(() => {
+    if (currentUserId) {
+      supabase.from('profiles').select('gender, region').eq('id', currentUserId).maybeSingle().then(({ data }) => {
+        if (data) {
+          if (data.gender) setGenderFilter(data.gender === '여성' ? '여성' : '남성');
+          if (data.region) {
+            const regs = data.region.split(',').map((r: string) => r.trim()).filter(Boolean);
+            if (regs.length > 0) {
+              setUserPrioritizedRegions(regs);
+              setSelectedRegion(regs[0]);
+            }
+          }
+        }
+      });
+    }
+  }, [currentUserId]);
+
+  const dynamicRegionTabs = useMemo(() => {
+    const tabs = ['전체', ...userPrioritizedRegions];
+    dbActiveRegions.forEach((r) => {
+      if (!tabs.includes(r)) tabs.push(r);
+    });
+    return tabs;
+  }, [userPrioritizedRegions, dbActiveRegions]);
+
+  useEffect(() => {
     fetchRankings();
-  }, [selectedRegion, selectedPeriod, sortCriterion, rankTab]);
+  }, [selectedRegion, selectedPeriod, sortCriterion, rankTab, genderFilter]);
 
   const fetchRankings = async () => {
     try {
       setLoading(true);
 
-      const { data: allTeams } = await supabase.from('teams').select('*');
+      const { data: allTeams } = await supabase.from('teams').select('*, manner_temp');
       const { data: allMatches } = await supabase.from('matches').select('*').eq('status', 'completed');
       const { data: allProfiles } = await supabase.from('profiles').select('*');
 
-      // 시즌별 날짜 스크리닝
-      const targetMatches = (allMatches || []).filter((m: any) => {
-        if (selectedPeriod === '2026_1') return m.match_date && m.match_date.includes('2026');
-        if (selectedPeriod === '2025_2') return m.match_date && m.match_date.includes('2025');
-        if (selectedPeriod === '2025_1') return m.match_date && m.match_date.includes('2025');
-        return true; // 명예의 전당 (통산)
-      });
+      if (allMatches) setRawMatches(allMatches);
 
-      // 1. 활성 팀원 수 집계 (블루리본 3명 판별)
-      const { data: tmData } = await supabase.from('team_members').select('teams(name)').eq('is_active', true);
-      const memberMap = new Map<string, number>();
+      const { data: tmData } = await supabase
+        .from('team_members')
+        .select('user_id, is_primary, teams(id, name, region, team_type)')
+        .eq('is_active', true);
+
+      const memberCountMap = new Map<string, number>();
+      const userSchoolRegionMap = new Map<string, string>();
+      const regionsSet = new Set<string>();
+
       tmData?.forEach((item: any) => {
-        const tName = item.teams?.name;
-        if (tName) memberMap.set(tName, (memberMap.get(tName) || 0) + 1);
+        const teamObj = Array.isArray(item.teams) ? item.teams[0] : item.teams;
+        const tName = teamObj?.name;
+        const uId = item.user_id;
+
+        if (teamObj?.region) regionsSet.add(teamObj.region);
+        if (tName) memberCountMap.set(tName, (memberCountMap.get(tName) || 0) + 1);
+
+        if (uId && teamObj) {
+          const currentRegion = userSchoolRegionMap.get(uId);
+          if (!currentRegion || teamObj.team_type === 'school' || item.is_primary) {
+            userSchoolRegionMap.set(uId, teamObj.region || '천안');
+          }
+        }
       });
 
-      // 2. 팀 랭킹 데이터 연산
+      setDbActiveRegions(Array.from(regionsSet));
+
+      const careerWinsMap = new Map<string, number>();
+      (allMatches || []).forEach((m: any) => {
+        if (m.winner_team && m.winner_team !== 'draw' && m.winner_team !== '무승부') {
+          careerWinsMap.set(m.winner_team, (careerWinsMap.get(m.winner_team) || 0) + 1);
+        }
+      });
+
+      const targetMatches = (allMatches || []).filter((m: any) => {
+        if (selectedPeriod === 'hall_of_fame') return true;
+        const mSeasonCode = getMatchSeasonCode(m.match_date || m.created_at);
+        return mSeasonCode === selectedPeriod;
+      });
+
       const processedTeams: TeamRankingData[] = (allTeams || []).map((t: any) => {
         const matches = targetMatches.filter((m: any) => m.host_team_name === t.name || m.away_team_name === t.name);
 
@@ -107,8 +197,9 @@ export default function RankingScreen() {
         });
 
         const total = wins + draws + losses;
-        const count = memberMap.get(t.name) || 0;
-        const points = wins * 3 + draws * 1; // 승점: 승3 / 무1 / 패0
+        const count = memberCountMap.get(t.name) || 0;
+        const points = wins * 3 + draws * 1;
+        const careerWins = careerWinsMap.get(t.name) || 0;
 
         return {
           team_name: t.name,
@@ -119,34 +210,44 @@ export default function RankingScreen() {
           points,
           win_rate: total > 0 ? Math.round((wins / total) * 100) : 0,
           memberCount: count,
-          isOfficial: count >= 3, // 블루리본 3명 이상
-          isQualified: total >= (selectedPeriod === 'hall_of_fame' ? 3 : 2), // 최소 경기 수 달성
+          isOfficial: count >= 3,
+          isQualified: total >= (selectedPeriod === 'hall_of_fame' ? 3 : 2),
           region: t.region || '천안',
           type: t.team_type || 'school',
+          careerWins,
+          mannerTemp: t.manner_temp || 36.5,
+          created_at: t.created_at,
         };
       });
 
-      const filteredTeams = processedTeams.filter((t) => selectedRegion === '전체' || t.region === selectedRegion);
+      const filteredTeams = processedTeams.filter((t) => {
+        if (selectedRegion === '전체') return true;
+        return t.region === selectedRegion;
+      });
 
-      // 정식 차트 vs 대기 차트 분리
       const qualified = filteredTeams.filter((t) => t.isOfficial && t.isQualified);
       const pending = filteredTeams.filter((t) => !t.isOfficial || !t.isQualified);
 
-      // 🔥 선택한 정렬 기준에 따른 팀 랭킹 동적 정렬
       qualified.sort((a, b) => {
-        if (sortCriterion === 'points') {
-          return b.points - a.points || b.total_wins - a.total_wins || b.win_rate - a.win_rate;
-        } else if (sortCriterion === 'wins') {
-          return b.total_wins - a.total_wins || b.points - a.points || b.win_rate - a.win_rate;
-        } else {
-          return b.win_rate - a.win_rate || b.points - a.points || b.total_wins - a.total_wins;
-        }
+        if (sortCriterion === 'points') return b.points - a.points || b.total_wins - a.total_wins || b.win_rate - a.win_rate;
+        if (sortCriterion === 'wins') return b.total_wins - a.total_wins || b.points - a.points || b.win_rate - a.win_rate;
+        return b.win_rate - a.win_rate || b.points - a.points || b.total_wins - a.total_wins;
+      });
+
+      pending.sort((a, b) => {
+        if (b.total_games !== a.total_games) return b.total_games - a.total_games;
+        if (b.isOfficial !== a.isOfficial) return (b.isOfficial ? 1 : 0) - (a.isOfficial ? 1 : 0);
+        if (b.careerWins !== a.careerWins) return b.careerWins - a.careerWins;
+        if (b.memberCount !== a.memberCount) return b.memberCount - a.memberCount;
+        const dateA = new Date(a.created_at || 0).getTime();
+        const dateB = new Date(b.created_at || 0).getTime();
+        if (dateB !== dateA) return dateB - dateA;
+        return a.team_name.localeCompare(b.team_name, 'ko');
       });
 
       setQualifiedTeamRanks(qualified);
       setPendingTeamRanks(pending);
 
-      // 3. 개인 다승 랭킹 연산
       const pRanks: PersonalRankingData[] = (allProfiles || []).map((p: any) => {
         let wins = 0, losses = 0, draws = 0;
 
@@ -162,44 +263,51 @@ export default function RankingScreen() {
           }
         });
 
+        let userRegion = userSchoolRegionMap.get(p.id);
+        if (!userRegion && p.region) {
+          const regArr = p.region.split(',').map((r: string) => r.trim());
+          if (regArr.length > 0) userRegion = regArr[0];
+        }
+        if (!userRegion) userRegion = '천안';
+
         const total = wins + losses + draws;
         return {
           userId: p.id,
           fullName: p.full_name || '선생님',
-          isPublic: p.is_name_public ?? false,
+          isPublic: true,
           schoolName: p.school_name || '소속 학교 미설정',
+          region: userRegion,
+          gender: p.gender || '남성',
+          avatarIcon: p.avatar_icon || '🏐',
+          avatarUrl: p.avatar_url,
           totalMatches: total,
           wins,
           losses,
           draws,
           winRate: total > 0 ? Math.round((wins / total) * 100) : 0,
+          mannerTemp: p.manner_temp || 36.5,
         };
       });
 
-      // 🔥 선택한 정렬 기준에 따른 개인 랭킹 동적 정렬
-      pRanks.sort((a, b) => {
-        if (sortCriterion === 'winRate') {
-          return b.winRate - a.winRate || b.wins - a.wins || b.totalMatches - a.totalMatches;
-        } else {
-          // 다승순/승점순 기본값: 다승 우선
-          return b.wins - a.wins || b.winRate - a.winRate || b.totalMatches - a.totalMatches;
-        }
+      const filteredPersonal = pRanks.filter((p) => {
+        if (p.totalMatches <= 0) return false;
+        if (genderFilter !== '전체' && p.gender !== genderFilter) return false;
+        if (selectedRegion === '전체') return true;
+        return p.region === selectedRegion;
       });
 
-      setPersonalRanks(pRanks.filter((p) => p.totalMatches > 0));
+      filteredPersonal.sort((a, b) => {
+        if (sortCriterion === 'winRate') return b.winRate - a.winRate || b.wins - a.wins || b.totalMatches - a.totalMatches;
+        return b.wins - a.wins || b.winRate - a.winRate || b.totalMatches - a.totalMatches;
+      });
 
+      setPersonalRanks(filteredPersonal);
     } catch (err) {
       console.error('랭킹 연산 오류:', err);
     } finally {
       setLoading(false);
       setRefreshing(false);
     }
-  };
-
-  const maskName = (name: string) => {
-    if (!name) return '선생님';
-    if (name.length <= 2) return name[0] + '*';
-    return name[0] + '*'.repeat(name.length - 2) + name[name.length - 1];
   };
 
   const getRankBadge = (index: number) => {
@@ -209,10 +317,120 @@ export default function RankingScreen() {
     return `${index + 1}위`;
   };
 
-  const currentPeriodLabel = PERIOD_OPTIONS.find(p => p.id === selectedPeriod)?.label || '시즌 선택';
+  const openUserProfile = (uId: string) => {
+    setSelectedUserIdForModal(uId);
+    setProfileModalVisible(true);
+  };
+
+  const selectedTeamAnalytics = useMemo(() => {
+    if (!selectedTeamForModal || rawMatches.length === 0) return null;
+    const teamName = selectedTeamForModal;
+    const teamData = qualifiedTeamRanks.find(t => t.team_name === teamName) || pendingTeamRanks.find(t => t.team_name === teamName);
+
+    const targetMatches = rawMatches.filter((m: any) => {
+      if (m.status !== 'completed') return false;
+      if (selectedPeriod !== 'hall_of_fame') {
+        return getMatchSeasonCode(m.match_date || m.created_at) === selectedPeriod;
+      }
+      return true;
+    });
+
+    const teamMatches = targetMatches.filter((m: any) => m.host_team_name === teamName || m.away_team_name === teamName);
+
+    let setsWon = 0, setsLost = 0, shutoutWins = 0, fullsetWins = 0;
+    const oppMap: { [oppName: string]: { wins: number; losses: number; draws: number; total: number } } = {};
+
+    teamMatches.forEach((m: any) => {
+      const hName = m.host_team_name;
+      const aName = m.away_team_name;
+      const wName = m.winner_team;
+      const isHost = hName === teamName;
+      const oppName = isHost ? aName : hName;
+      const isWin = wName === teamName;
+      const isDraw = wName === 'draw' || wName === '무승부';
+
+      if (oppName) {
+        if (!oppMap[oppName]) oppMap[oppName] = { wins: 0, losses: 0, draws: 0, total: 0 };
+        oppMap[oppName].total++;
+        if (isWin) oppMap[oppName].wins++;
+        else if (isDraw) oppMap[oppName].draws++;
+        else oppMap[oppName].losses++;
+      }
+
+      let hostSetWon = 0, awaySetWon = 0;
+      if (m.set_scores) {
+        m.set_scores.split(', ').forEach((s: string) => {
+          const [h, a] = s.split(':').map(Number);
+          if (!isNaN(h) && !isNaN(a)) {
+            if (h > a) hostSetWon++;
+            else if (a > h) awaySetWon++;
+          }
+        });
+      }
+
+      const mySetWon = isHost ? hostSetWon : awaySetWon;
+      const oppSetWon = isHost ? awaySetWon : hostSetWon;
+      setsWon += mySetWon;
+      setsLost += oppSetWon;
+
+      if (isWin) {
+        if (oppSetWon === 0) shutoutWins++;
+        else fullsetWins++;
+      }
+    });
+
+    let nemesis = '없음', nemesisStat = '', victim = '없음', victimStat = '';
+    let maxLossDiff = -999, maxWinDiff = -999;
+
+    Object.entries(oppMap).forEach(([opp, stat]) => {
+      const winDiff = stat.wins - stat.losses;
+      const lossDiff = stat.losses - stat.wins;
+
+      if (stat.losses > stat.wins && lossDiff > maxLossDiff) {
+        maxLossDiff = lossDiff; nemesis = opp; nemesisStat = `${stat.losses}패 ${stat.wins}승 (${stat.total}전)`;
+      }
+
+      if (stat.wins > stat.losses && winDiff > maxWinDiff) {
+        maxWinDiff = winDiff; victim = opp; victimStat = `${stat.wins}승 ${stat.losses}패 (${stat.total}전)`;
+      }
+    });
+
+    const teamRecent5 = teamMatches.slice(0, 5).map((m: any) => {
+      const isWin = m.winner_team === teamName;
+      const isDraw = m.winner_team === 'draw' || m.winner_team === '무승부';
+      return isWin ? 'WIN' : isDraw ? 'DRAW' : 'LOSS';
+    });
+
+    return {
+      teamName,
+      region: teamData?.region || '천안',
+      teamType: (teamData?.type as 'school' | 'club') || 'school',
+      mannerTemp: teamData?.mannerTemp || 36.5,
+      isOfficial: teamData?.isOfficial || false,
+      memberCount: teamData?.memberCount || 0,
+      totalMatches: teamMatches.length,
+      setsWon,
+      setsLost,
+      setDiff: setsWon - setsLost,
+      shutoutWins,
+      fullsetWins,
+      nemesis,
+      nemesisStat,
+      victim,
+      victimStat,
+      teamRecent5,
+    };
+  }, [selectedTeamForModal, rawMatches, selectedPeriod, qualifiedTeamRanks, pendingTeamRanks]);
+
+  const openTeamReport = (teamName: string) => {
+    setSelectedTeamForModal(teamName);
+    setTeamReportModalVisible(true);
+  };
+
+  const currentPeriodLabel = periodOptions.find((p) => p.id === selectedPeriod)?.label || '시즌 선택';
 
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
       <View style={styles.header}>
         <TouchableOpacity style={styles.backBtn} onPress={() => router.back()} hitSlop={10}>
           <Text style={styles.backText}>‹</Text>
@@ -221,7 +439,6 @@ export default function RankingScreen() {
         <View style={{ width: 32 }} />
       </View>
 
-      {/* 랭킹 탭 (팀 vs 개인) */}
       <View style={styles.tabContainer}>
         <TouchableOpacity style={[styles.tab, rankTab === 'team' && styles.tabActive]} onPress={() => setRankTab('team')}>
           <Text style={[styles.tabText, rankTab === 'team' && styles.tabTextActive]}>🛡️ 공식 팀 랭킹</Text>
@@ -231,7 +448,6 @@ export default function RankingScreen() {
         </TouchableOpacity>
       </View>
 
-      {/* 스마트 시즌 선택 드롭다운 버튼 */}
       <View style={styles.periodSelectorBar}>
         <TouchableOpacity style={styles.periodSelectBtn} onPress={() => setPeriodModalVisible(true)}>
           <Text style={styles.periodSelectBtnText}>{currentPeriodLabel}</Text>
@@ -239,47 +455,57 @@ export default function RankingScreen() {
         </TouchableOpacity>
       </View>
 
-      {/* 🔥 유저 편의성 정렬 기준 선택 칩 (승점순 / 다승순 / 승률순) */}
+      {rankTab === 'personal' && (
+        <View style={styles.genderFilterRow}>
+          <Text style={styles.sortLabel}>성별 구분:</Text>
+          {(['전체', '남성', '여성'] as const).map((g) => (
+            <TouchableOpacity
+              key={g}
+              style={[styles.genderChip, genderFilter === g && styles.genderChipActive]}
+              onPress={() => setGenderFilter(g)}
+            >
+              <Text style={[styles.genderChipText, genderFilter === g && styles.genderChipTextActive]}>{g}</Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+      )}
+
       <View style={styles.sortFilterRow}>
         <Text style={styles.sortLabel}>정렬 기준:</Text>
-        <TouchableOpacity
-          style={[styles.sortChip, sortCriterion === 'points' && styles.sortChipActive]}
-          onPress={() => setSortCriterion('points')}
-        >
+        <TouchableOpacity style={[styles.sortChip, sortCriterion === 'points' && styles.sortChipActive]} onPress={() => setSortCriterion('points')}>
           <Text style={[styles.sortChipText, sortCriterion === 'points' && styles.sortChipTextActive]}>📊 승점순</Text>
         </TouchableOpacity>
-        <TouchableOpacity
-          style={[styles.sortChip, sortCriterion === 'wins' && styles.sortChipActive]}
-          onPress={() => setSortCriterion('wins')}
-        >
+        <TouchableOpacity style={[styles.sortChip, sortCriterion === 'wins' && styles.sortChipActive]} onPress={() => setSortCriterion('wins')}>
           <Text style={[styles.sortChipText, sortCriterion === 'wins' && styles.sortChipTextActive]}>🏆 다승순</Text>
         </TouchableOpacity>
-        <TouchableOpacity
-          style={[styles.sortChip, sortCriterion === 'winRate' && styles.sortChipActive]}
-          onPress={() => setSortCriterion('winRate')}
-        >
+        <TouchableOpacity style={[styles.sortChip, sortCriterion === 'winRate' && styles.sortChipActive]} onPress={() => setSortCriterion('winRate')}>
           <Text style={[styles.sortChipText, sortCriterion === 'winRate' && styles.sortChipTextActive]}>🔥 승률순</Text>
         </TouchableOpacity>
       </View>
 
-      {/* 지역 필터 */}
       <View style={styles.filterRow}>
-        {['전체', '천안', '아산', '기타'].map((r) => (
-          <TouchableOpacity key={r} style={[styles.fChip, selectedRegion === r && styles.fChipActive]} onPress={() => setSelectedRegion(r)}>
-            <Text style={[styles.fChipText, selectedRegion === r && styles.fChipTextActive]}>{r}</Text>
-          </TouchableOpacity>
-        ))}
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 6 }}>
+          {dynamicRegionTabs.map((r) => {
+            const isPriority = userPrioritizedRegions.includes(r);
+            const prioIdx = userPrioritizedRegions.indexOf(r);
+            return (
+              <TouchableOpacity key={r} style={[styles.fChip, selectedRegion === r && styles.fChipActive]} onPress={() => setSelectedRegion(r)}>
+                <Text style={[styles.fChipText, selectedRegion === r && styles.fChipTextActive]}>
+                  {isPriority ? `[${prioIdx + 1}순위] ` : ''}{r}
+                </Text>
+              </TouchableOpacity>
+            );
+          })}
+        </ScrollView>
       </View>
 
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); fetchRankings(); }} />}>
-        
-        {/* 📌 랭킹 산정 기준 안내 배너 */}
         <View style={styles.ruleBanner}>
-          <Text style={styles.ruleTitle}>📌 랭킹 산정 기준</Text>
+          <Text style={styles.ruleTitle}>📌 랭킹 산정 및 터치 안내</Text>
           <Text style={styles.ruleText}>
             • <Text style={{ fontWeight: '700', color: '#1D4ED8' }}>블루리본(3명 이상)</Text> 인증 팀만 정식 차트에 집계됩니다.{'\n'}
             • 승점제 적용: <Text style={{ fontWeight: '700', color: '#1D4ED8' }}>승리 3점, 무승부 1점, 패배 0점</Text>{'\n'}
-            • 상단 정렬 버튼으로 <Text style={{ fontWeight: '700' }}>승점순 / 다승순 / 승률순</Text> 조회가 가능합니다.
+            • 팀 및 개인 랭킹 카드를 터치하면 <Text style={{ fontWeight: '700', color: '#1D4ED8' }}>상세 전력 분석 프로필</Text>을 보실 수 있습니다.
           </Text>
         </View>
 
@@ -287,7 +513,6 @@ export default function RankingScreen() {
           <ActivityIndicator color={Colors.primary} size="large" style={{ marginTop: 40 }} />
         ) : rankTab === 'team' ? (
           <>
-            {/* 정식 랭킹 차트 Header */}
             <View style={styles.sectionHeader}>
               <Text style={styles.sectionTitle}>🏆 {currentPeriodLabel}</Text>
               <Text style={styles.sectionCount}>{qualifiedTeamRanks.length}개 팀</Text>
@@ -295,33 +520,54 @@ export default function RankingScreen() {
 
             {qualifiedTeamRanks.length === 0 ? (
               <View style={styles.emptyBox}>
-                <Text style={styles.emptyText}>해당 기간에 집계된 정식 팀 기록이 없습니다.</Text>
-                <Text style={styles.emptySub}>팀원 3명을 모으고 경기 기록을 쌓아보세요!</Text>
+                <Text style={styles.emptyText}>선택하신 [{selectedRegion}] 지역에 집계된 정식 팀 기록이 없습니다.</Text>
+                <Text style={styles.emptySub}>팀원 3명을 모으고 첫 승리의 주인공이 되어보세요!</Text>
               </View>
             ) : (
               qualifiedTeamRanks.map((item, index) => (
-                <View key={item.team_name} style={[styles.rankCard, index === 0 && styles.rankCardFirst]}>
+                <TouchableOpacity
+                  key={item.team_name}
+                  style={[styles.rankCard, index === 0 && styles.rankCardFirst]}
+                  onPress={() => openTeamReport(item.team_name)}
+                  activeOpacity={0.8}
+                >
                   <Text style={styles.rankBadgeText}>{getRankBadge(index)}</Text>
                   
                   <View style={styles.teamInfo}>
                     <View style={styles.teamNameRow}>
-                      <Text style={styles.teamName}>{item.type === 'club' ? '🏐' : '🏫'} {item.team_name}</Text>
+                      <Text style={styles.teamName}>{item.type === 'club' ? '🛡️' : '🏫'} {item.team_name}</Text>
                       <View style={styles.blueRibbonMini}><Text style={{ fontSize: 12 }}>🟦</Text></View>
                     </View>
-                    <Text style={styles.recordText}>
-                      {item.total_games}전 {item.total_wins}승 {item.total_draws > 0 ? `${item.total_draws}무 ` : ''}{item.total_losses}패 (승점 {item.points}점)
-                    </Text>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 2 }}>
+                      <Text style={styles.recordText}>
+                        {item.total_games}전 {item.total_wins}승 {item.total_draws > 0 ? `${item.total_draws}무 ` : ''}{item.total_losses}패
+                      </Text>
+                      <View style={styles.mannerTempBadge}>
+                        <Text style={styles.mannerTempBadgeText}>🌡️ {item.mannerTemp.toFixed(1)}°C</Text>
+                      </View>
+                    </View>
                   </View>
 
                   <View style={styles.winRateBox}>
-                    <Text style={styles.winRateNum}>{item.win_rate}%</Text>
-                    <Text style={styles.winRateLabel}>승률 ({item.points}pt)</Text>
+                    <Text style={styles.winRateNum}>
+                      {sortCriterion === 'points'
+                        ? `${item.points}점`
+                        : sortCriterion === 'winRate'
+                        ? `${item.win_rate}%`
+                        : `${item.total_wins}승`}
+                    </Text>
+                    <Text style={styles.winRateLabel}>
+                      {sortCriterion === 'points'
+                        ? `승점 (승률 ${item.win_rate}%)`
+                        : sortCriterion === 'winRate'
+                        ? `승률 (승점 ${item.points}점)`
+                        : `다승 (승점 ${item.points}점)`}
+                    </Text>
                   </View>
-                </View>
+                </TouchableOpacity>
               ))
             )}
 
-            {/* ⏳ 집계 대기 중인 팀 섹션 */}
             {pendingTeamRanks.length > 0 && (
               <View style={{ marginTop: 24 }}>
                 <View style={styles.sectionHeader}>
@@ -329,64 +575,172 @@ export default function RankingScreen() {
                   <Text style={styles.sectionCount}>{pendingTeamRanks.length}개 팀</Text>
                 </View>
 
-                {pendingTeamRanks.map((item) => (
-                  <View key={item.team_name} style={styles.pendingCard}>
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.pendingTeamName}>{item.team_name}</Text>
-                      <Text style={styles.pendingReason}>
-                        {!item.isOfficial
-                          ? `인원 부족 (${item.memberCount}/3명)`
-                          : `경기 수 부족 (${item.total_games}/${selectedPeriod === 'hall_of_fame' ? 3 : 2}경기)`}
-                      </Text>
-                    </View>
-                    <Text style={styles.pendingRecord}>
-                      {item.total_wins}승 {item.total_losses}패 ({item.win_rate}%)
-                    </Text>
-                  </View>
-                ))}
+                {pendingTeamRanks.map((item) => {
+                  const requiredGames = selectedPeriod === 'hall_of_fame' ? 3 : 2;
+                  
+                  let pendingReasonStr = '';
+                  if (!item.isOfficial) {
+                    pendingReasonStr = `인원 부족 (${item.memberCount}/3명)`;
+                  } else if (item.total_games === 0) {
+                    pendingReasonStr = item.careerWins > 0
+                      ? `시즌 0경기 (통산 ${item.careerWins}승 | 팀원 ${item.memberCount}명)`
+                      : `시즌 0경기 (신규 대기 | 팀원 ${item.memberCount}명)`;
+                  } else {
+                    pendingReasonStr = `경기 수 부족 (${item.total_games}/${requiredGames}경기)`;
+                  }
+
+                  return (
+                    <TouchableOpacity
+                      key={item.team_name}
+                      style={styles.pendingCard}
+                      onPress={() => openTeamReport(item.team_name)}
+                      activeOpacity={0.8}
+                    >
+                      <View style={{ flex: 1, paddingRight: 8 }}>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                          <Text style={styles.pendingTeamName}>
+                            {item.type === 'club' ? '🛡️' : '🏫'} {item.team_name}
+                          </Text>
+                          {item.isOfficial && (
+                            <View style={{ paddingHorizontal: 2 }}>
+                              <Text style={{ fontSize: 11 }}>🟦</Text>
+                            </View>
+                          )}
+                        </View>
+                        <Text style={styles.pendingReason}>
+                          {pendingReasonStr}
+                        </Text>
+                      </View>
+                      
+                      <View style={{ alignItems: 'flex-end' }}>
+                        {item.total_games > 0 ? (
+                          <Text style={styles.pendingRecord}>
+                            {item.total_wins}승 {item.total_losses}패 ({item.win_rate}%)
+                          </Text>
+                        ) : (
+                          <Text style={[styles.pendingRecord, { color: '#94A3B8' }]}>
+                            {item.careerWins > 0 ? `통산 ${item.careerWins}승` : '대기중'}
+                          </Text>
+                        )}
+                      </View>
+                    </TouchableOpacity>
+                  );
+                })}
               </View>
             )}
           </>
         ) : (
-          /* 개인 다승 랭킹 차트 */
           <>
             <View style={styles.sectionHeader}>
-              <Text style={styles.sectionTitle}>🏃‍♂️ {currentPeriodLabel} 개인 차트</Text>
+              <Text style={styles.sectionTitle}>🏃‍♂️ 개인 차트 [{selectedRegion} · {genderFilter}]</Text>
               <Text style={styles.sectionCount}>{personalRanks.length}명</Text>
             </View>
 
             {personalRanks.length === 0 ? (
               <View style={styles.emptyBox}>
-                <Text style={styles.emptyText}>해당 기간에 출전 기록이 있는 선수가 없습니다.</Text>
+                <Text style={styles.emptyText}>선택하신 [{selectedRegion} · {genderFilter}] 조건에 해당되는 선수가 없습니다.</Text>
               </View>
             ) : (
-              personalRanks.map((item, index) => (
-                <View key={item.userId} style={styles.rankCard}>
-                  <Text style={styles.rankBadgeText}>{getRankBadge(index)}</Text>
-                  <View style={{ flex: 1, marginHorizontal: 12 }}>
-                    <Text style={styles.teamName}>👤 {item.isPublic ? item.fullName : maskName(item.fullName)} 선생님</Text>
-                    <Text style={styles.recordText}>🏫 {item.schoolName}</Text>
-                  </View>
-                  <View style={{ alignItems: 'flex-end' }}>
-                    <Text style={[styles.winRateNum, { color: '#0284C7' }]}>{item.wins}승</Text>
-                    <Text style={styles.winRateLabel}>{item.totalMatches}전 (승률 {item.winRate}%)</Text>
-                  </View>
-                </View>
-              ))
+              personalRanks.map((item, index) => {
+                const userParams = {
+                  stats: {
+                    wins: item.wins,
+                    losses: item.losses,
+                    draws: item.draws,
+                    total: item.totalMatches,
+                    winRate: item.winRate,
+                    recent5: [],
+                  },
+                  userActivityStats: { recordCount: 0, praiseCount: 0 },
+                  invitedCount: 0,
+                  gender: item.gender,
+                };
+
+                // 💡 대표 칭호 2개 계산
+                const userBadges = getAllBadgesWithStatus(userParams)
+                  .filter(b => b.isUnlocked)
+                  .slice(0, 2);
+
+                return (
+                  <TouchableOpacity key={item.userId} style={styles.rankCard} onPress={() => openUserProfile(item.userId)} activeOpacity={0.8}>
+                    <Text style={styles.rankBadgeText}>{getRankBadge(index)}</Text>
+                    
+                    <View style={styles.avatarMiniCircle}>
+                      {item.avatarUrl ? (
+                        <Image source={{ uri: item.avatarUrl }} style={styles.avatarMiniImage} />
+                      ) : (
+                        <Text style={{ fontSize: 18 }}>{item.avatarIcon}</Text>
+                      )}
+                    </View>
+
+                    <View style={{ flex: 1, marginHorizontal: 10 }}>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, flexWrap: 'wrap' }}>
+                        <Text style={styles.teamName}>{item.fullName} 선생님</Text>
+                        
+                        <View style={[styles.miniGenderTag, item.gender === '여성' ? styles.femaleTag : styles.maleTag]}>
+                          <Text style={[styles.miniGenderText, item.gender === '여성' ? styles.femaleText : styles.maleText]}>{item.gender}</Text>
+                        </View>
+
+                        {/* 💡 [개선] 2개 대표 칭호 노출 & 터치 시 [칭호 도감 모달] 오픈 */}
+                        <View style={{ flexDirection: 'row', gap: 3, flexWrap: 'wrap', alignItems: 'center' }}>
+                          {userBadges.map((badge) => (
+                            <TouchableOpacity
+                              key={badge.id}
+                              activeOpacity={0.8}
+                              onPress={(e) => {
+                                e.stopPropagation(); // 👈 부모 클릭(프로필 모달) 방지
+                                setSelectedBadgeUserParams(userParams);
+                                setBadgeModalVisible(true);
+                              }}
+                              style={[{ paddingHorizontal: 5, paddingVertical: 1, borderRadius: 4, borderWidth: 1 }, badge.style]}
+                            >
+                              <Text style={{ fontSize: 9, fontWeight: '800', color: badge.style.color }}>
+                                {badge.label}
+                              </Text>
+                            </TouchableOpacity>
+                          ))}
+                        </View>
+                      </View>
+                      <Text style={styles.recordText}>🏫 {item.schoolName} [{item.region}]</Text>
+                    </View>
+
+                    <View style={{ alignItems: 'flex-end' }}>
+                      <Text style={[styles.winRateNum, { color: '#0284C7' }]}>{item.wins}승</Text>
+                      <Text style={styles.winRateLabel}>{item.totalMatches}전 (승률 {item.winRate}%)</Text>
+                      <Text style={styles.mannerTempTag}>🌡️ {item.mannerTemp.toFixed(1)}°C</Text>
+                    </View>
+                  </TouchableOpacity>
+                );
+              })
             )}
           </>
         )}
       </ScrollView>
 
-      {/* 시즌 / 명예의 전당 선택 팝업 모달 */}
+      <StickyAdBanner />
+
+      {/* 📖 칭호 도감 모달 */}
+      {selectedBadgeUserParams && (
+        <BadgeCollectionModal
+          visible={badgeModalVisible}
+          onClose={() => {
+            setBadgeModalVisible(false);
+            setSelectedBadgeUserParams(null);
+          }}
+          userParams={selectedBadgeUserParams}
+          equippedBadgeIds={[]}
+          onSaveEquippedBadges={() => {}}
+        />
+      )}
+
       <Modal visible={periodModalVisible} animationType="fade" transparent={true}>
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>📅 랭킹 시즌 / 명예의 전당 선택</Text>
+            <Text style={styles.modalTitle}>📅 랭킹 시즌 선택</Text>
             <Text style={styles.modalSub}>조회하고 싶은 시즌 차트를 선택해 주세요.</Text>
             
             <View style={{ gap: 8, marginVertical: 12 }}>
-              {PERIOD_OPTIONS.map((p) => {
+              {periodOptions.map((p) => {
                 const isSelected = selectedPeriod === p.id;
                 return (
                   <TouchableOpacity
@@ -412,6 +766,25 @@ export default function RankingScreen() {
           </View>
         </View>
       </Modal>
+
+      <UserProfileModal
+        visible={profileModalVisible}
+        userId={selectedUserIdForModal}
+        onClose={() => {
+          setProfileModalVisible(false);
+          setSelectedUserIdForModal(null);
+        }}
+      />
+
+      <TeamReportModal
+        visible={teamReportModalVisible}
+        onClose={() => {
+          setTeamReportModalVisible(false);
+          setSelectedTeamForModal(null);
+        }}
+        analytics={selectedTeamAnalytics}
+        selectedSeason={currentPeriodLabel}
+      />
     </SafeAreaView>
   );
 }
@@ -433,15 +806,20 @@ const styles = StyleSheet.create({
   periodSelectBtnText: { fontSize: 14, fontWeight: '800', color: '#1D4ED8' },
   periodSelectArrow: { fontSize: 12, color: '#1D4ED8', fontWeight: '800' },
 
-  // 🔥 정렬 기준 칩 바 스타일
-  sortFilterRow: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 16, paddingTop: 10 },
+  genderFilterRow: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 16, paddingTop: 10 },
+  genderChip: { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 10, backgroundColor: '#F1F5F9', borderWidth: 1, borderColor: '#E2E8F0' },
+  genderChipActive: { backgroundColor: '#EFF6FF', borderColor: '#3B82F6' },
+  genderChipText: { fontSize: 12, fontWeight: '700', color: '#64748B' },
+  genderChipTextActive: { color: '#1D4ED8', fontWeight: '800' },
+
+  sortFilterRow: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 16, paddingTop: 8 },
   sortLabel: { fontSize: 12, fontWeight: '700', color: '#64748B', marginRight: 2 },
   sortChip: { paddingHorizontal: 10, paddingVertical: 5, borderRadius: 8, backgroundColor: '#F1F5F9', borderWidth: 1, borderColor: '#E2E8F0' },
   sortChipActive: { backgroundColor: '#FEF3C7', borderColor: '#F59E0B' },
   sortChipText: { fontSize: 11, fontWeight: '700', color: '#64748B' },
   sortChipTextActive: { color: '#B45309', fontWeight: '800' },
 
-  filterRow: { flexDirection: 'row', gap: 6, paddingHorizontal: 16, paddingTop: 10, paddingBottom: 6 },
+  filterRow: { flexDirection: 'row', paddingHorizontal: 16, paddingTop: 10, paddingBottom: 6 },
   fChip: { paddingHorizontal: 14, paddingVertical: 6, borderRadius: 16, backgroundColor: '#F1F5F9' },
   fChipActive: { backgroundColor: Colors.primary },
   fChipText: { fontSize: 12, fontWeight: '600', color: '#64748B' },
@@ -457,25 +835,42 @@ const styles = StyleSheet.create({
   sectionTitleMuted: { fontSize: 15, fontWeight: '700', color: Colors.textMuted },
   sectionCount: { fontSize: 12, color: Colors.textMuted },
   emptyBox: { backgroundColor: Colors.surface, borderRadius: 14, padding: 24, alignItems: 'center', borderWidth: 1, borderColor: Colors.border },
-  emptyText: { fontSize: 14, fontWeight: '700', color: Colors.textMuted },
+  emptyText: { fontSize: 14, fontWeight: '700', color: Colors.textMuted, textAlign: 'center' },
   emptySub: { fontSize: 12, color: '#94A3B8', marginTop: 4 },
 
-  rankCard: { backgroundColor: Colors.surface, borderRadius: 16, padding: 16, flexDirection: 'row', alignItems: 'center', borderWidth: 1, borderColor: Colors.border, marginBottom: 10 },
+  rankCard: { backgroundColor: Colors.surface, borderRadius: 16, padding: 14, flexDirection: 'row', alignItems: 'center', borderWidth: 1, borderColor: Colors.border, marginBottom: 10 },
   rankCardFirst: { borderColor: '#FDE047', backgroundColor: '#FEFCE8', borderWidth: 1.5 },
-  rankBadgeText: { fontSize: 18, fontWeight: '800', color: Colors.primary, width: 36, textAlign: 'center' },
+  rankBadgeText: { fontSize: 18, fontWeight: '800', color: Colors.primary, width: 32, textAlign: 'center' },
+  
+  avatarMiniCircle: { width: 40, height: 40, borderRadius: 20, backgroundColor: '#EFF6FF', alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: '#BFDBFE', overflow: 'hidden' },
+  avatarMiniImage: { width: 40, height: 40, borderRadius: 20 },
+
   teamInfo: { flex: 1, paddingHorizontal: 12 },
   teamNameRow: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   teamName: { fontSize: 15, fontWeight: '800', color: Colors.text },
   blueRibbonMini: { paddingHorizontal: 2 },
-  recordText: { fontSize: 12, color: Colors.textMuted, marginTop: 2 },
-  winRateBox: { alignItems: 'flex-end', minWidth: 60 },
-  winRateNum: { fontSize: 18, fontWeight: '900', color: Colors.primary },
-  winRateLabel: { fontSize: 11, color: Colors.textMuted },
+  recordText: { fontSize: 12, color: Colors.textMuted },
+  
+  mannerTempBadge: { backgroundColor: '#FFFBEB', borderWidth: 1, borderColor: '#FDE68A', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 6 },
+  mannerTempBadgeText: { fontSize: 10, fontWeight: '800', color: '#D97706' },
+
+  winRateBox: { alignItems: 'flex-end', minWidth: 80 },
+  winRateNum: { fontSize: 17, fontWeight: '900', color: Colors.primary },
+  winRateLabel: { fontSize: 11, color: Colors.textMuted, marginTop: 2 },
+
+  mannerTempTag: { fontSize: 10, fontWeight: '800', color: '#D97706', marginTop: 2 },
+
+  miniGenderTag: { paddingHorizontal: 6, paddingVertical: 1, borderRadius: 4, borderWidth: 1 },
+  miniGenderText: { fontSize: 10, fontWeight: '800' },
+  maleTag: { backgroundColor: '#EFF6FF', borderColor: '#BFDBFE' },
+  maleText: { color: '#1D4ED8', fontSize: 10, fontWeight: '800' },
+  femaleTag: { backgroundColor: '#FDF2F8', borderColor: '#FBCFE8' },
+  femaleText: { color: '#DB2777', fontSize: 10, fontWeight: '800' },
 
   pendingCard: { backgroundColor: '#F8FAFC', borderRadius: 12, padding: 14, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', borderWidth: 1, borderColor: Colors.border, marginBottom: 8 },
-  pendingTeamName: { fontSize: 14, fontWeight: '700', color: Colors.text },
-  pendingReason: { fontSize: 12, color: '#D97706', fontWeight: '600', marginTop: 2 },
-  pendingRecord: { fontSize: 13, fontWeight: '600', color: Colors.textMuted },
+  pendingTeamName: { fontSize: 14, fontWeight: '800', color: Colors.text },
+  pendingReason: { fontSize: 11, color: '#B45309', fontWeight: '700', marginTop: 2 },
+  pendingRecord: { fontSize: 12, fontWeight: '700', color: Colors.textMuted },
 
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center', padding: 20 },
   modalContent: { backgroundColor: Colors.surface, borderRadius: 20, padding: 20, width: '100%' },

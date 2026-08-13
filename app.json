@@ -2,11 +2,54 @@
   "expo": {
     "name": "티볼리",
     "slug": "t-volley",
-    "version": "1.0.0",
+    "scheme": "t-volley",
+    "version": "1.5.0",
     "icon": "./assets/icon.png",
+    "orientation": "portrait",
+    "userInterfaceStyle": "dark",
+    "splash": {
+      "image": "./assets/icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#0F172A"
+    },
     "plugins": [
-      "expo-web-browser",
-      "expo-asset"
-    ]
+      "expo-router",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "프로필 사진 등록 및 변경을 위해 사진앨범 접근 권한이 필요합니다.",
+          "cameraPermission": "프로필 사진 직접 촬영 및 등록을 위해 카메라 접근 권한이 필요합니다."
+        }
+      ]
+    ],
+    "android": {
+      "package": "com.rudolfuu.tvolley",
+      "versionCode": 3,
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#0F172A"
+      }
+    },
+    "ios": {
+      "bundleIdentifier": "com.rudolfuu.tvolley",
+      "buildNumber": "3",
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false,
+        "NSPhotoLibraryUsageDescription": "프로필 사진 등록 및 변경을 위해 사진앨범 접근 권한이 필요합니다.",
+        "NSCameraUsageDescription": "프로필 사진 직접 촬영 및 등록을 위해 카메라 접근 권한이 필요합니다."
+      }
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "05ba1249-84cc-45cb-809f-9e7a722a4a76"
+      }
+    },
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "updates": {
+      "url": "https://u.expo.dev/05ba1249-84cc-45cb-809f-9e7a722a4a76"
+    }
   }
 }
