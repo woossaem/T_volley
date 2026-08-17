@@ -17,6 +17,7 @@ import { useRouter, useFocusEffect } from 'expo-router';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
 import { Colors } from '../constants/Colors';
+import StickyAdBanner from '../components/StickyAdBanner'; // 💡 스티커 광고 배너 Import
 
 interface PollOption {
   id: string;
@@ -439,6 +440,9 @@ export default function PollsScreen() {
         )}
       </ScrollView>
 
+      {/* 💡 [추가] 모달 바깥 스크린 최하단 배너 이식 */}
+      <StickyAdBanner />
+
       {/* 투표 생성 모달 */}
       <Modal visible={createModalVisible} animationType="slide" transparent={true}>
         <View style={styles.modalOverlay}>
@@ -668,7 +672,8 @@ const styles = StyleSheet.create({
   segmentTextPublic: { color: '#1D4ED8', fontWeight: '900' },
   segmentTextTeam: { color: '#C2410C', fontWeight: '900' },
 
-  content: { padding: 16, gap: 12, paddingBottom: 40 },
+  // 💡 여백 확보 (광고 가림 방지)
+  content: { padding: 16, gap: 12, paddingBottom: 60 },
   emptyBox: { backgroundColor: '#FFFFFF', borderRadius: 16, padding: 40, alignItems: 'center', borderWidth: 1, borderColor: '#E2E8F0', marginTop: 20 },
   emptyEmoji: { fontSize: 40, marginBottom: 10 },
   emptyText: { fontSize: 14, fontWeight: '800', color: '#475569' },

@@ -855,8 +855,7 @@ const styles = StyleSheet.create({
   awayCourtBg: { backgroundColor: '#BE123C' },
   centerDividerLine: { width: 2, backgroundColor: '#1E293B' },
 
-  courtTopRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', width: '100%',
-    zIndex: 10, },
+  courtTopRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', width: '100%', zIndex: 10, },
   courtTeamName: { fontSize: 22, fontWeight: '900', color: '#FFFFFF', letterSpacing: -0.5, marginTop: 2 },
   
   stackedUtilityBtns: { flexDirection: 'column', gap: 4, alignItems: 'flex-end' },

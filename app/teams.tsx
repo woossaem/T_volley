@@ -20,6 +20,7 @@ import { Colors } from '../constants/Colors';
 import UserProfileModal from '../components/UserProfileModal';
 import TeamReportModal, { TeamReportAnalytics } from '../components/TeamReportModal';
 import StickyAdBanner from '../components/StickyAdBanner';
+import BatchProposalModal from '../components/BatchProposalModal';
 
 interface TeamMemberObj {
   userId: string;
@@ -28,7 +29,7 @@ interface TeamMemberObj {
 }
 
 interface PendingMemberReq {
-  id: string; // team_members 테이블의 id
+  id: string;
   team_id: string;
   user_id: string;
   full_name: string;
@@ -51,6 +52,33 @@ interface TeamData {
 
 const getTeamIcon = (type?: 'school' | 'club') => {
   return type === 'school' ? '🏫' : '🛡️';
+};
+
+const parseTeamName = (rawName: any): string => {
+  if (!rawName) return '';
+  if (typeof rawName === 'string') {
+    const trimmed = rawName.trim();
+    if (!trimmed || trimmed === 'null' || trimmed === 'undefined') return '';
+    if ((trimmed.startsWith('{') && trimmed.endsWith('}')) || (trimmed.startsWith('[') && trimmed.endsWith(']'))) {
+      try { return parseTeamName(JSON.parse(trimmed)); } catch (e) {}
+    }
+    return trimmed;
+  }
+  if (Array.isArray(rawName)) {
+    for (const item of rawName) {
+      const parsed = parseTeamName(item);
+      if (parsed) return parsed;
+    }
+    return '';
+  }
+  if (typeof rawName === 'object') {
+    const candidate = rawName.name || rawName.team_name || rawName.title || rawName.formatted;
+    if (candidate && candidate !== rawName) {
+      const parsedCand = parseTeamName(candidate);
+      if (parsedCand) return parsedCand;
+    }
+  }
+  return '';
 };
 
 const cleanRegionName = (rawInput?: any): string => {
@@ -88,6 +116,7 @@ export default function AllTeamsListScreen() {
 
   const [teams, setTeams] = useState<TeamData[]>([]);
   const [myTeamIds, setMyTeamIds] = useState<string[]>([]);
+  const [myTeamNames, setMyTeamsNames] = useState<string[]>([]);
   const [pendingTeamIds, setPendingTeamIds] = useState<string[]>([]);
   const [pendingRequestsForMyTeams, setPendingRequestsForMyTeams] = useState<PendingMemberReq[]>([]);
   const [allMatches, setAllMatches] = useState<any[]>([]);
@@ -121,6 +150,8 @@ export default function AllTeamsListScreen() {
   const [selectedJoinTeam, setSelectedJoinTeam] = useState<TeamData | null>(null);
   const [joinPassword, setJoinPassword] = useState('');
 
+  const [proposalModalVisible, setProposalModalVisible] = useState(false);
+
   useEffect(() => {
     if (currentUserId) {
       supabase.from('profiles').select('region').eq('id', currentUserId).maybeSingle().then(({ data }) => {
@@ -148,15 +179,21 @@ export default function AllTeamsListScreen() {
     try {
       let activeMyTeams: string[] = [];
       if (currentUserId) {
-        const { data: myMems } = await supabase.from('team_members').select('team_id, is_active').eq('user_id', currentUserId);
+        const { data: myMems } = await supabase.from('team_members').select('team_id, is_active, teams(name)').eq('user_id', currentUserId);
         if (myMems) {
           activeMyTeams = (myMems || []).filter((m: any) => m.is_active).map((m: any) => m.team_id as string);
           setMyTeamIds(activeMyTeams);
+          
+          const names = (myMems || []).filter((m: any) => m.is_active).map((m: any) => {
+            const teamObj = Array.isArray(m.teams) ? m.teams[0] : m.teams;
+            return parseTeamName(teamObj?.name);
+          }).filter(Boolean);
+          setMyTeamsNames(names);
+
           setPendingTeamIds((myMems || []).filter((m: any) => !m.is_active).map((m: any) => m.team_id as string));
         }
       }
 
-      // 내 소속 팀에 가입 신청된 대기자 목록 가져오기
       if (activeMyTeams.length > 0) {
         const { data: pendData } = await supabase
           .from('team_members')
@@ -173,7 +210,7 @@ export default function AllTeamsListScreen() {
               team_id: p.team_id,
               user_id: p.user_id,
               full_name: profileObj?.full_name || '선생님',
-              team_name: teamObj?.name || '소속팀',
+              team_name: parseTeamName(teamObj?.name) || '소속팀',
             };
           });
           setPendingRequestsForMyTeams(formattedPendings);
@@ -203,13 +240,16 @@ export default function AllTeamsListScreen() {
         const teamObj = Array.isArray(item.teams) ? item.teams[0] : item.teams;
         const profileObj = Array.isArray(item.profiles) ? item.profiles[0] : item.profiles;
         const uId = item.user_id;
-        if (!teamObj || !teamObj.name) return;
+        if (!teamObj) return;
+
+        const cleanName = parseTeamName(teamObj.name);
+        if (!cleanName) return;
 
         const stdRegion = cleanRegionName(teamObj.region);
         if (stdRegion) regionsSet.add(stdRegion);
 
         const existing = teamMap.get(teamObj.id) || {
-          name: teamObj.name,
+          name: cleanName,
           region: stdRegion || '천안',
           team_type: (teamObj.team_type as 'school' | 'club') || 'school',
           youtube_channel_url: teamObj.youtube_channel_url || null,
@@ -233,11 +273,14 @@ export default function AllTeamsListScreen() {
       const { data: allTeamsDB } = await supabase.from('teams').select('*');
       if (allTeamsDB) {
         allTeamsDB.forEach((t: any) => {
+          const cleanName = parseTeamName(t.name) || parseTeamName(t.team_name);
+          if (!cleanName) return;
+
           const stdRegion = cleanRegionName(t.region);
           if (stdRegion) regionsSet.add(stdRegion);
           if (!teamMap.has(t.id)) {
             teamMap.set(t.id, {
-              name: t.name,
+              name: cleanName,
               region: stdRegion || '천안',
               team_type: (t.team_type as 'school' | 'club') || 'school',
               youtube_channel_url: t.youtube_channel_url || null,
@@ -286,100 +329,65 @@ export default function AllTeamsListScreen() {
   useEffect(() => { fetchTeams(); }, []);
   const onRefresh = () => { setRefreshing(true); setExpandedTeamId(null); fetchTeams(); };
 
-  // 💡 가입 요청 승인 처리
   const handleApprovePendingUser = async (req: PendingMemberReq) => {
     setActionLoading(true);
     try {
       const { error } = await supabase.from('team_members').update({ is_active: true }).eq('id', req.id);
       if (error) throw error;
 
-      // 승인 완료 알림 발송
       await supabase.from('notifications').insert({
         user_id: req.user_id,
         title: '🎉 [팀 가입 승인 완료]',
-        message: `'${req.team_name}' 팀 가입이 최종 승인되었습니다. 이제 팀의 정식 멤버로 활동해보세요!`,
+        message: `'${req.team_name}' 팀 가입이 최종 승인되었습니다.`,
         is_read: false,
       });
 
-      Alert.alert('승인 완료 ✅', `'${req.full_name}' 선생님이 '${req.team_name}' 팀의 정식 멤버로 승인되었습니다.`);
+      Alert.alert('승인 완료 ✅', `'${req.full_name}' 선생님이 정식 멤버로 승인되었습니다.`);
       fetchTeams();
-    } catch (err: any) {
-      Alert.alert('오류', err.message);
-    } finally {
-      setActionLoading(false);
-    }
+    } catch (err: any) { Alert.alert('오류', err.message); } 
+    finally { setActionLoading(false); }
   };
 
-  // 💡 가입 요청 거절 처리
   const handleRejectPendingUser = async (req: PendingMemberReq) => {
     Alert.alert('가입 요청 거절', `'${req.full_name}' 선생님의 가입 요청을 거절하시겠습니까?`, [
       { text: '취소', style: 'cancel' },
       {
-        text: '거절하기',
-        style: 'destructive',
+        text: '거절하기', style: 'destructive',
         onPress: async () => {
           setActionLoading(true);
           try {
             await supabase.from('team_members').delete().eq('id', req.id);
-
-            // 거절 안내 알림 발송
-            await supabase.from('notifications').insert({
-              user_id: req.user_id,
-              title: 'ℹ️ [팀 가입 요청 거절]',
-              message: `'${req.team_name}' 팀 가입 신청이 거절되었습니다.`,
-              is_read: false,
-            });
-
             Alert.alert('거절 완료', '가입 요청을 거절했습니다.');
             fetchTeams();
-          } catch (err: any) {
-            Alert.alert('오류', err.message);
-          } finally {
-            setActionLoading(false);
-          }
+          } catch (err: any) { Alert.alert('오류', err.message); } 
+          finally { setActionLoading(false); }
         }
       }
     ]);
   };
 
+  // 💡 내 팀을 포함해 모든 팀의 체크박스를 정상 선택 가능
   const toggleSelectTeam = (teamId: string) => {
     setSelectedTeamIds(prev =>
       prev.includes(teamId) ? prev.filter(id => id !== teamId) : [...prev, teamId]
     );
   };
 
-  const handleSendMultiProposal = async () => {
+  // 💡 버튼 터치 시 조건 판단
+  const handleOpenProposal = () => {
     if (selectedTeamIds.length === 0) return;
 
-    Alert.alert(
-      '교류전 일괄 제안',
-      `선택하신 ${selectedTeamIds.length}개 팀에 친선 교류전 매칭 제안을 동시에 보내시겠습니까?`,
-      [
-        { text: '취소', style: 'cancel' },
-        {
-          text: '제안 발송',
-          onPress: async () => {
-            try {
-              setActionLoading(true);
-              const notis = selectedTeamIds.map(tId => ({
-                user_id: tId,
-                title: '✉️ [교류전 제안 도착]',
-                message: '새로운 팀으로부터 교류전 매칭 제안이 도착했습니다. 앱에서 확인해 보세요!',
-                is_read: false,
-              }));
+    const mySelectedTeamIds = selectedTeamIds.filter(id => myTeamIds.includes(id));
+    
+    // 경우 1: 내 팀 1개만 고르고 상대팀은 0개 고른 경우
+    if (mySelectedTeamIds.length === 1 && selectedTeamIds.length === 1) {
+      return Alert.alert(
+        '교류전 대상 선택 안내', 
+        '상대 팀을 1개 이상 선택하거나, 내 다른 소속팀을 함께 선택해 교류전을 등록하세요.'
+      );
+    }
 
-              await supabase.from('notifications').insert(notis);
-              Alert.alert('발송 완료! ✉️', `${selectedTeamIds.length}개 팀에 성공적으로 교류전 제안을 전달했습니다.`);
-              setSelectedTeamIds([]);
-            } catch (err: any) {
-              Alert.alert('오류', err.message);
-            } finally {
-              setActionLoading(false);
-            }
-          }
-        }
-      ]
-    );
+    setProposalModalVisible(true);
   };
 
   const similarTeams = useMemo(() => {
@@ -391,8 +399,7 @@ export default function AllTeamsListScreen() {
   const handleSelectSimilarTeam = (team: TeamData) => {
     setCreateModalVisible(false);
     setShowCreateDropdown(false);
-    setNewTeamName('');
-    setNewTeamYoutube('');
+    setNewTeamName(''); setNewTeamYoutube('');
     
     if (team.hasPassword) {
       setSelectedJoinTeam(team);
@@ -405,22 +412,12 @@ export default function AllTeamsListScreen() {
   const handleCreateTeam = async () => {
     const trimmedName = newTeamName.trim();
     if (!trimmedName) return Alert.alert('알림', '팀 이름을 입력해 주세요.');
-    if (newTeamPassword && newTeamPassword.length > 0 && newTeamPassword.length < 4) {
-      return Alert.alert('알림', '비밀번호는 최소 4자리 이상 입력해 주세요.');
-    }
 
     const cleanInput = trimmedName.replace(/\s+/g, '').toLowerCase();
     const exactDuplicate = teams.find(t => t.team_name.replace(/\s+/g, '').toLowerCase() === cleanInput);
 
     if (exactDuplicate) {
-      return Alert.alert(
-        '이미 존재함',
-        `'${exactDuplicate.team_name}' 팀이 이미 등록되어 있습니다.\n해당 팀에 가입하시겠습니까?`,
-        [
-          { text: '취소', style: 'cancel' },
-          { text: '해당 팀 가입하기', onPress: () => handleSelectSimilarTeam(exactDuplicate) }
-        ]
-      );
+      return Alert.alert('이미 존재함', `'${exactDuplicate.team_name}' 팀이 이미 존재합니다.`);
     }
     
     setActionLoading(true);
@@ -437,146 +434,87 @@ export default function AllTeamsListScreen() {
       if (error) throw error;
 
       await supabase.from('team_members').insert({
-        user_id: currentUserId,
-        team_id: newTeam.id,
-        is_active: true,
-        is_primary: myTeamIds.length === 0,
+        user_id: currentUserId, team_id: newTeam.id, is_active: true, is_primary: myTeamIds.length === 0,
       });
 
-      Alert.alert('팀 창단 완료! 🎉', `'${trimmedName}' 팀이 새롭게 등록되었으며, 선생님이 🚩 회장으로 자동 등록되었습니다.`);
+      Alert.alert('팀 창단 완료! 🎉', `'${trimmedName}' 팀이 새로 등록되었습니다.`);
       setCreateModalVisible(false);
-      setShowCreateDropdown(false);
-      setNewTeamName(''); setNewTeamPassword(''); setNewTeamYoutube('');
       onRefresh();
-    } catch (err: any) {
-      Alert.alert('오류', '팀 등록에 실패했습니다.');
-    } finally { setActionLoading(false); }
+    } catch (err: any) { Alert.alert('오류', err.message); } 
+    finally { setActionLoading(false); }
   };
 
   const handleDirectJoin = (team: TeamData) => {
-    Alert.alert(
-      '🔓 공개팀 가입',
-      `'${team.team_name}' 팀은 공개팀이므로 바로 가입됩니다.\n가입하시겠습니까?`,
-      [
-        { text: '취소', style: 'cancel' },
-        {
-          text: '가입하기',
-          onPress: async () => {
-            setActionLoading(true);
-            try {
-              await supabase.from('team_members').insert({
-                user_id: currentUserId,
-                team_id: team.team_id,
-                is_active: true,
-                is_primary: myTeamIds.length === 0
-              });
-              Alert.alert('가입 완료! 🚀', `'${team.team_name}' 팀에 소속되었습니다!`);
-              onRefresh();
-            } catch (err: any) {
-              Alert.alert('오류', '가입 처리 중 문제가 발생했습니다.');
-            } finally {
-              setActionLoading(false);
-            }
-          }
+    Alert.alert('공개팀 가입', `'${team.team_name}' 팀에 가입하시겠습니까?`, [
+      { text: '취소', style: 'cancel' },
+      {
+        text: '가입하기',
+        onPress: async () => {
+          setActionLoading(true);
+          try {
+            await supabase.from('team_members').insert({
+              user_id: currentUserId, team_id: team.team_id, is_active: true, is_primary: myTeamIds.length === 0
+            });
+            Alert.alert('가입 완료! 🚀', `'${team.team_name}' 팀 소속이 되었습니다.`);
+            onRefresh();
+          } catch (err: any) { Alert.alert('오류', err.message); } 
+          finally { setActionLoading(false); }
         }
-      ]
-    );
+      }
+    ]);
   };
 
   const handleCancelJoinRequest = (teamId: string) => {
-    Alert.alert(
-      '가입 요청 취소',
-      '이 팀에 보냈던 가입 승인 요청을 취소하시겠습니까?',
-      [
-        { text: '닫기', style: 'cancel' },
-        {
-          text: '요청 취소',
-          style: 'destructive',
-          onPress: async () => {
-            setActionLoading(true);
-            try {
-              await supabase
-                .from('team_members')
-                .delete()
-                .eq('user_id', currentUserId)
-                .eq('team_id', teamId)
-                .eq('is_active', false);
-              
-              Alert.alert('취소 완료', '가입 요청이 정상적으로 취소되었습니다.');
-              onRefresh();
-            } catch (err: any) {
-              Alert.alert('오류', '가입 요청 취소 중 문제가 발생했습니다.');
-            } finally {
-              setActionLoading(false);
-            }
-          }
+    Alert.alert('요청 취소', '가입 승인 요청을 취소하시겠습니까?', [
+      { text: '닫기', style: 'cancel' },
+      {
+        text: '취소', style: 'destructive',
+        onPress: async () => {
+          setActionLoading(true);
+          try {
+            await supabase.from('team_members').delete().eq('user_id', currentUserId).eq('team_id', teamId).eq('is_active', false);
+            Alert.alert('취소 완료', '가입 요청이 취소되었습니다.');
+            onRefresh();
+          } catch (err: any) { Alert.alert('오류', err.message); } 
+          finally { setActionLoading(false); }
         }
-      ]
-    );
+      }
+    ]);
   };
 
   const handleJoinWithPassword = async () => {
-    if (!joinPassword) return Alert.alert('알림', '팀 비밀번호를 입력해 주세요.');
+    if (!joinPassword) return Alert.alert('알림', '비밀번호를 입력하세요.');
     if (!selectedJoinTeam) return;
 
     setActionLoading(true);
     try {
-      const { data, error } = await supabase.from('teams').select('password').eq('id', selectedJoinTeam.team_id).single();
-      
-      if (error || !data || data.password !== joinPassword) {
+      const { data } = await supabase.from('teams').select('password').eq('id', selectedJoinTeam.team_id).single();
+      if (!data || data.password !== joinPassword) {
         setActionLoading(false);
-        return Alert.alert('비밀번호 오류', '비밀번호가 일치하지 않습니다.');
+        return Alert.alert('비밀번호 오류', '비밀번호가 올바르지 않습니다.');
       }
 
       await supabase.from('team_members').insert({
-        user_id: currentUserId,
-        team_id: selectedJoinTeam.team_id,
-        is_active: true,
-        is_primary: myTeamIds.length === 0
+        user_id: currentUserId, team_id: selectedJoinTeam.team_id, is_active: true, is_primary: myTeamIds.length === 0
       });
 
-      Alert.alert('가입 완료! 🚀', `'${selectedJoinTeam.team_name}' 팀에 소속되었습니다!`);
+      Alert.alert('가입 완료! 🚀', `'${selectedJoinTeam.team_name}' 팀에 가입되었습니다.`);
       setJoinModalVisible(false);
-      setJoinPassword('');
       onRefresh();
-    } catch (err: any) { Alert.alert('오류', err.message); setActionLoading(false); }
+    } catch (err: any) { Alert.alert('오류', err.message); } 
+    finally { setActionLoading(false); }
   };
 
-  // 💡 가입 요청 발송 핸들러 (회장 + 기존 팀원 모두에게 알림 보강)
   const handleJoinRequest = async () => {
     if (!selectedJoinTeam) return;
-
     setActionLoading(true);
     try {
-      await supabase.from('team_members').insert({
-        user_id: currentUserId,
-        team_id: selectedJoinTeam.team_id,
-        is_active: false,
-        is_primary: false
-      });
-
-      const recipientIds = new Set<string>();
-      if (selectedJoinTeam.leader_id) recipientIds.add(selectedJoinTeam.leader_id);
-
-      const { data: members } = await supabase.from('team_members').select('user_id').eq('team_id', selectedJoinTeam.team_id).eq('is_active', true);
-      members?.forEach((m: any) => { if (m.user_id) recipientIds.add(m.user_id); });
-      recipientIds.delete(currentUserId!);
-
-      if (recipientIds.size > 0) {
-        const notis = Array.from(recipientIds).map(uId => ({
-          user_id: uId,
-          title: '🙋‍♂️ [새로운 팀 가입 요청]',
-          message: `새로운 선생님이 '${selectedJoinTeam.team_name}' 팀에 가입을 요청했습니다. 팀 목록에서 승인해 주세요.`,
-          is_read: false
-        }));
-        await supabase.from('notifications').insert(notis);
-      }
-
-      Alert.alert('요청 완료 🔔', '기존 팀원 및 회장님에게 가입 승인 요청을 전송했습니다.');
+      await supabase.from('team_members').insert({ user_id: currentUserId, team_id: selectedJoinTeam.team_id, is_active: false });
+      Alert.alert('요청 완료 🔔', '가입 승인 요청을 전달했습니다.');
       setJoinModalVisible(false);
-      setJoinPassword('');
       onRefresh();
-    } catch (err: any) { Alert.alert('오류', err.message); setActionLoading(false); }
+    } catch (err: any) { Alert.alert('오류', err.message); } 
+    finally { setActionLoading(false); }
   };
 
   const filteredAndSortedTeams = useMemo(() => {
@@ -604,9 +542,9 @@ export default function AllTeamsListScreen() {
     const oppMap: { [oppName: string]: { wins: number; losses: number; draws: number; total: number } } = {};
 
     matchesList.forEach((m: any) => {
-      const hName = m.host_team_name;
-      const aName = m.away_team_name;
-      const wName = m.winner_team;
+      const hName = parseTeamName(m.host_team_name);
+      const aName = parseTeamName(m.away_team_name);
+      const wName = parseTeamName(m.winner_team);
       const isHost = hName === teamName;
       const oppName = isHost ? aName : hName;
       const isWin = wName === teamName;
@@ -663,7 +601,7 @@ export default function AllTeamsListScreen() {
     });
 
     const teamRecent5 = matchesList.slice(0, 5).map((m: any) => {
-      const isWin = m.winner_team === teamName;
+      const isWin = parseTeamName(m.winner_team) === teamName;
       const isDraw = m.winner_team === 'draw' || m.winner_team === '무승부';
       return isWin ? 'WIN' : isDraw ? 'DRAW' : 'LOSS';
     });
@@ -691,9 +629,9 @@ export default function AllTeamsListScreen() {
 
   const selectedTeamAnalytics = useMemo<TeamReportAnalytics | null>(() => {
     if (!selectedTeamForReport) return null;
-    const teamName = selectedTeamForReport.team_name;
+    const teamName = parseTeamName(selectedTeamForReport.team_name);
 
-    const teamMatches = allMatches.filter((m: any) => m.host_team_name === teamName || m.away_team_name === teamName);
+    const teamMatches = allMatches.filter((m: any) => parseTeamName(m.host_team_name) === teamName || parseTeamName(m.away_team_name) === teamName);
 
     const careerStats = calcStatsForMatches(teamMatches, teamName);
 
@@ -744,7 +682,6 @@ export default function AllTeamsListScreen() {
 
   return (
     <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
-      {/* 헤더 */}
       <View style={styles.header}>
         <View style={styles.headerLeftGroup}>
           <TouchableOpacity style={styles.backBtn} onPress={() => router.back()} hitSlop={10}>
@@ -757,7 +694,6 @@ export default function AllTeamsListScreen() {
         </TouchableOpacity>
       </View>
 
-      {/* 지역 스위퍼 */}
       <View style={styles.regionTabWrapper}>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.regionTabScroll}>
           {dynamicRegionTabs.map((region) => {
@@ -774,7 +710,6 @@ export default function AllTeamsListScreen() {
         </ScrollView>
       </View>
 
-      {/* 정렬 스위퍼 */}
       <View style={styles.sortWrapper}>
         <TouchableOpacity style={[styles.sortBtn, sortType === 'popular' && styles.sortBtnActive]} onPress={() => setSortType('popular')}>
           <Text style={[styles.sortBtnText, sortType === 'popular' && styles.sortBtnTextActive]}>🔥 대형·공식 팀 우선</Text>
@@ -784,217 +719,228 @@ export default function AllTeamsListScreen() {
         </TouchableOpacity>
       </View>
 
-      <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={Colors.primary} />}>
-        <View style={styles.infoBanner}>
-          <Text style={styles.infoBannerIcon}>💡</Text>
-          <Text style={styles.infoBannerText}>
-            팀에 <Text style={{ fontWeight: '800' }}>3명 이상</Text> 모이면 <Text style={{ color: '#0284C7', fontWeight: '800' }}>💎 공식 인증팀</Text>으로 승격되며, <Text style={{ fontWeight: '800', color: '#2563EB' }}>상세 리포트</Text>가 제공됩니다!
-          </Text>
-        </View>
-
-        {loading ? (
-          <ActivityIndicator color={Colors.primary} size="large" style={{ marginTop: 40 }} />
-        ) : filteredAndSortedTeams.length === 0 ? (
-          <View style={styles.emptyContainer}>
-            <Text style={styles.emptyEmoji}>👀</Text>
-            <Text style={styles.emptyText}>선택하신 [{selectedRegion}] 지역에 아직 등록된 팀이 없습니다.</Text>
+      <View style={{ flex: 1 }}>
+        <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={Colors.primary} />}>
+          <View style={styles.infoBanner}>
+            <Text style={styles.infoBannerIcon}>💡</Text>
+            <Text style={styles.infoBannerText}>
+              팀에 <Text style={{ fontWeight: '800' }}>3명 이상</Text> 모이면 <Text style={{ color: '#0284C7', fontWeight: '800' }}>💎 공식 인증팀</Text>으로 승격되며, <Text style={{ fontWeight: '800', color: '#2563EB' }}>상세 리포트</Text>가 제공됩니다!
+            </Text>
           </View>
-        ) : (
-          filteredAndSortedTeams.map((team) => {
-            const isSchool = team.team_type === 'school';
-            const isExpanded = expandedTeamId === team.team_id;
-            const MAX_DISPLAY = 3;
-            const extraCount = team.memberCount - MAX_DISPLAY;
-            
-            const isMyTeam = myTeamIds.includes(team.team_id);
-            const isPending = pendingTeamIds.includes(team.team_id);
-            const isChecked = selectedTeamIds.includes(team.team_id);
 
-            const pendingUsersForThisTeam = pendingRequestsForMyTeams.filter(p => p.team_id === team.team_id);
-            const displayMemberObjs = isExpanded ? team.memberObjs : team.memberObjs.slice(0, MAX_DISPLAY);
+          {loading ? (
+            <ActivityIndicator color={Colors.primary} size="large" style={{ marginTop: 40 }} />
+          ) : filteredAndSortedTeams.length === 0 ? (
+            <View style={styles.emptyContainer}>
+              <Text style={styles.emptyEmoji}>👀</Text>
+              <Text style={styles.emptyText}>선택하신 [{selectedRegion}] 지역에 아직 등록된 팀이 없습니다.</Text>
+            </View>
+          ) : (
+            filteredAndSortedTeams.map((team) => {
+              const isSchool = team.team_type === 'school';
+              const isExpanded = expandedTeamId === team.team_id;
+              const MAX_DISPLAY = 3;
+              const extraCount = team.memberCount - MAX_DISPLAY;
+              
+              const isMyTeam = myTeamIds.includes(team.team_id);
+              const isPending = pendingTeamIds.includes(team.team_id);
+              const isChecked = selectedTeamIds.includes(team.team_id);
 
-            return (
-              <View 
-                key={team.team_id} 
-                style={[
-                  styles.teamCard, 
-                  team.isOfficial ? styles.teamCardOfficial : styles.teamCardUnofficial, 
-                  isChecked && styles.teamCardSelected
-                ]}
-              >
-                <TouchableOpacity onPress={() => openTeamReport(team)} activeOpacity={0.8}>
-                  <View style={styles.cardMainHeaderTopRow}>
-                    <TouchableOpacity onPress={() => toggleSelectTeam(team.team_id)} style={styles.checkboxTouch} hitSlop={6}>
-                      <View style={[styles.customCheckbox, isChecked && styles.customCheckboxChecked]}>
-                        {isChecked && <Text style={styles.checkmarkText}>✓</Text>}
-                      </View>
-                    </TouchableOpacity>
+              const pendingUsersForThisTeam = pendingRequestsForMyTeams.filter(p => p.team_id === team.team_id);
+              const displayMemberObjs = isExpanded ? team.memberObjs : team.memberObjs.slice(0, MAX_DISPLAY);
 
-                    <Text style={styles.teamName} numberOfLines={1}>
-                      {getTeamIcon(team.team_type)} {team.team_name}
-                    </Text>
+              return (
+                <View 
+                  key={team.team_id} 
+                  style={[
+                    styles.teamCard, 
+                    team.isOfficial ? styles.teamCardOfficial : styles.teamCardUnofficial, 
+                    isChecked && styles.teamCardSelected
+                  ]}
+                >
+                  <TouchableOpacity onPress={() => openTeamReport(team)} activeOpacity={0.8}>
+                    <View style={styles.cardMainHeaderTopRow}>
+                      <TouchableOpacity onPress={() => toggleSelectTeam(team.team_id)} style={styles.checkboxTouch} hitSlop={6}>
+                        <View style={[styles.customCheckbox, isChecked && styles.customCheckboxChecked]}>
+                          {isChecked && <Text style={styles.checkmarkText}>✓</Text>}
+                        </View>
+                      </TouchableOpacity>
 
-                    <View style={styles.rightBadgeContainer}>
-                      <View style={styles.countBadge}>
-                        <Text style={styles.countText}>{team.memberCount}명</Text>
-                      </View>
-                      <View style={styles.mannerTempBadge}>
-                        <Text style={styles.mannerTempBadgeText}>🌡️ {(team.manner_temp || 36.5).toFixed(1)}°C</Text>
-                      </View>
-                    </View>
-                  </View>
-
-                  <View style={styles.cardHeaderSubRow}>
-                    <View style={styles.regionTagChip}>
-                      <Text style={styles.regionTagChipText}>📍 {cleanRegionName(team.region)}</Text>
-                    </View>
-
-                    <View style={[styles.typeBadge, isSchool ? styles.schoolTypeBadge : styles.clubTypeBadge]}>
-                      <Text style={[styles.typeBadgeText, isSchool ? styles.schoolTypeBadgeText : styles.clubTypeBadgeText]}>
-                        {isSchool ? '학교' : '동호회'}
+                      <Text style={styles.teamName} numberOfLines={1}>
+                        {getTeamIcon(team.team_type)} {team.team_name}
                       </Text>
+
+                      <View style={styles.rightBadgeContainer}>
+                        <View style={styles.countBadge}>
+                          <Text style={styles.countText}>{team.memberCount}명</Text>
+                        </View>
+                        <View style={styles.mannerTempBadge}>
+                          <Text style={styles.mannerTempBadgeText}>🌡️ {(team.manner_temp || 36.5).toFixed(1)}°C</Text>
+                        </View>
+                      </View>
                     </View>
 
-                    <View style={[styles.privacyBadge, team.hasPassword ? styles.privateBadge : styles.publicBadge]}>
-                      <Text style={[styles.privacyBadgeText, team.hasPassword ? styles.privateBadgeText : styles.publicBadgeText]}>
-                        {team.hasPassword ? '🔒 비공개' : '🔓 공개'}
-                      </Text>
+                    <View style={styles.cardHeaderSubRow}>
+                      <View style={styles.regionTagChip}>
+                        <Text style={styles.regionTagChipText}>📍 {cleanRegionName(team.region)}</Text>
+                      </View>
+
+                      <View style={[styles.typeBadge, isSchool ? styles.schoolTypeBadge : styles.clubTypeBadge]}>
+                        <Text style={[styles.typeBadgeText, isSchool ? styles.schoolTypeBadgeText : styles.clubTypeBadgeText]}>
+                          {isSchool ? '학교' : '동호회'}
+                        </Text>
+                      </View>
+
+                      <View style={[styles.privacyBadge, team.hasPassword ? styles.privateBadge : styles.publicBadge]}>
+                        <Text style={[styles.privacyBadgeText, team.hasPassword ? styles.privateBadgeText : styles.publicBadgeText]}>
+                          {team.hasPassword ? '🔒 비공개' : '🔓 공개'}
+                        </Text>
+                      </View>
+                      
+                      {team.isOfficial && (
+                        <View style={styles.officialBadge}>
+                          <Text style={styles.officialBadgeText}>💎 공식인증</Text>
+                        </View>
+                      )}
+
+                      {team.youtube_channel_url && (
+                        <TouchableOpacity
+                          style={styles.youtubeMiniBtn}
+                          onPress={() => Linking.openURL(team.youtube_channel_url!).catch(() => Alert.alert('오류', '올바른 유튜브 링크가 아닙니다.'))}
+                        >
+                          <Text style={styles.youtubeMiniBtnText}>📺 유튜브</Text>
+                        </TouchableOpacity>
+                      )}
                     </View>
-                    
-                    {team.isOfficial && (
-                      <View style={styles.officialBadge}>
-                        <Text style={styles.officialBadgeText}>💎 공식인증</Text>
+                  </TouchableOpacity>
+
+                  <View style={styles.membersArea}>
+                    <View style={styles.membersAreaHeader}>
+                      <Text style={styles.membersLabel}>
+                        소속 팀원 {isMyTeam ? '(실명)' : '(익명)'}
+                      </Text>
+                      {!team.isOfficial && (
+                        <Text style={styles.needMoreText}>🌱 공식팀까지 {Math.max(1, 3 - team.memberCount)}명</Text>
+                      )}
+                    </View>
+
+                    {team.memberCount === 0 ? (
+                      <Text style={{ fontSize: 12, color: '#94A3B8' }}>등록된 소속 팀원이 없습니다.</Text>
+                    ) : (
+                      <View style={styles.membersList}>
+                        {displayMemberObjs.map((mObj) => {
+                          const isLeader = team.leader_id === mObj.userId;
+                          const nameToShow = isMyTeam ? mObj.realName : mObj.maskedName;
+
+                          return (
+                            <TouchableOpacity
+                              key={mObj.userId}
+                              style={[styles.memberTag, isLeader && styles.memberTagLeader]}
+                              onPress={() => openUserProfile(mObj.userId)}
+                            >
+                              <Text style={[styles.memberTagText, isLeader && styles.memberTagTextLeader]}>
+                                {isLeader ? `🚩 ${nameToShow}` : nameToShow}
+                              </Text>
+                            </TouchableOpacity>
+                          );
+                        })}
+                        {extraCount > 0 && !isExpanded && (
+                          <TouchableOpacity style={styles.moreChip} onPress={() => setExpandedTeamId(team.team_id)}>
+                            <Text style={styles.moreChipText}>+{extraCount}명 더보기</Text>
+                          </TouchableOpacity>
+                        )}
+                        {isExpanded && extraCount > 0 && (
+                          <TouchableOpacity style={styles.moreChip} onPress={() => setExpandedTeamId(null)}>
+                            <Text style={styles.moreChipText}>접기 ▲</Text>
+                          </TouchableOpacity>
+                        )}
                       </View>
                     )}
+                  </View>
 
-                    {team.youtube_channel_url && (
-                      <TouchableOpacity
-                        style={styles.youtubeMiniBtn}
-                        onPress={() => Linking.openURL(team.youtube_channel_url!).catch(() => Alert.alert('오류', '올바른 유튜브 링크가 아닙니다.'))}
+                  {isMyTeam && pendingUsersForThisTeam.length > 0 && (
+                    <View style={styles.pendingApprovalBox}>
+                      <Text style={styles.pendingApprovalTitle}>
+                        🔔 신규 가입 신청 승인 대기 ({pendingUsersForThisTeam.length}명)
+                      </Text>
+                      {pendingUsersForThisTeam.map((pReq) => (
+                        <View key={pReq.id} style={styles.pendingUserRow}>
+                          <Text style={styles.pendingUserName}>👤 {pReq.full_name} 선생님</Text>
+                          <View style={styles.pendingBtnGroup}>
+                            <TouchableOpacity
+                              style={styles.approveBtn}
+                              onPress={() => handleApprovePendingUser(pReq)}
+                              disabled={actionLoading}
+                            >
+                              <Text style={styles.approveBtnText}>승인 ✅</Text>
+                            </TouchableOpacity>
+                            <TouchableOpacity
+                              style={styles.rejectBtn}
+                              onPress={() => handleRejectPendingUser(pReq)}
+                              disabled={actionLoading}
+                            >
+                              <Text style={styles.rejectBtnText}>거절 ✕</Text>
+                            </TouchableOpacity>
+                          </View>
+                        </View>
+                      ))}
+                    </View>
+                  )}
+
+                  <View style={styles.actionFooter}>
+                    {isMyTeam ? (
+                      <View style={styles.badgeSuccess}><Text style={styles.badgeSuccessText}>✅ 내 소속 팀</Text></View>
+                    ) : isPending ? (
+                      <TouchableOpacity style={styles.badgePendingTouch} onPress={() => handleCancelJoinRequest(team.team_id)}>
+                        <Text style={styles.badgePendingText}>⏳ 승인 대기중 (터치하여 취소)</Text>
+                      </TouchableOpacity>
+                    ) : (
+                      <TouchableOpacity 
+                        style={styles.joinBtn} 
+                        onPress={() => { 
+                          if (team.hasPassword) {
+                            setSelectedJoinTeam(team); 
+                            setJoinModalVisible(true); 
+                          } else {
+                            handleDirectJoin(team);
+                          }
+                        }}
                       >
-                        <Text style={styles.youtubeMiniBtnText}>📺 유튜브</Text>
+                        <Text style={styles.joinBtnText}>+ 이 팀에 가입하기</Text>
                       </TouchableOpacity>
                     )}
                   </View>
-                </TouchableOpacity>
-
-                {/* 콤팩트 팀원 명단 */}
-                <View style={styles.membersArea}>
-                  <View style={styles.membersAreaHeader}>
-                    <Text style={styles.membersLabel}>
-                      소속 팀원 {isMyTeam ? '(실명)' : '(익명)'}
-                    </Text>
-                    {!team.isOfficial && (
-                      <Text style={styles.needMoreText}>🌱 공식팀까지 {Math.max(1, 3 - team.memberCount)}명</Text>
-                    )}
-                  </View>
-
-                  {team.memberCount === 0 ? (
-                    <Text style={{ fontSize: 12, color: '#94A3B8' }}>등록된 소속 팀원이 없습니다.</Text>
-                  ) : (
-                    <View style={styles.membersList}>
-                      {displayMemberObjs.map((mObj) => {
-                        const isLeader = team.leader_id === mObj.userId;
-                        const nameToShow = isMyTeam ? mObj.realName : mObj.maskedName;
-
-                        return (
-                          <TouchableOpacity
-                            key={mObj.userId}
-                            style={[styles.memberTag, isLeader && styles.memberTagLeader]}
-                            onPress={() => openUserProfile(mObj.userId)}
-                          >
-                            <Text style={[styles.memberTagText, isLeader && styles.memberTagTextLeader]}>
-                              {isLeader ? `🚩 ${nameToShow}` : nameToShow}
-                            </Text>
-                          </TouchableOpacity>
-                        );
-                      })}
-                      {extraCount > 0 && !isExpanded && (
-                        <TouchableOpacity style={styles.moreChip} onPress={() => setExpandedTeamId(team.team_id)}>
-                          <Text style={styles.moreChipText}>+{extraCount}명 더보기</Text>
-                        </TouchableOpacity>
-                      )}
-                      {isExpanded && extraCount > 0 && (
-                        <TouchableOpacity style={styles.moreChip} onPress={() => setExpandedTeamId(null)}>
-                          <Text style={styles.moreChipText}>접기 ▲</Text>
-                        </TouchableOpacity>
-                      )}
-                    </View>
-                  )}
                 </View>
+              );
+            })
+          )}
+        </ScrollView>
 
-                {/* 💡 [신규] 내 소속 팀일 경우, 승인 대기자가 있으면 노란색 박스로 바로 노출! */}
-                {isMyTeam && pendingUsersForThisTeam.length > 0 && (
-                  <View style={styles.pendingApprovalBox}>
-                    <Text style={styles.pendingApprovalTitle}>
-                      🔔 신규 가입 신청 승인 대기 ({pendingUsersForThisTeam.length}명)
-                    </Text>
-                    {pendingUsersForThisTeam.map((pReq) => (
-                      <View key={pReq.id} style={styles.pendingUserRow}>
-                        <Text style={styles.pendingUserName}>👤 {pReq.full_name} 선생님</Text>
-                        <View style={styles.pendingBtnGroup}>
-                          <TouchableOpacity
-                            style={styles.approveBtn}
-                            onPress={() => handleApprovePendingUser(pReq)}
-                            disabled={actionLoading}
-                          >
-                            <Text style={styles.approveBtnText}>승인 ✅</Text>
-                          </TouchableOpacity>
-                          <TouchableOpacity
-                            style={styles.rejectBtn}
-                            onPress={() => handleRejectPendingUser(pReq)}
-                            disabled={actionLoading}
-                          >
-                            <Text style={styles.rejectBtnText}>거절 ✕</Text>
-                          </TouchableOpacity>
-                        </View>
-                      </View>
-                    ))}
-                  </View>
-                )}
-
-                {/* 하단 버튼 영역 */}
-                <View style={styles.actionFooter}>
-                  {isMyTeam ? (
-                    <View style={styles.badgeSuccess}><Text style={styles.badgeSuccessText}>✅ 내 소속 팀</Text></View>
-                  ) : isPending ? (
-                    <TouchableOpacity style={styles.badgePendingTouch} onPress={() => handleCancelJoinRequest(team.team_id)}>
-                      <Text style={styles.badgePendingText}>⏳ 승인 대기중 (터치하여 취소)</Text>
-                    </TouchableOpacity>
-                  ) : (
-                    <TouchableOpacity 
-                      style={styles.joinBtn} 
-                      onPress={() => { 
-                        if (team.hasPassword) {
-                          setSelectedJoinTeam(team); 
-                          setJoinModalVisible(true); 
-                        } else {
-                          handleDirectJoin(team);
-                        }
-                      }}
-                    >
-                      <Text style={styles.joinBtnText}>+ 이 팀에 가입하기</Text>
-                    </TouchableOpacity>
-                  )}
-                </View>
-              </View>
-            );
-          })
+        {selectedTeamIds.length > 0 && (
+          <View style={styles.multiProposalBar}>
+            <Text style={styles.multiProposalCount}>선택된 {selectedTeamIds.length}개 팀</Text>
+            <TouchableOpacity style={styles.multiProposalBtn} onPress={handleOpenProposal} disabled={actionLoading}>
+              <Text style={styles.multiProposalBtnText}>✉️ 교류전 일괄 제안하기</Text>
+            </TouchableOpacity>
+          </View>
         )}
-      </ScrollView>
-
-      {selectedTeamIds.length > 0 && (
-        <View style={styles.multiProposalBar}>
-          <Text style={styles.multiProposalCount}>선택된 {selectedTeamIds.length}개 팀</Text>
-          <TouchableOpacity style={styles.multiProposalBtn} onPress={handleSendMultiProposal} disabled={actionLoading}>
-            {actionLoading ? <ActivityIndicator color="#FFF" size="small" /> : <Text style={styles.multiProposalBtnText}>✉️ 교류전 일괄 제안하기</Text>}
-          </TouchableOpacity>
-        </View>
-      )}
+      </View>
 
       <StickyAdBanner />
 
-      {/* 팀 창단 모달 */}
+      <BatchProposalModal
+        visible={proposalModalVisible}
+        onClose={() => setProposalModalVisible(false)}
+        selectedTeamIds={selectedTeamIds}
+        allTeams={teams}
+        myTeamNames={myTeamNames}
+        currentUserId={currentUserId}
+        onSuccess={() => {
+          setProposalModalVisible(false);
+          setSelectedTeamIds([]);
+        }}
+      />
+
       <Modal visible={createModalVisible} animationType="slide" transparent={true}>
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
@@ -1077,7 +1023,6 @@ export default function AllTeamsListScreen() {
         </View>
       </Modal>
 
-      {/* 비공개팀 가입 모달 */}
       <Modal visible={joinModalVisible} animationType="fade" transparent={true}>
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
@@ -1118,7 +1063,6 @@ export default function AllTeamsListScreen() {
         </View>
       </Modal>
 
-      {/* 프로필 모달 */}
       <UserProfileModal
         visible={profileModalVisible}
         userId={selectedUserIdForModal}
@@ -1128,7 +1072,6 @@ export default function AllTeamsListScreen() {
         }}
       />
 
-      {/* 🛡️ 팀 전력 분석 리포트 모달 */}
       <TeamReportModal
         visible={teamReportModalVisible}
         onClose={() => {
@@ -1164,7 +1107,7 @@ const styles = StyleSheet.create({
   sortBtnText: { fontSize: 12, fontWeight: '600', color: '#64748B' },
   sortBtnTextActive: { color: '#1D4ED8', fontWeight: '800' },
 
-  content: { padding: 14, gap: 10, paddingBottom: 80 },
+  content: { padding: 14, gap: 10, paddingBottom: 20 },
   infoBanner: { flexDirection: 'row', backgroundColor: '#F0F9FF', padding: 10, borderRadius: 10, borderWidth: 1, borderColor: '#BAE6FD', alignItems: 'center', marginBottom: 2 },
   infoBannerIcon: { fontSize: 18, marginRight: 8 },
   infoBannerText: { fontSize: 12, color: '#0369A1', lineHeight: 17, flex: 1 },
@@ -1173,7 +1116,7 @@ const styles = StyleSheet.create({
   emptyEmoji: { fontSize: 36, marginBottom: 10 },
   emptyText: { fontSize: 13, color: Colors.textMuted, fontWeight: '600' },
 
-  teamCard: { borderRadius: 14, padding: 12, elevation: 1, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.04, shadowRadius: 6 },
+  teamCard: { borderRadius: 14, padding: 12, elevation: 1 },
   teamCardOfficial: { backgroundColor: '#F0F9FF', borderColor: '#93C5FD', borderWidth: 1.5 },
   teamCardUnofficial: { backgroundColor: '#FFFFFF', borderColor: '#E2E8F0', borderWidth: 1 },
   teamCardSelected: { backgroundColor: '#E0F2FE', borderColor: '#2563EB', borderWidth: 2 },
@@ -1228,7 +1171,6 @@ const styles = StyleSheet.create({
   moreChip: { backgroundColor: '#EFF6FF', borderWidth: 1, borderColor: '#BFDBFE', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6 },
   moreChipText: { fontSize: 10.5, fontWeight: '800', color: '#1D4ED8' },
 
-  // 💡 [신규] 승인 대기 노란색 전용 박스 스타일
   pendingApprovalBox: { backgroundColor: '#FEFCE8', borderRadius: 10, padding: 10, marginTop: 10, borderWidth: 1, borderColor: '#FDE047' },
   pendingApprovalTitle: { fontSize: 11.5, fontWeight: '800', color: '#A16207', marginBottom: 6 },
   pendingUserRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#FFFFFF', padding: 8, borderRadius: 8, borderWidth: 1, borderColor: '#FEF08A', marginBottom: 4 },
@@ -1248,10 +1190,10 @@ const styles = StyleSheet.create({
   badgePendingTouch: { backgroundColor: '#FEFCE8', paddingVertical: 7, borderRadius: 8, alignItems: 'center', borderWidth: 1, borderColor: '#FDE047' },
   badgePendingText: { color: '#A16207', fontSize: 11.5, fontWeight: '800' },
 
-  multiProposalBar: { position: 'absolute', bottom: 65, left: 16, right: 16, backgroundColor: '#0F172A', borderRadius: 14, padding: 12, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', elevation: 6 },
-  multiProposalCount: { color: '#FFFFFF', fontSize: 13, fontWeight: '800' },
-  multiProposalBtn: { backgroundColor: '#2563EB', paddingHorizontal: 14, paddingVertical: 8, borderRadius: 8 },
-  multiProposalBtnText: { color: '#FFFFFF', fontSize: 12, fontWeight: '800' },
+  multiProposalBar: { backgroundColor: '#0F172A', padding: 14, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  multiProposalCount: { color: '#FFFFFF', fontSize: 14, fontWeight: '800' },
+  multiProposalBtn: { backgroundColor: '#2563EB', paddingHorizontal: 16, paddingVertical: 10, borderRadius: 8 },
+  multiProposalBtnText: { color: '#FFFFFF', fontSize: 12.5, fontWeight: '800' },
 
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center', padding: 20 },
   modalContent: { backgroundColor: Colors.surface, borderRadius: 18, padding: 18, width: '100%', elevation: 5 },

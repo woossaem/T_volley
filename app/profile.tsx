@@ -84,6 +84,42 @@ interface TeamMyStat {
   winRate: number;
 }
 
+const parseTeamName = (rawName: any): string => {
+  if (!rawName) return '';
+  if (typeof rawName === 'string') {
+    const trimmed = rawName.trim();
+    if (!trimmed || trimmed === 'null' || trimmed === 'undefined' || trimmed === '{}' || trimmed === '[]') return '';
+    if ((trimmed.startsWith('{') && trimmed.endsWith('}')) || (trimmed.startsWith('[') && trimmed.endsWith(']'))) {
+      try { return parseTeamName(JSON.parse(trimmed)); } catch (e) {}
+    }
+    return trimmed;
+  }
+  if (Array.isArray(rawName)) {
+    for (const item of rawName) {
+      const parsed = parseTeamName(item);
+      if (parsed) return parsed;
+    }
+    return '';
+  }
+  if (typeof rawName === 'object') {
+    const candidate = rawName.name || rawName.team_name || rawName.title || rawName.formatted || rawName.label;
+    if (candidate && candidate !== rawName) {
+      const parsedCand = parseTeamName(candidate);
+      if (parsedCand) return parsedCand;
+    }
+    for (const key of Object.keys(rawName)) {
+      if (['id', 'team_id', 'user_id', 'team_type', 'region', 'created_at', 'updated_at', 'manner_temp', 'password', 'leader_id'].includes(key)) continue;
+      const val = rawName[key];
+      if (val && typeof val === 'string' && val.trim().length > 0) return val.trim();
+      if (val && typeof val === 'object') {
+        const parsedVal = parseTeamName(val);
+        if (parsedVal) return parsedVal;
+      }
+    }
+  }
+  return '';
+};
+
 export default function ProfileScreen() {
   const router = useRouter();
   const { session } = useAuth();
@@ -110,41 +146,6 @@ export default function ProfileScreen() {
 
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-
-  const parseTeamName = (rawName: any): string => {
-    if (!rawName) return '';
-    
-    if (typeof rawName === 'string') {
-      const trimmed = rawName.trim();
-      if (!trimmed || trimmed === 'null' || trimmed === 'undefined') return '';
-      if ((trimmed.startsWith('{') && trimmed.endsWith('}')) || (trimmed.startsWith('[') && trimmed.endsWith(']'))) {
-        try { return parseTeamName(JSON.parse(trimmed)); } catch (e) {}
-      }
-      return trimmed;
-    }
-    
-    if (Array.isArray(rawName)) {
-      if (rawName.length === 0) return '';
-      for (const item of rawName) {
-        const parsed = parseTeamName(item);
-        if (parsed) return parsed;
-      }
-    }
-    
-    if (typeof rawName === 'object') {
-      const candidate = rawName.name || rawName.team_name || rawName.title || rawName.formatted;
-      if (candidate && candidate !== rawName) {
-        const parsedCand = parseTeamName(candidate);
-        if (parsedCand) return parsedCand;
-      }
-      for (const key of Object.keys(rawName)) {
-        if (typeof rawName[key] === 'string' && rawName[key].trim().length > 0 && !['id', 'team_id', 'user_id', 'team_type', 'region'].includes(key)) {
-          return rawName[key].trim();
-        }
-      }
-    }
-    return '';
-  };
 
   const parseMatchDate = (dateStr: string | undefined | null) => {
     if (!dateStr) return { year: 0, month: 0 };
@@ -207,10 +208,10 @@ export default function ProfileScreen() {
       let teamsList: any[] = [];
 
       if (teamIds.length > 0) {
-        const { data: teamsData } = await supabase.from('teams').select('id, name, team_type').in('id', teamIds);
+        const { data: teamsData } = await supabase.from('teams').select('id, name, team_name, team_type').in('id', teamIds);
         teamsList = (teamsData || []).map(t => ({
           ...t,
-          name: parseTeamName(t.name) || '소속팀',
+          name: parseTeamName(t.name) || parseTeamName(t.team_name) || parseTeamName(t) || '소속팀',
         }));
       }
       setMyTeamsList(teamsList);
@@ -321,7 +322,7 @@ export default function ProfileScreen() {
     let tournamentWins = 0, tournamentDraws = 0, tournamentLosses = 0, tournamentTotal = 0;
 
     myTeamsList.forEach(t => {
-      const cleanName = parseTeamName(t.name);
+      const cleanName = parseTeamName(t.name) || parseTeamName(t.team_name) || parseTeamName(t);
       if (cleanName) {
         statsMap[cleanName] = { teamId: t.id, teamName: cleanName, teamType: t.team_type, wins: 0, draws: 0, losses: 0, total: 0, winRate: 0 };
         myTeamStatMap[cleanName] = { teamName: cleanName, teamType: t.team_type, myAppearedCount: 0, wins: 0, draws: 0, losses: 0, winRate: 0 };
@@ -402,7 +403,7 @@ export default function ProfileScreen() {
         const wName = parseTeamName(m.winner_team);
 
         myTeamsList.forEach(t => {
-          const cleanTName = parseTeamName(t.name);
+          const cleanTName = parseTeamName(t.name) || parseTeamName(t.team_name) || parseTeamName(t);
           if (hName === cleanTName || aName === cleanTName) {
             if (statsMap[cleanTName]) {
               statsMap[cleanTName].total++;
@@ -468,7 +469,6 @@ export default function ProfileScreen() {
     return { label: '🐣 배구 병아리', style: { backgroundColor: '#F8FAFC', borderColor: '#E2E8F0', color: '#94A3B8' } };
   }, [computedData]);
 
-  // 🛡️ 팀 공식 전력 분석 리포트 연산
   const teamOfficialAnalytics = useMemo(() => {
     if (!selectedOfficialTeam) return null;
     const teamName = parseTeamName(selectedOfficialTeam);
@@ -552,7 +552,6 @@ export default function ProfileScreen() {
     return { teamName, totalMatches: teamMatches.length, setsWon, setsLost, setDiff: setsWon - setsLost, shutoutWins, fullsetWins, nemesis, nemesisStat, victim, victimStat, teamRecent5 };
   }, [selectedOfficialTeam, rawMatches, selectedSeason]);
 
-  // 🏃‍♂️ 개인 출전 성적 리포트 연산
   const personalAnalytics = useMemo(() => {
     if (!selectedPersonalTeam) return null;
     const teamName = parseTeamName(selectedPersonalTeam);
@@ -624,7 +623,6 @@ export default function ProfileScreen() {
     return { teamName, totalTeamGames, myGames, attendanceRate, recent5, setsWon, setsLost, bestPartnerName, maxPartnerWins };
   }, [selectedPersonalTeam, rawMatches, selectedSeason, currentUserId, profilesMap]);
 
-  // 🙋‍♂️ 용병 출전 분석 리포트 연산
   const mercenaryAnalytics = useMemo(() => {
     if (!currentUserId) return null;
 
@@ -688,7 +686,7 @@ export default function ProfileScreen() {
   const avatarIco = profile?.avatar_icon || '🏐';
   const avatarUrl = profile?.avatar_url;
   const myGender = profile?.gender || '남성';
-  const myTeamsNameList = myTeamsList.map(t => parseTeamName(t.name)).filter(Boolean);
+  const myTeamsNameList = myTeamsList.map(t => parseTeamName(t.name) || parseTeamName(t.team_name) || parseTeamName(t)).filter(Boolean);
   const grapeCount = profile?.grape_count || 0;
   const mannerTemp = profile?.manner_temp || 36.5;
 
@@ -721,7 +719,6 @@ export default function ProfileScreen() {
           <ActivityIndicator color={Colors.primary} size="large" style={{ marginTop: 40 }} />
         ) : (
           <>
-            {/* 🌟 명함형 메인 카드 */}
             <View style={styles.businessCard}>
               <View style={styles.bcTop}>
                 <TouchableOpacity onPress={handleAvatarPress} activeOpacity={0.8} style={styles.bcAvatarContainer}>
@@ -751,7 +748,6 @@ export default function ProfileScreen() {
                 </View>
               </View>
 
-              {/* 🍇 칭찬 포도알 & 🌡️ 매너 온도 (명칭 통일 및 포도알 판 연동) */}
               <View style={styles.assetMannerRow}>
                 <TouchableOpacity 
                   style={styles.grapeBox} 
@@ -806,7 +802,6 @@ export default function ProfileScreen() {
               </View>
             </View>
 
-            {/* 프로필 설정 버튼들 */}
             <View style={{ flexDirection: 'row', gap: 8, width: '100%', marginBottom: 16 }}>
               <TouchableOpacity
                 style={[styles.editProfileBtn, { flex: 1 }]}
@@ -1003,7 +998,6 @@ export default function ProfileScreen() {
 
       <StickyAdBanner />
 
-      {/* 시즌 선택 모달 */}
       <Modal visible={seasonPickerModalVisible} animationType="fade" transparent={true} onRequestClose={() => setSeasonPickerModalVisible(false)}>
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
@@ -1058,7 +1052,6 @@ export default function ProfileScreen() {
         </View>
       </Modal>
 
-      {/* 🍇 추억의 초등 칭찬 포도알 스티커판 팝업 모달 */}
       <Modal visible={grapeBoardModalVisible} animationType="fade" transparent={true} onRequestClose={() => setGrapeBoardModalVisible(false)}>
         <View style={styles.modalOverlay}>
           <View style={[styles.modalContent, { backgroundColor: '#FAF5FF', borderColor: '#E9D5FF', borderWidth: 1.5 }]}>
@@ -1118,7 +1111,6 @@ export default function ProfileScreen() {
         </View>
       </Modal>
 
-      {/* 🚀 상세 분석 모달 컴포넌트들 */}
       <PersonalReportModal
         visible={personalModalVisible}
         onClose={() => setPersonalModalVisible(false)}
@@ -1275,7 +1267,6 @@ const styles = StyleSheet.create({
   modalCloseBtn: { backgroundColor: '#F1F5F9', borderRadius: 10, paddingVertical: 12, alignItems: 'center', marginTop: 8 },
   modalCloseBtnText: { color: Colors.text, fontSize: 14, fontWeight: '800' },
 
-  // 🍇 추억의 포도알 판 스타일
   grapeBoardContainer: { alignItems: 'center', backgroundColor: '#FFFFFF', borderRadius: 16, padding: 16, borderWidth: 1, borderColor: '#E9D5FF', marginVertical: 10 },
   grapeStemText: { fontSize: 24, marginBottom: -4 },
   grapeRow: { flexDirection: 'row', gap: 8, marginVertical: 2 },

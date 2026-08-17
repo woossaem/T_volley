@@ -124,14 +124,12 @@ export default function MatchCommentModal({
                         onPress={() => onOpenUserProfile(item.user_id)}
                         activeOpacity={0.7}
                       >
-                        {/* 💡 소속팀 뱃지 + 작성자 이름 일체형 표기 */}
                         <View style={styles.badgeChip}>
                           <Text style={styles.badgeChipText}>{item.badgeLabel || '🏐 티볼리 유저'}</Text>
                         </View>
                         <Text style={styles.commentAuthorName}>{item.full_name} 👤</Text>
                       </TouchableOpacity>
 
-                      {/* 💡 댓글 삭제 / 신고 차단 버튼 */}
                       <View style={styles.actionGroup}>
                         {isMyComment ? (
                           onDeleteComment && (

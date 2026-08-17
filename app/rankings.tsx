@@ -57,6 +57,54 @@ interface PersonalRankingData {
   mannerTemp: number;
 }
 
+const parseTeamName = (rawName: any): string => {
+  if (!rawName) return '';
+  if (typeof rawName === 'string') {
+    const trimmed = rawName.trim();
+    if (!trimmed || trimmed === 'null' || trimmed === 'undefined' || trimmed === '{}' || trimmed === '[]') return '';
+    if ((trimmed.startsWith('{') && trimmed.endsWith('}')) || (trimmed.startsWith('[') && trimmed.endsWith(']'))) {
+      try { return parseTeamName(JSON.parse(trimmed)); } catch (e) {}
+    }
+    return trimmed;
+  }
+  if (Array.isArray(rawName)) {
+    for (const item of rawName) {
+      const parsed = parseTeamName(item);
+      if (parsed) return parsed;
+    }
+    return '';
+  }
+  if (typeof rawName === 'object') {
+    const candidate = rawName.name || rawName.team_name || rawName.title || rawName.formatted || rawName.label;
+    if (candidate && candidate !== rawName) {
+      const parsedCand = parseTeamName(candidate);
+      if (parsedCand) return parsedCand;
+    }
+    for (const key of Object.keys(rawName)) {
+      if (['id', 'team_id', 'user_id', 'team_type', 'region', 'created_at', 'updated_at', 'manner_temp', 'password', 'leader_id'].includes(key)) continue;
+      const val = rawName[key];
+      if (val && typeof val === 'string' && val.trim().length > 0) return val.trim();
+      if (val && typeof val === 'object') {
+        const parsedVal = parseTeamName(val);
+        if (parsedVal) return parsedVal;
+      }
+    }
+  }
+  return '';
+};
+
+const cleanRegionName = (rawInput?: any): string => {
+  if (!rawInput) return '천안';
+  let str = typeof rawInput === 'string' ? rawInput.trim() : String(rawInput).trim();
+  if (!str || str === 'undefined' || str === 'null') return '천안';
+
+  let clean = str.replace(/^(충남|충북|충청남도|충청북도|전남|전북|경남|경북|경기|경기도|강원|강원도|제주|제주도|서울|서울특별시|인천|인천광역시|대전|대전광역시|대구|대구광역시|광주|광주광역시|부산|부산광역시|울산|울산광역시|세종|세종특별자치시)\s*/, '');
+  if (clean.length >= 2 && (clean.endsWith('시') || clean.endsWith('군'))) {
+    clean = clean.slice(0, -1);
+  }
+  return clean.trim() || str || '천안';
+};
+
 const getMatchSeasonCode = (dateStr: string) => {
   if (!dateStr) return '';
   const numbers = dateStr.match(/\d+/g);
@@ -113,7 +161,7 @@ export default function RankingScreen() {
         if (data) {
           if (data.gender) setGenderFilter(data.gender === '여성' ? '여성' : '남성');
           if (data.region) {
-            const regs = data.region.split(',').map((r: string) => r.trim()).filter(Boolean);
+            const regs = data.region.split(',').map((r: string) => cleanRegionName(r)).filter(Boolean);
             if (regs.length > 0) {
               setUserPrioritizedRegions(regs);
               setSelectedRegion(regs[0]);
@@ -127,7 +175,8 @@ export default function RankingScreen() {
   const dynamicRegionTabs = useMemo(() => {
     const tabs = ['전체', ...userPrioritizedRegions];
     dbActiveRegions.forEach((r) => {
-      if (!tabs.includes(r)) tabs.push(r);
+      const cleaned = cleanRegionName(r);
+      if (!tabs.includes(cleaned)) tabs.push(cleaned);
     });
     return tabs;
   }, [userPrioritizedRegions, dbActiveRegions]);
@@ -141,8 +190,6 @@ export default function RankingScreen() {
       setLoading(true);
 
       const { data: allTeams } = await supabase.from('teams').select('*, manner_temp');
-      
-      // 💡 [수정] 친선경기('friendly')도 랭킹 합산에 포함되도록 쿼리 확장
       const { data: allMatches } = await supabase.from('matches').select('*').in('status', ['completed', 'friendly']);
       const { data: allProfiles } = await supabase.from('profiles').select('*');
 
@@ -150,7 +197,7 @@ export default function RankingScreen() {
 
       const { data: tmData } = await supabase
         .from('team_members')
-        .select('user_id, is_primary, teams(id, name, region, team_type)')
+        .select('user_id, is_primary, teams(id, name, team_name, region, team_type)')
         .eq('is_active', true);
 
       const memberCountMap = new Map<string, number>();
@@ -159,16 +206,16 @@ export default function RankingScreen() {
 
       tmData?.forEach((item: any) => {
         const teamObj = Array.isArray(item.teams) ? item.teams[0] : item.teams;
-        const tName = teamObj?.name;
+        const tName = parseTeamName(teamObj?.name) || parseTeamName(teamObj?.team_name) || parseTeamName(teamObj);
         const uId = item.user_id;
 
-        if (teamObj?.region) regionsSet.add(teamObj.region);
+        if (teamObj?.region) regionsSet.add(cleanRegionName(teamObj.region));
         if (tName) memberCountMap.set(tName, (memberCountMap.get(tName) || 0) + 1);
 
         if (uId && teamObj) {
           const currentRegion = userSchoolRegionMap.get(uId);
           if (!currentRegion || teamObj.team_type === 'school' || item.is_primary) {
-            userSchoolRegionMap.set(uId, teamObj.region || '천안');
+            userSchoolRegionMap.set(uId, cleanRegionName(teamObj.region));
           }
         }
       });
@@ -177,8 +224,9 @@ export default function RankingScreen() {
 
       const careerWinsMap = new Map<string, number>();
       (allMatches || []).forEach((m: any) => {
-        if (m.winner_team && m.winner_team !== 'draw' && m.winner_team !== '무승부') {
-          careerWinsMap.set(m.winner_team, (careerWinsMap.get(m.winner_team) || 0) + 1);
+        const parsedWinner = parseTeamName(m.winner_team);
+        if (parsedWinner && parsedWinner !== 'draw' && parsedWinner !== '무승부') {
+          careerWinsMap.set(parsedWinner, (careerWinsMap.get(parsedWinner) || 0) + 1);
         }
       });
 
@@ -189,22 +237,24 @@ export default function RankingScreen() {
       });
 
       const processedTeams: TeamRankingData[] = (allTeams || []).map((t: any) => {
-        const matches = targetMatches.filter((m: any) => m.host_team_name === t.name || m.away_team_name === t.name);
+        const cleanTeamName = parseTeamName(t.name) || parseTeamName(t.team_name) || parseTeamName(t) || '소속팀';
+        const matches = targetMatches.filter((m: any) => parseTeamName(m.host_team_name) === cleanTeamName || parseTeamName(m.away_team_name) === cleanTeamName);
 
         let wins = 0, draws = 0, losses = 0;
         matches.forEach((m: any) => {
-          if (m.winner_team === t.name) wins++;
-          else if (m.winner_team === 'draw' || m.winner_team === '무승부') draws++;
+          const parsedWinner = parseTeamName(m.winner_team);
+          if (parsedWinner === cleanTeamName) wins++;
+          else if (m.winner_team === 'draw' || m.winner_team === '무승부' || parsedWinner === 'draw' || parsedWinner === '무승부') draws++;
           else losses++;
         });
 
         const total = wins + draws + losses;
-        const count = memberCountMap.get(t.name) || 0;
+        const count = memberCountMap.get(cleanTeamName) || 0;
         const points = wins * 3 + draws * 1;
-        const careerWins = careerWinsMap.get(t.name) || 0;
+        const careerWins = careerWinsMap.get(cleanTeamName) || 0;
 
         return {
-          team_name: t.name,
+          team_name: cleanTeamName,
           total_games: total,
           total_wins: wins,
           total_losses: losses,
@@ -214,7 +264,7 @@ export default function RankingScreen() {
           memberCount: count,
           isOfficial: count >= 3,
           isQualified: total >= (selectedPeriod === 'hall_of_fame' ? 3 : 2),
-          region: t.region || '천안',
+          region: cleanRegionName(t.region),
           type: t.team_type || 'school',
           careerWins,
           mannerTemp: t.manner_temp || 36.5,
@@ -258,16 +308,17 @@ export default function RankingScreen() {
           const inAway = m.away_roster?.split(',').includes(p.id);
 
           if (inHost || inAway) {
-            const myTeamInMatch = inHost ? m.host_team_name : m.away_team_name;
-            if (m.winner_team === myTeamInMatch) wins++;
-            else if (m.winner_team === 'draw' || m.winner_team === '무승부') draws++;
+            const myTeamInMatch = parseTeamName(inHost ? m.host_team_name : m.away_team_name);
+            const parsedWinner = parseTeamName(m.winner_team);
+            if (parsedWinner === myTeamInMatch) wins++;
+            else if (m.winner_team === 'draw' || m.winner_team === '무승부' || parsedWinner === 'draw' || parsedWinner === '무승부') draws++;
             else losses++;
           }
         });
 
         let userRegion = userSchoolRegionMap.get(p.id);
         if (!userRegion && p.region) {
-          const regArr = p.region.split(',').map((r: string) => r.trim());
+          const regArr = p.region.split(',').map((r: string) => cleanRegionName(r));
           if (regArr.length > 0) userRegion = regArr[0];
         }
         if (!userRegion) userRegion = '천안';
@@ -326,11 +377,10 @@ export default function RankingScreen() {
 
   const selectedTeamAnalytics = useMemo(() => {
     if (!selectedTeamForModal || rawMatches.length === 0) return null;
-    const teamName = selectedTeamForModal;
-    const teamData = qualifiedTeamRanks.find(t => t.team_name === teamName) || pendingTeamRanks.find(t => t.team_name === teamName);
+    const teamName = parseTeamName(selectedTeamForModal);
+    const teamData = qualifiedTeamRanks.find(t => parseTeamName(t.team_name) === teamName) || pendingTeamRanks.find(t => parseTeamName(t.team_name) === teamName);
 
     const targetMatches = rawMatches.filter((m: any) => {
-      // 💡 친선 경기도 리포트 분석에 반영되도록 포함
       if (m.status !== 'completed' && m.status !== 'friendly') return false;
       if (selectedPeriod !== 'hall_of_fame') {
         return getMatchSeasonCode(m.match_date || m.created_at) === selectedPeriod;
@@ -338,15 +388,15 @@ export default function RankingScreen() {
       return true;
     });
 
-    const teamMatches = targetMatches.filter((m: any) => m.host_team_name === teamName || m.away_team_name === teamName);
+    const teamMatches = targetMatches.filter((m: any) => parseTeamName(m.host_team_name) === teamName || parseTeamName(m.away_team_name) === teamName);
 
     let setsWon = 0, setsLost = 0, shutoutWins = 0, fullsetWins = 0;
     const oppMap: { [oppName: string]: { wins: number; losses: number; draws: number; total: number } } = {};
 
     teamMatches.forEach((m: any) => {
-      const hName = m.host_team_name;
-      const aName = m.away_team_name;
-      const wName = m.winner_team;
+      const hName = parseTeamName(m.host_team_name);
+      const aName = parseTeamName(m.away_team_name);
+      const wName = parseTeamName(m.winner_team);
       const isHost = hName === teamName;
       const oppName = isHost ? aName : hName;
       const isWin = wName === teamName;
@@ -399,7 +449,7 @@ export default function RankingScreen() {
     });
 
     const teamRecent5 = teamMatches.slice(0, 5).map((m: any) => {
-      const isWin = m.winner_team === teamName;
+      const isWin = parseTeamName(m.winner_team) === teamName;
       const isDraw = m.winner_team === 'draw' || m.winner_team === '무승부';
       return isWin ? 'WIN' : isDraw ? 'DRAW' : 'LOSS';
     });

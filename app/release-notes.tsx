@@ -19,7 +19,7 @@ const RELEASE_LOGS = [
     date: '2026.08.17',
     title: '⚡ 전광판 UI/UX 대폭 개편 & 소통방 권한 세분화',
     changes: [
-'📊 [전광판 시야 확보] 대형 점수(195px) 위치 상단 이동 및 중단 자물쇠/가림막 전면 삭제',
+      '📊 [전광판 시야 확보] 대형 점수(195px) 위치 상단 이동 및 중단 자물쇠/가림막 전면 삭제',
       '⚡ [낙관적 업데이트] 서버 동기화 대기 없는 0초 지연 실시간 점수 반영',
       '📺 [2단 중계형 타임라인] A/B팀 2단 레일 타임라인 및 득점 시 최신 위치 자동 스크롤 포커싱',
       '🏐 [9인 출전선수 필터링] 득점/교체 시 현재 코트 출전 멤버만 정밀 필터링하여 노출',
@@ -191,7 +191,11 @@ const styles = StyleSheet.create({
   backBtn: { width: 32, height: 32, justifyContent: 'center' },
   backText: { fontSize: 32, color: Colors.text, lineHeight: 32 },
   headerTitle: { fontSize: 18, fontWeight: '700', color: Colors.text },
-  content: { padding: 20, gap: 16 },
+  content: {
+    padding: 20,
+    paddingBottom: 60, // 💡 하단 툴바/시스템바 가림 방지를 위해 여백 확장 (끝까지 시원하게 스크롤됨)
+    gap: 16,
+  },
   introBox: {
     backgroundColor: '#EFF6FF',
     borderRadius: 16,

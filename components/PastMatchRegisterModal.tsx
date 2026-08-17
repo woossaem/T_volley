@@ -11,6 +11,42 @@ import {
 } from 'react-native';
 import { Colors } from '../constants/Colors';
 
+const parseTeamName = (rawName: any): string => {
+  if (!rawName) return '';
+  if (typeof rawName === 'string') {
+    const trimmed = rawName.trim();
+    if (!trimmed || trimmed === 'null' || trimmed === 'undefined' || trimmed === '{}' || trimmed === '[]') return '';
+    if ((trimmed.startsWith('{') && trimmed.endsWith('}')) || (trimmed.startsWith('[') && trimmed.endsWith(']'))) {
+      try { return parseTeamName(JSON.parse(trimmed)); } catch (e) {}
+    }
+    return trimmed;
+  }
+  if (Array.isArray(rawName)) {
+    for (const item of rawName) {
+      const parsed = parseTeamName(item);
+      if (parsed) return parsed;
+    }
+    return '';
+  }
+  if (typeof rawName === 'object') {
+    const candidate = rawName.name || rawName.team_name || rawName.title || rawName.formatted || rawName.label;
+    if (candidate && candidate !== rawName) {
+      const parsedCand = parseTeamName(candidate);
+      if (parsedCand) return parsedCand;
+    }
+    for (const key of Object.keys(rawName)) {
+      if (['id', 'team_id', 'user_id', 'team_type', 'region', 'created_at', 'updated_at', 'manner_temp', 'password', 'leader_id'].includes(key)) continue;
+      const val = rawName[key];
+      if (val && typeof val === 'string' && val.trim().length > 0) return val.trim();
+      if (val && typeof val === 'object') {
+        const parsedVal = parseTeamName(val);
+        if (parsedVal) return parsedVal;
+      }
+    }
+  }
+  return '';
+};
+
 interface DynamicSetScore {
   hostScore: number;
   awayScore: number;
@@ -130,6 +166,9 @@ export default function PastMatchRegisterModal({
     );
   };
 
+  const cleanHostTeam = parseTeamName(pastHostTeam);
+  const cleanAwayTeam = parseTeamName(pastAwayTeam);
+
   return (
     <Modal visible={visible} animationType="slide" transparent={true} onRequestClose={onClose}>
       <View style={styles.modalOverlay}>
@@ -148,10 +187,11 @@ export default function PastMatchRegisterModal({
             <Text style={styles.inputLabel}>1. 내 출전 팀 선택</Text>
             <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 4, marginBottom: 10 }}>
               {myTeams.map((t) => {
-                const isSelected = pastHostTeam === t;
+                const cleanT = parseTeamName(t);
+                const isSelected = cleanHostTeam === cleanT;
                 return (
-                  <TouchableOpacity key={t} style={[styles.teamSelectChip, isSelected && styles.teamSelectChipActive]} onPress={() => onSelectPastHostTeam(t)}>
-                    <Text style={[styles.teamSelectChipText, isSelected && styles.teamSelectChipTextActive]}>🏐 {t}</Text>
+                  <TouchableOpacity key={cleanT} style={[styles.teamSelectChip, isSelected && styles.teamSelectChipActive]} onPress={() => onSelectPastHostTeam(cleanT)}>
+                    <Text style={[styles.teamSelectChipText, isSelected && styles.teamSelectChipTextActive]}>🏐 {cleanT}</Text>
                   </TouchableOpacity>
                 );
               })}
@@ -159,15 +199,18 @@ export default function PastMatchRegisterModal({
             
             <Text style={styles.inputLabel}>2. 상대 팀명</Text>
             <View style={{ position: 'relative', zIndex: 10, marginBottom: 10 }}>
-              <TextInput style={styles.textInput} placeholder="상대 팀명 입력" value={pastAwayTeam} onChangeText={(txt) => { onChangePastAwayTeam(txt); onShowAwayDropdown(true); }} onFocus={() => onShowAwayDropdown(true)} />
+              <TextInput style={styles.textInput} placeholder="상대 팀명 입력" value={cleanAwayTeam || pastAwayTeam} onChangeText={(txt) => { onChangePastAwayTeam(txt); onShowAwayDropdown(true); }} onFocus={() => onShowAwayDropdown(true)} />
               {showAwayDropdown && pastAwayTeam.length > 0 && filteredAwayTeams.length > 0 && (
                 <View style={styles.dropdownBox}>
                   <ScrollView style={{ maxHeight: 100 }} nestedScrollEnabled={true}>
-                    {filteredAwayTeams.map((t) => (
-                      <TouchableOpacity key={t} style={styles.dropdownItem} onPress={() => { onChangePastAwayTeam(t); onShowAwayDropdown(false); }}>
-                        <Text style={styles.dropdownItemText}>🏐 {t} (공식 등록팀)</Text>
-                      </TouchableOpacity>
-                    ))}
+                    {filteredAwayTeams.map((t) => {
+                      const cleanItem = parseTeamName(t);
+                      return (
+                        <TouchableOpacity key={cleanItem} style={styles.dropdownItem} onPress={() => { onChangePastAwayTeam(cleanItem); onShowAwayDropdown(false); }}>
+                          <Text style={styles.dropdownItemText}>🏐 {cleanItem} (공식 등록팀)</Text>
+                        </TouchableOpacity>
+                      );
+                    })}
                   </ScrollView>
                 </View>
               )}
@@ -189,13 +232,14 @@ export default function PastMatchRegisterModal({
                 <View key={idx} style={[styles.setRow, idx > 0 && { marginTop: 8 }]}>
                   <Text style={styles.setLabel}>{idx + 1}세트</Text>
                   <View style={styles.teamScoreCol}>
-                    <div style={{ flex: 1 }}>
+                    {/* 💡 [수정] <div> 대신 <View> 태그로 100% 교체 완료 */}
+                    <View style={{ flex: 1 }}>
                       <View style={styles.stepperRow}>
                         <TouchableOpacity style={styles.stepBtn} onPress={() => onUpdatePastScore(idx, true, -1)}><Text style={styles.stepBtnText}>-1</Text></TouchableOpacity>
                         <Text style={styles.scoreValText}>{ds.hostScore}</Text>
                         <TouchableOpacity style={styles.stepBtn} onPress={() => onUpdatePastScore(idx, true, 1)}><Text style={styles.stepBtnText}>+1</Text></TouchableOpacity>
                       </View>
-                    </div>
+                    </View>
                   </View>
                   <Text style={styles.vsColon}>:</Text>
                   <View style={styles.teamScoreCol}>
@@ -212,15 +256,15 @@ export default function PastMatchRegisterModal({
               </TouchableOpacity>
             </View>
 
-            {pastHostTeam && pastAwayTeam ? (
+            {cleanHostTeam && cleanAwayTeam ? (
               <>
                 <Text style={styles.inputLabel}>6. 경기 승리 팀 선택</Text>
                 <View style={{ gap: 6, marginBottom: 8 }}>
-                  <TouchableOpacity style={[styles.winnerSelectBtn, pastWinner === pastHostTeam && styles.winnerSelectBtnActive]} onPress={() => onSelectPastWinner(pastHostTeam)}>
-                    <Text style={[styles.winnerSelectText, pastWinner === pastHostTeam && styles.winnerSelectTextActive]}>🥇 {pastHostTeam} 승리</Text>
+                  <TouchableOpacity style={[styles.winnerSelectBtn, pastWinner === cleanHostTeam && styles.winnerSelectBtnActive]} onPress={() => onSelectPastWinner(cleanHostTeam)}>
+                    <Text style={[styles.winnerSelectText, pastWinner === cleanHostTeam && styles.winnerSelectTextActive]}>🥇 {cleanHostTeam} 승리</Text>
                   </TouchableOpacity>
-                  <TouchableOpacity style={[styles.winnerSelectBtn, pastWinner === pastAwayTeam && styles.winnerSelectBtnActive]} onPress={() => onSelectPastWinner(pastAwayTeam)}>
-                    <Text style={[styles.winnerSelectText, pastWinner === pastAwayTeam && styles.winnerSelectTextActive]}>🥇 {pastAwayTeam} 승리</Text>
+                  <TouchableOpacity style={[styles.winnerSelectBtn, pastWinner === cleanAwayTeam && styles.winnerSelectBtnActive]} onPress={() => onSelectPastWinner(cleanAwayTeam)}>
+                    <Text style={[styles.winnerSelectText, pastWinner === cleanAwayTeam && styles.winnerSelectTextActive]}>🥇 {cleanAwayTeam} 승리</Text>
                   </TouchableOpacity>
                   <TouchableOpacity style={[styles.winnerSelectBtn, { backgroundColor: '#F1F5F9' }, pastWinner === 'draw' && { backgroundColor: '#475569' }]} onPress={() => onSelectPastWinner('draw')}>
                     <Text style={[styles.winnerSelectText, { color: '#475569' }, pastWinner === 'draw' && { color: '#FFFFFF' }]}>🤝 무승부</Text>

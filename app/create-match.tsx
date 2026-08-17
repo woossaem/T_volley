@@ -11,6 +11,7 @@ import {
   Platform,
   ScrollView,
   Switch,
+  Modal, // 💡 팝업을 위해 Modal 추가
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
@@ -53,25 +54,28 @@ export default function CreateMatchScreen() {
   const [needMercenary, setNeedMercenary] = useState(false);
   const [mercenaryDetails, setMercenaryDetails] = useState('');
 
-  // 최근에 작성했던 경기 모집글 데이터 저장
-  const [lastMatch, setLastMatch] = useState<any>(null);
+  // 💡 항목별 최근 5개 기록 저장 (중복 제거)
+  const [recentLocations, setRecentLocations] = useState<string[]>([]);
+  const [recentDescriptions, setRecentDescriptions] = useState<string[]>([]);
+  const [recentContacts, setRecentContacts] = useState<string[]>([]);
+
+  // 💡 목록 선택 모달 State
+  const [historyModalVisible, setHistoryModalVisible] = useState(false);
+  const [historyType, setHistoryType] = useState<'location' | 'description' | 'contact' | null>(null);
 
   const userId = session?.user?.id;
 
   useEffect(() => {
-    fetchMyTeamsAndLastMatch();
+    fetchMyTeamsAndMatchHistory();
   }, [session]);
 
-  const fetchMyTeamsAndLastMatch = async () => {
+  const fetchMyTeamsAndMatchHistory = async () => {
     if (!userId) return;
 
     try {
       const { data, error } = await supabase
         .from('team_members')
-        .select(`
-          team_id,
-          teams (id, name, region)
-        `)
+        .select(`team_id, teams (id, name, region)`)
         .eq('user_id', userId)
         .eq('is_active', true);
 
@@ -87,17 +91,25 @@ export default function CreateMatchScreen() {
         setSelectedTeam(teamsList[0]);
       }
 
-      const { data: last } = await supabase
+      // 💡 최근 20경기 기록을 불러와서 각 항목별 고유값 5개씩 추출
+      const { data: recentMatches } = await supabase
         .from('matches')
-        .select('location, contact_info, description, format, need_mercenary, mercenary_details')
+        .select('location, contact_info, description')
         .eq('host_user_id', userId)
         .order('created_at', { ascending: false })
-        .limit(1)
-        .maybeSingle();
+        .limit(20);
 
-      if (last) setLastMatch(last);
+      if (recentMatches && recentMatches.length > 0) {
+        const locs = Array.from(new Set(recentMatches.map(m => m.location?.trim()).filter(Boolean))).slice(0, 5);
+        const descs = Array.from(new Set(recentMatches.map(m => m.description?.trim()).filter(Boolean))).slice(0, 5);
+        const conts = Array.from(new Set(recentMatches.map(m => m.contact_info?.trim()).filter(Boolean))).slice(0, 5);
+
+        setRecentLocations(locs);
+        setRecentDescriptions(descs);
+        setRecentContacts(conts);
+      }
     } catch (err) {
-      console.error('소속 팀 확인 오류:', err);
+      console.error('데이터 로딩 오류:', err);
     } finally {
       setFetchingProfile(false);
     }
@@ -108,17 +120,6 @@ export default function CreateMatchScreen() {
       setMyGymName(`${selectedTeam.name} 체육관`);
     }
   }, [selectedTeam]);
-
-  const applyLastMatchInfo = () => {
-    if (!lastMatch) return;
-    if (lastMatch.location) setLocation(lastMatch.location);
-    if (lastMatch.contact_info) setContactInfo(lastMatch.contact_info);
-    if (lastMatch.description) setDescription(lastMatch.description);
-    if (lastMatch.format) setFormat(lastMatch.format);
-    if (lastMatch.need_mercenary !== undefined) setNeedMercenary(lastMatch.need_mercenary);
-    if (lastMatch.mercenary_details) setMercenaryDetails(lastMatch.mercenary_details);
-    Alert.alert('자동 입력 완료 ✨', '최근에 입력했던 장소, 연락처, 안내글, 용병조건이 채워졌습니다.');
-  };
 
   const onChangeDate = (event: any, selectedDate?: Date) => {
     setShowDatePicker(false);
@@ -147,19 +148,12 @@ export default function CreateMatchScreen() {
       const { data: teamData } = await supabase.from('teams').select('id').eq('name', teamName).maybeSingle();
       if (!teamData) return;
 
-      const { data: members } = await supabase
-        .from('team_members')
-        .select('user_id')
-        .eq('team_id', teamData.id)
-        .eq('is_active', true);
+      const { data: members } = await supabase.from('team_members').select('user_id').eq('team_id', teamData.id).eq('is_active', true);
 
       if (!members || members.length === 0) return;
 
       const notifications = members.map((m: any) => ({
-        user_id: m.user_id,
-        title,
-        message,
-        is_read: false,
+        user_id: m.user_id, title, message, is_read: false,
       }));
 
       await supabase.from('notifications').insert(notifications);
@@ -170,16 +164,9 @@ export default function CreateMatchScreen() {
 
   const handleCreateMatch = async () => {
     if (!selectedTeam) return;
-    if (!location.trim()) {
-      return Alert.alert('알림', '장소(체육관)를 입력해 주세요.');
-    }
-    if (!contactInfo.trim()) {
-      return Alert.alert('알림', '매칭 성사 후 연락할 수 있는 연락망을 입력해 주세요.');
-    }
-    if (needMercenary && !mercenaryDetails.trim()) {
-      return Alert.alert('알림', '용병 모집 조건(필요 포지션, 인원 등)을 작성해 주세요.');
-    }
-
+    if (!location.trim()) return Alert.alert('알림', '장소(체육관)를 입력해 주세요.');
+    if (!contactInfo.trim()) return Alert.alert('알림', '매칭 성사 후 연락할 수 있는 연락망을 입력해 주세요.');
+    if (needMercenary && !mercenaryDetails.trim()) return Alert.alert('알림', '용병 모집 조건(필요 포지션, 인원 등)을 작성해 주세요.');
     if (!userId) return;
 
     setLoading(true);
@@ -218,6 +205,32 @@ export default function CreateMatchScreen() {
     }
   };
 
+  const openHistoryModal = (type: 'location' | 'description' | 'contact') => {
+    setHistoryType(type);
+    setHistoryModalVisible(true);
+  };
+
+  const handleSelectHistory = (val: string) => {
+    if (historyType === 'location') setLocation(val);
+    if (historyType === 'description') setDescription(val);
+    if (historyType === 'contact') setContactInfo(val);
+    setHistoryModalVisible(false);
+  };
+
+  const getCurrentHistoryList = () => {
+    if (historyType === 'location') return recentLocations;
+    if (historyType === 'description') return recentDescriptions;
+    if (historyType === 'contact') return recentContacts;
+    return [];
+  };
+
+  const getHistoryModalTitle = () => {
+    if (historyType === 'location') return '📍 최근 입력한 장소 선택';
+    if (historyType === 'description') return '💬 최근 남긴 말 선택';
+    if (historyType === 'contact') return '📞 최근 연락처 선택';
+    return '';
+  };
+
   if (fetchingProfile) {
     return (
       <SafeAreaView style={[styles.container, { justifyContent: 'center' }]} edges={['top', 'left', 'right']}>
@@ -238,12 +251,6 @@ export default function CreateMatchScreen() {
         </View>
 
         <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
-          {lastMatch && (
-            <TouchableOpacity style={styles.quickFillChip} onPress={applyLastMatchInfo} activeOpacity={0.8}>
-              <Text style={styles.quickFillText}>✨ 최근 입력했던 장소/연락처/조건 자동 채우기</Text>
-            </TouchableOpacity>
-          )}
-
           <View style={styles.formGroup}>
             <Text style={styles.label}>어느 팀 소속으로 모집하시나요?</Text>
             {myTeams.length > 1 ? (
@@ -287,14 +294,22 @@ export default function CreateMatchScreen() {
           {showDatePicker && <DateTimePicker value={date} mode="date" display="default" onChange={onChangeDate} />}
           {showTimePicker && <DateTimePicker value={date} mode="time" display="default" onChange={onChangeTime} />}
 
+          {/* 장소 입력 영역 */}
           <View style={styles.formGroup}>
             <View style={styles.labelRow}>
               <Text style={styles.label}>장소 (체육관)</Text>
-              {myGymName ? (
-                <TouchableOpacity style={styles.quickInputBtn} onPress={() => setLocation(myGymName)}>
-                  <Text style={styles.quickInputText}>⚡ {myGymName} 입력</Text>
-                </TouchableOpacity>
-              ) : null}
+              <View style={{ flexDirection: 'row', gap: 6 }}>
+                {recentLocations.length > 0 && (
+                  <TouchableOpacity style={styles.quickFillChipInline} onPress={() => openHistoryModal('location')}>
+                    <Text style={styles.quickFillChipInlineText}>⚡ 장소 선택</Text>
+                  </TouchableOpacity>
+                )}
+                {myGymName && (
+                  <TouchableOpacity style={styles.quickInputBtn} onPress={() => setLocation(myGymName)}>
+                    <Text style={styles.quickInputText}>⚡ {myGymName} 입력</Text>
+                  </TouchableOpacity>
+                )}
+              </View>
             </View>
             <TextInput
               style={styles.input}
@@ -348,8 +363,16 @@ export default function CreateMatchScreen() {
             )}
           </View>
 
+          {/* 남기고 싶은 말 영역 */}
           <View style={styles.formGroup}>
-            <Text style={styles.label}>남기고 싶은 말 (선택)</Text>
+            <View style={styles.labelRow}>
+              <Text style={styles.label}>남기고 싶은 말 (선택)</Text>
+              {recentDescriptions.length > 0 && (
+                <TouchableOpacity style={styles.quickFillChipInline} onPress={() => openHistoryModal('description')}>
+                  <Text style={styles.quickFillChipInlineText}>⚡ 문구 선택</Text>
+                </TouchableOpacity>
+              )}
+            </View>
             <TextInput
               style={[styles.input, styles.textArea]}
               placeholder="예: 실력 상관없이 즐겁게 땀 흘리실 분들 환영합니다!"
@@ -361,9 +384,19 @@ export default function CreateMatchScreen() {
             />
           </View>
 
+          {/* 대표자 연락처 영역 */}
           <View style={styles.formGroup}>
-            <Text style={styles.label}>대표자 연락처 또는 오픈채팅</Text>
-            <Text style={styles.subLabel}>※ 매칭 성사된 상대에게 안전하게 공개됩니다.</Text>
+            <View style={styles.labelRow}>
+              <View>
+                <Text style={styles.label}>대표자 연락처 또는 오픈채팅</Text>
+                <Text style={styles.subLabel}>※ 매칭 성사된 상대에게 안전하게 공개됩니다.</Text>
+              </View>
+              {recentContacts.length > 0 && (
+                <TouchableOpacity style={styles.quickFillChipInline} onPress={() => openHistoryModal('contact')}>
+                  <Text style={styles.quickFillChipInlineText}>⚡ 연락처 선택</Text>
+                </TouchableOpacity>
+              )}
+            </View>
             <TextInput
               style={styles.input}
               placeholder="예: 010-1234-5678 또는 카카오톡 오픈채팅 링크"
@@ -380,6 +413,33 @@ export default function CreateMatchScreen() {
       </KeyboardAvoidingView>
 
       <StickyAdBanner />
+
+      {/* 💡 최근 기록 선택 모달 */}
+      <Modal visible={historyModalVisible} transparent={true} animationType="fade" onRequestClose={() => setHistoryModalVisible(false)}>
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>{getHistoryModalTitle()}</Text>
+            <Text style={styles.modalSub}>이전에 작성했던 항목을 선택하여 자동 완성하세요.</Text>
+            
+            <ScrollView style={{ maxHeight: 260, marginTop: 10 }} showsVerticalScrollIndicator={false}>
+              {getCurrentHistoryList().map((item, idx) => (
+                <TouchableOpacity 
+                  key={idx} 
+                  style={styles.historyItemBtn} 
+                  onPress={() => handleSelectHistory(item)}
+                  activeOpacity={0.7}
+                >
+                  <Text style={styles.historyItemText} numberOfLines={3}>{item}</Text>
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+
+            <TouchableOpacity style={styles.closeBtn} onPress={() => setHistoryModalVisible(false)}>
+              <Text style={styles.closeBtnText}>닫기</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -393,8 +453,6 @@ const styles = StyleSheet.create({
   headerTitle: { fontSize: 16, fontWeight: '800', color: Colors.text },
 
   scrollContent: { padding: 14, paddingBottom: 30 },
-  quickFillChip: { backgroundColor: '#FEF3C7', borderWidth: 1, borderColor: '#FDE68A', borderRadius: 10, padding: 10, alignItems: 'center', marginBottom: 12 },
-  quickFillText: { color: '#B45309', fontWeight: '800', fontSize: 12 },
   
   hostInfo: { backgroundColor: '#F0F9FF', padding: 12, borderRadius: 10, borderWidth: 1, borderColor: '#BAE6FD' },
   hostInfoText: { fontSize: 11, color: '#0369A1', fontWeight: '600', marginBottom: 2 },
@@ -409,11 +467,16 @@ const styles = StyleSheet.create({
   rowFormGroup: { flexDirection: 'row', gap: 10, marginBottom: 12 },
 
   labelRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 },
-  quickInputBtn: { backgroundColor: '#EFF6FF', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6, borderWidth: 1, borderColor: '#BFDBFE' },
-  quickInputText: { fontSize: 11, color: '#1D4ED8', fontWeight: '700' },
+  
+  /* 개별 퀵 불러오기 버튼 스타일 */
+  quickFillChipInline: { backgroundColor: '#FEFCE8', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6, borderWidth: 1, borderColor: '#FDE047' },
+  quickFillChipInlineText: { fontSize: 11, color: '#A16207', fontWeight: '800' },
 
-  label: { fontSize: 12, fontWeight: '800', color: '#475569', marginBottom: 4 },
-  subLabel: { fontSize: 10, color: '#059669', fontWeight: '600', marginBottom: 4 },
+  quickInputBtn: { backgroundColor: '#EFF6FF', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6, borderWidth: 1, borderColor: '#BFDBFE' },
+  quickInputText: { fontSize: 11, color: '#1D4ED8', fontWeight: '800' },
+
+  label: { fontSize: 12, fontWeight: '800', color: '#475569', marginBottom: 2 },
+  subLabel: { fontSize: 10, color: '#059669', fontWeight: '600', marginBottom: 2 },
 
   input: { backgroundColor: Colors.surface, borderWidth: 1, borderColor: Colors.border, borderRadius: 10, paddingHorizontal: 12, paddingVertical: 10, fontSize: 13, color: Colors.text },
 
@@ -437,4 +500,14 @@ const styles = StyleSheet.create({
   submitBtn: { backgroundColor: Colors.primary, borderRadius: 12, paddingVertical: 14, alignItems: 'center', marginTop: 8, elevation: 2 },
   btnDisabled: { opacity: 0.7 },
   submitBtnText: { color: '#FFFFFF', fontSize: 15, fontWeight: '800' },
+
+  /* 💡 히스토리 팝업 모달 스타일 */
+  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center', padding: 20 },
+  modalContent: { backgroundColor: Colors.surface, borderRadius: 16, padding: 20, width: '100%', maxHeight: '80%', elevation: 5 },
+  modalTitle: { fontSize: 16, fontWeight: '800', color: Colors.text, marginBottom: 4 },
+  modalSub: { fontSize: 12, color: Colors.textMuted, marginBottom: 6 },
+  historyItemBtn: { paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: '#F1F5F9' },
+  historyItemText: { fontSize: 14, color: '#1D4ED8', fontWeight: '600', lineHeight: 20 },
+  closeBtn: { backgroundColor: '#F1F5F9', borderRadius: 10, paddingVertical: 12, alignItems: 'center', marginTop: 14 },
+  closeBtnText: { color: Colors.text, fontWeight: '800', fontSize: 14 },
 });

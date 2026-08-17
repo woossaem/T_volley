@@ -16,23 +16,18 @@ import { useRouter } from 'expo-router';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
 import { Colors } from '../constants/Colors';
+import StickyAdBanner from '../components/StickyAdBanner'; // 💡 스티커 배너 Import
 
 interface OfficialSchool { id: string; region: string; name: string; formatted: string; }
 interface TeamData { id: string; name: string; region: string; pin_code?: string | null; }
 
-// 💡 [핵심] '공주시', '충남 공주시', '천안시' 등을 입력해도 무조건 정식 표준 명칭('공주', '천안')으로 변환하는 강력 정규화 함수
 const normalizeRegionName = (input: string): string => {
   if (!input || !input.trim()) return '';
   let text = input.trim();
-
-  // 1. 도/광역시 접두사 제거 (예: "충남 공주시" -> "공주시")
   text = text.replace(/^(충청남도|충청북도|경기도|전라북도|전라남도|경상북도|경상남도|충남|충북|경기|전남|전북|경남|경북)\s*/, '');
-
-  // 2. 끝에 붙은 '특별자치시', '광역시', '특별시', '시', '군' 접미사 제거 (예: "공주시" -> "공주", "천안시" -> "천안")
   if (text.length > 2) {
     text = text.replace(/(특별자치시|광역시|특별시|시|군)$/, '');
   }
-
   return text.trim();
 };
 
@@ -46,7 +41,7 @@ export default function TeamManagementScreen() {
 
   const [dbSchools, setDbSchools] = useState<OfficialSchool[]>([]);
   const [dbTeams, setDbTeams] = useState<TeamData[]>([]);
-  const [availableRegions, setAvailableRegions] = useState<string[]>(['천안', '아산']); // DB에 실제 존재하는 지역만 칩으로 동적 세팅
+  const [availableRegions, setAvailableRegions] = useState<string[]>(['천안', '아산']); 
 
   const [myJoinedTeams, setMyJoinedTeams] = useState<any[]>([]);
   const [teamMode, setTeamMode] = useState<'join' | 'create'>('join');
@@ -82,9 +77,8 @@ export default function TeamManagementScreen() {
     try {
       setLoading(true);
 
-      // 1. official_schools에서 실제 존재하는 정식 지역만 동적 수집 (섀도우 복싱 제거)
       const { data: sData } = await supabase.from('official_schools').select('*').eq('is_active', true);
-      const regionSet = new Set<string>(['천안', '아산']); // 기본 핵심 지역
+      const regionSet = new Set<string>(['천안', '아산']); 
 
       if (sData) {
         const formattedSchools = sData.map(s => {
@@ -100,7 +94,6 @@ export default function TeamManagementScreen() {
         setDbSchools(formattedSchools);
       }
 
-      // 2. 기존 개설 팀들의 실제 연고 지역 동적 수집
       const { data: tData } = await supabase.from('teams').select('id, name, region, pin_code');
       if (tData) {
         tData.forEach(t => { 
@@ -112,10 +105,8 @@ export default function TeamManagementScreen() {
         setDbTeams(tData);
       }
 
-      // DB에 실제 존재하는 지역들만 칩 목록으로 구성
       setAvailableRegions(Array.from(regionSet));
 
-      // 3. 내 소속 팀 목록 가져오기
       const { data: tmData } = await supabase
         .from('team_members')
         .select('team_id, is_primary, teams(id, name, region, team_type)')
@@ -137,7 +128,6 @@ export default function TeamManagementScreen() {
     }
   };
 
-  // 1. 기존 팀 가입 검색
   const onJoinTeamChange = (text: string) => {
     setJoinTeamName(text);
     if (text.trim().length >= 1) {
@@ -185,7 +175,6 @@ export default function TeamManagementScreen() {
     finally { setActionSubmitting(false); }
   };
 
-  // 2. 신생 팀 창단 - 학교명 입력
   const onCreateTeamNameChange = (text: string) => {
     setNewTeamName(text);
     if (newTeamType === 'school' && text.trim().length >= 1) {
@@ -197,18 +186,16 @@ export default function TeamManagementScreen() {
     }
   };
 
-  // 💡 공식 학교 선택 시 표준 연고 지역명(시/군 단위) 자동 고정
   const selectCreateTeamSchool = (school: OfficialSchool) => {
     setNewTeamName(school.formatted);
     setShowCreateTeamDropdown(false);
     if (school.region) {
       const cleanRegion = normalizeRegionName(school.region);
-      setSelectedCreateTeamRegion(cleanRegion); // 정식 명칭(예: 공주, 천안)으로 자동 고정
+      setSelectedCreateTeamRegion(cleanRegion); 
       setCustomCreateTeamRegionText('');
     }
   };
 
-  // 3. 지역 직접 입력 시 정식 DB 지역 자동 실시간 추천
   const onCustomRegionChange = (text: string) => {
     setCustomCreateTeamRegionText(text);
     if (text.trim().length >= 1) {
@@ -226,12 +213,10 @@ export default function TeamManagementScreen() {
     setShowRegionDropdown(false);
   };
 
-  // ✨ 신생 팀 창단 실행 (지역명 파편화 강제 정규화 포함)
   const handleCreateNewTeam = async () => {
     let finalTeamName = newTeamName.trim();
     if (!finalTeamName) return Alert.alert('알림', '신생 팀 이름을 입력해 주세요.');
 
-    // 💡 [핵심] 유저가 '공주시', '충남 공주'라고 입력해도 무조건 '공주'로 강제 정규화!
     let rawRegionInput = selectedCreateTeamRegion === '직접 입력' ? customCreateTeamRegionText.trim() : selectedCreateTeamRegion;
     let finalTeamRegion = normalizeRegionName(rawRegionInput);
 
@@ -239,7 +224,6 @@ export default function TeamManagementScreen() {
       return Alert.alert('입력 확인', '팀의 주 활동 지역을 선택하거나 직접 입력해 주세요.');
     }
 
-    // 학교명 파편화 자동 통일
     if (newTeamType === 'school') {
       const matchedSchool = dbSchools.find(s => 
         s.name === finalTeamName || 
@@ -261,7 +245,7 @@ export default function TeamManagementScreen() {
 
       const { data: createdTeam, error: createErr } = await supabase.from('teams').insert({
         name: finalTeamName,
-        region: finalTeamRegion, // 👈 '공주', '천안' 등 정규화된 시/군 명칭 저장
+        region: finalTeamRegion, 
         team_type: newTeamType,
         pin_code: finalPinCode,
         youtube_channel_url: newTeamYoutube.trim() || null,
@@ -340,7 +324,6 @@ export default function TeamManagementScreen() {
                       onChangeText={onJoinTeamChange} 
                     />
 
-                    {/* 추천 팀 목록 (아래 요소를 밀어내는 인라인 구조) */}
                     {showJoinTeamDropdown && filteredJoinTeams.length > 0 && (
                       <View style={styles.inlineSuggestionContainer}>
                         <Text style={styles.inlineSuggestionHeader}>💡 검색된 기존 팀 목록 (터치하여 선택)</Text>
@@ -381,7 +364,6 @@ export default function TeamManagementScreen() {
                       onChangeText={onCreateTeamNameChange} 
                     />
 
-                    {/* 공식 학교 추천 목록 */}
                     {showCreateTeamDropdown && newTeamType === 'school' && filteredCreateSchools.length > 0 && (
                       <View style={styles.inlineSuggestionContainer}>
                         <Text style={styles.inlineSuggestionHeader}>💡 DB 공식 등록 학교 목록 (선택 시 정식 명칭/지역 자동 연동)</Text>
@@ -412,7 +394,6 @@ export default function TeamManagementScreen() {
                       ))}
                     </View>
 
-                    {/* 직접 입력 시 DB 지역 자동 추천 */}
                     {selectedCreateTeamRegion === '직접 입력' && (
                       <View style={{ marginTop: 8 }}>
                         <TextInput
@@ -455,6 +436,9 @@ export default function TeamManagementScreen() {
           )}
         </ScrollView>
       </KeyboardAvoidingView>
+      
+      {/* 💡 스티커 광고 배너 부착 */}
+      <StickyAdBanner />
     </SafeAreaView>
   );
 }
@@ -465,7 +449,10 @@ const styles = StyleSheet.create({
   backBtn: { width: 32, height: 32, justifyContent: 'center' },
   backText: { fontSize: 32, color: Colors.text, lineHeight: 32 },
   headerTitle: { fontSize: 16, fontWeight: '800', color: Colors.text },
+  
+  // 💡 광고 가림 방지 여백 추가
   content: { padding: 20, gap: 16, paddingBottom: 60 },
+  
   section: { backgroundColor: Colors.surface, borderRadius: 16, padding: 18, borderWidth: 1, borderColor: Colors.border },
   sectionTitle: { fontSize: 15, fontWeight: '800', color: Colors.text, marginBottom: 16 },
   
