@@ -24,45 +24,8 @@ import StickyAdBanner from '../components/StickyAdBanner';
 import MatchResultModal from '../components/MatchResultModal';
 import PastMatchRegisterModal from '../components/PastMatchRegisterModal';
 import MatchEvaluationModal from '../components/MatchEvaluationModal';
-
-interface MatchData {
-  id: string;
-  host_user_id: string;
-  host_team_name: string;
-  away_team_name?: string;
-  region?: string;
-  match_date: string;
-  match_time: string;
-  location: string;
-  format: string;
-  description: string;
-  contact_info?: string;
-  status: string;
-  winner_team?: string;
-  result_submitter_team?: string;
-  submitted_by_name?: string;
-  approved_by_name?: string;
-  roster_updated_by_name?: string;
-  roster_updated_at?: string;
-  set_scores?: string | null;
-  host_roster?: string;
-  away_roster?: string;
-  created_at: string;
-  need_mercenary?: boolean;
-  mercenary_details?: string;
-  host_youtube_url?: string | null;
-  away_youtube_url?: string | null;
-}
-
-interface ApplicationData {
-  id: string;
-  match_id: string;
-  applicant_user_id: string;
-  applicant_team_name: string;
-  status: string;
-  application_type?: 'team' | 'mercenary';
-  applicant_contact?: string;
-}
+import MatchCommentModal from '../components/MatchCommentModal';
+import MatchCard, { MatchData, ApplicationData } from '../components/MatchCard';
 
 interface MemberInfo {
   user_id: string;
@@ -76,6 +39,23 @@ interface DynamicSetScore {
 }
 
 type SetRosterMap = { [setIndex: number]: string[] };
+
+interface CommentData {
+  id: string;
+  match_id: string;
+  user_id: string;
+  content: string;
+  created_at: string;
+  full_name?: string;
+  badgeType?: 'host' | 'applicant' | 'mercenary' | 'general';
+  badgeLabel?: string;
+}
+
+interface BadgeOption {
+  type: 'host' | 'applicant' | 'mercenary' | 'general';
+  teamName?: string;
+  label: string;
+}
 
 export default function MatchesScreen() {
   const router = useRouter();
@@ -119,7 +99,6 @@ export default function MatchesScreen() {
   const [targetMercenaryMatch, setTargetMercenaryMatch] = useState<MatchData | null>(null);
   const [mercenaryContactInput, setMercenaryContactInput] = useState('');
 
-  // 경기 결과 입력/수정 모달 State
   const [resultModalVisible, setResultModalVisible] = useState(false);
   const [isRosterOnlyMode, setIsRosterOnlyMode] = useState(false);
   const [selectedMatchForResult, setSelectedMatchForResult] = useState<MatchData | null>(null);
@@ -138,7 +117,6 @@ export default function MatchesScreen() {
   const [matchToApply, setMatchToApply] = useState<MatchData | null>(null);
   const [availableTeamsToApply, setAvailableTeamsToApply] = useState<string[]>([]);
 
-  // 과거 기록 입력 모달 State
   const [pastModalVisible, setPastMatchModalVisible] = useState(false);
   const [pastHostTeam, setPastHostTeam] = useState('');
   const [pastAwayTeam, setPastAwayTeam] = useState('');
@@ -149,11 +127,18 @@ export default function MatchesScreen() {
   const [pastHostYoutube, setPastHostYoutube] = useState('');
   const [pastAwayYoutube, setPastAwayYoutube] = useState('');
 
-  // 매너 평가 모달 관련 State
   const [evalModalVisible, setEvalModalVisible] = useState(false);
   const [evalTargetMatchId, setEvalTargetMatchId] = useState('');
   const [evalTargetTeamName, setEvalTargetTeamName] = useState('');
   const [evalMatchMembers, setEvalMatchMembers] = useState<MemberInfo[]>([]);
+
+  const [commentModalVisible, setCommentModalVisible] = useState(false);
+  const [targetCommentMatch, setTargetCommentMatch] = useState<MatchData | null>(null);
+  const [fetchingComments, setFetchingComments] = useState(false);
+  const [commentsList, setCommentsList] = useState<CommentData[]>([]);
+  const [commentInput, setCommentInput] = useState('');
+  const [availableBadges, setAvailableBadges] = useState<BadgeOption[]>([]);
+  const [selectedBadge, setSelectedBadge] = useState<BadgeOption | null>(null);
 
   useEffect(() => {
     if (currentUserId) {
@@ -250,6 +235,96 @@ export default function MatchesScreen() {
   useEffect(() => { fetchData(); }, [session, searchParams?.matchId]);
   const onRefresh = () => { setRefreshing(true); fetchData(); };
 
+  const openCommentModal = async (match: MatchData) => {
+    setTargetCommentMatch(match);
+    setCommentModalVisible(true);
+    setFetchingComments(true);
+    setCommentInput('');
+
+    const badges: BadgeOption[] = [];
+    if (myTeams.includes(match.host_team_name)) {
+      badges.push({ type: 'host', teamName: match.host_team_name, label: `👑 주최팀 (${match.host_team_name})` });
+    }
+    if (match.away_team_name && myTeams.includes(match.away_team_name)) {
+      badges.push({ type: 'applicant', teamName: match.away_team_name, label: `⚔️ 상대팀 (${match.away_team_name})` });
+    }
+    const myApps = myApplications.filter(a => a.match_id === match.id);
+    myApps.forEach(app => {
+      if (app.application_type === 'mercenary') {
+        badges.push({ type: 'mercenary', label: '🙋‍♂️ 용병 신청자' });
+      } else if (app.application_type === 'team' && !badges.find(b => b.teamName === app.applicant_team_name)) {
+        badges.push({ type: 'applicant', teamName: app.applicant_team_name, label: `🛡️ 신청팀 (${app.applicant_team_name})` });
+      }
+    });
+    badges.push({ type: 'general', label: '👤 티볼리 유저' });
+    setAvailableBadges(badges);
+    setSelectedBadge(badges[0]);
+
+    try {
+      const { data, error } = await supabase
+        .from('match_comments')
+        .select('*, profiles(full_name)')
+        .eq('match_id', match.id)
+        .order('created_at', { ascending: true });
+      
+      if (data) {
+        setCommentsList(data.map((item: any) => ({
+          id: item.id,
+          match_id: item.match_id,
+          user_id: item.user_id,
+          content: item.content,
+          created_at: item.created_at,
+          full_name: item.profiles?.full_name || '선생님',
+          badgeType: item.badge_type,
+          badgeLabel: item.badge_label,
+        })));
+      }
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setFetchingComments(false);
+    }
+  };
+
+  const handlePostComment = async () => {
+    if (!commentInput.trim() || !targetCommentMatch || !currentUserId || !selectedBadge) return;
+    setActionLoading(true);
+    try {
+      const payload = {
+        match_id: targetCommentMatch.id,
+        user_id: currentUserId,
+        content: commentInput.trim(),
+        badge_type: selectedBadge.type,
+        badge_label: selectedBadge.label,
+      };
+      const { data, error } = await supabase.from('match_comments').insert(payload).select('*, profiles(full_name)').single();
+      if (error) throw error;
+      
+      if (data) {
+        const newComment = {
+          id: data.id,
+          match_id: data.match_id,
+          user_id: data.user_id,
+          content: data.content,
+          created_at: data.created_at,
+          full_name: data.profiles?.full_name || currentUserName,
+          badgeType: data.badge_type,
+          badgeLabel: data.badge_label,
+        };
+        setCommentsList(prev => [...prev, newComment]);
+      }
+      setCommentInput('');
+
+      if (targetCommentMatch.host_team_name && selectedBadge.type !== 'host') {
+         await sendNotificationToTeam(targetCommentMatch.host_team_name, '💬 [매치 소통 댓글]', `'${targetCommentMatch.host_team_name}' 주최 경기에 새로운 댓글이 달렸습니다.`);
+      }
+    } catch (e: any) {
+      Alert.alert('오류', e.message);
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
   const openEvaluationModal = async (match: MatchData) => {
     if (!currentUserId) return;
     const isHost = myTeams.includes(match.host_team_name);
@@ -296,6 +371,20 @@ export default function MatchesScreen() {
     Linking.openURL(url).catch(() => {
       Alert.alert('오류', '올바른 유튜브 링크가 아니거나 연결할 수 없습니다.');
     });
+  };
+
+  const parseScoresToArray = (scoreStr: string | null | undefined): DynamicSetScore[] => {
+    if (!scoreStr) return [];
+    const sets = scoreStr.split(', ');
+    return sets.map(s => {
+      const [h, a] = s.split(':').map(Number);
+      return { hostScore: h || 0, awayScore: a || 0 };
+    });
+  };
+
+  const convertScoresToString = (scoresArray: DynamicSetScore[]): string | null => {
+    if (scoresArray.length === 0) return null;
+    return scoresArray.map(s => `${s.hostScore}:${s.awayScore}`).join(', ');
   };
 
   const parseRoster = (rosterStr: string | null | undefined): SetRosterMap => {
@@ -364,20 +453,6 @@ export default function MatchesScreen() {
 
     if (isHost) setHostSetRosters(currentMap);
     else setAwaySetRosters(currentMap);
-  };
-
-  const parseScoresToArray = (scoreStr: string | null | undefined): DynamicSetScore[] => {
-    if (!scoreStr) return [];
-    const sets = scoreStr.split(', ');
-    return sets.map(s => {
-      const [h, a] = s.split(':').map(Number);
-      return { hostScore: h || 0, awayScore: a || 0 };
-    });
-  };
-
-  const convertScoresToString = (scoresArray: DynamicSetScore[]): string | null => {
-    if (scoresArray.length === 0) return null;
-    return scoresArray.map(s => `${s.hostScore}:${s.awayScore}`).join(', ');
   };
 
   const externalMatches = matches.filter(m => m.status !== 'intramural');
@@ -556,7 +631,7 @@ export default function MatchesScreen() {
     const alertTitle = isMercenaryApp ? '용병 수락' : '매칭 수락';
     const alertMsg = isMercenaryApp
       ? `'${app.applicant_team_name}' 선생님을 용병으로 확정하시겠습니까?\n📞 연락처: ${app.applicant_contact || '미입력'}`
-      : `'${app.applicant_team_name}' 팀의 신청을 수락하시겠습니까?`;
+      : `'${app.applicant_team_name}' 팀의 신청을 수락하시겠습니까?\n\n※ 주의: 매칭 확정 시 기존에 전광판에서 조작했던 모든 테스트(연습) 기록은 0:0 백지 상태로 자동 초기화됩니다.`;
 
     Alert.alert(alertTitle, alertMsg, [
       { text: '취소', style: 'cancel' },
@@ -566,8 +641,24 @@ export default function MatchesScreen() {
           setActionLoading(true);
           try {
             if (!isMercenaryApp) {
-              await supabase.from('matches').update({ status: 'matched', away_team_name: app.applicant_team_name }).eq('id', selectedMatch.id);
-              setMatches(prev => prev.map(m => m.id === selectedMatch.id ? { ...m, status: 'matched', away_team_name: app.applicant_team_name } : m));
+              await supabase.from('match_events').delete().eq('match_id', selectedMatch.id);
+
+              await supabase.from('matches').update({ 
+                status: 'matched', 
+                away_team_name: app.applicant_team_name,
+                set_scores: null,
+                recorder_host_id: null,
+                recorder_away_id: null
+              }).eq('id', selectedMatch.id);
+              
+              setMatches(prev => prev.map(m => m.id === selectedMatch.id ? { 
+                ...m, 
+                status: 'matched', 
+                away_team_name: app.applicant_team_name,
+                set_scores: null,
+                recorder_host_id: null,
+                recorder_away_id: null
+              } : m));
             }
             
             await supabase.from('match_applications').update({ status: 'accepted' }).eq('id', app.id);
@@ -583,7 +674,7 @@ export default function MatchesScreen() {
             } else {
               await sendNotificationToTeam(selectedMatch.host_team_name, '🎉 [매칭 완료]', `'${app.applicant_team_name}' 팀과의 매칭이 확정되었습니다.`);
               await sendNotificationToTeam(app.applicant_team_name, '🎉 [매칭 완료]', `'${selectedMatch.host_team_name}' 팀과의 매칭이 성사되었습니다!`);
-              Alert.alert('매칭 완료! 🛡️', '매칭 확정 알림이 전송되었습니다.');
+              Alert.alert('매칭 완료! 🛡️', '매칭이 성사되어 공식 전광판 기록이 초기화되었습니다. 깨끗한 0:0 상태로 실제 경기를 진행하세요!');
             }
             setModalVisible(false);
           } finally { setActionLoading(false); }
@@ -829,7 +920,6 @@ export default function MatchesScreen() {
 
   return (
     <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
-      {/* 1. 상단 헤더 */}
       <View style={styles.header}>
         <View style={styles.headerLeftGroup}>
           <TouchableOpacity style={styles.backBtn} onPress={() => router.back()} hitSlop={10}>
@@ -855,7 +945,6 @@ export default function MatchesScreen() {
         </View>
       </View>
 
-      {/* 2. 컨트롤 패널 (월 이동 및 메인 세그먼트 탭) */}
       <View style={styles.topControlPanel}>
         <View style={styles.monthPillBar}>
           <TouchableOpacity onPress={() => changeListMonth(-1)} style={styles.monthNavBtn} hitSlop={8}>
@@ -889,7 +978,6 @@ export default function MatchesScreen() {
         </View>
       </View>
 
-      {/* 3. 서브 카테고리 필터 칩 */}
       {mainTab === 'active' && (
         <View style={styles.filterChipRow}>
           <TouchableOpacity 
@@ -930,7 +1018,6 @@ export default function MatchesScreen() {
         </View>
       )}
 
-      {/* 4. 검색창 & 지역 탭 */}
       <View style={styles.searchContainer}>
         <Text style={styles.searchIcon}>🔍</Text>
         <TextInput 
@@ -958,7 +1045,6 @@ export default function MatchesScreen() {
         </ScrollView>
       </View>
 
-      {/* 5. 메인 경기 리스트 */}
       <ScrollView 
         contentContainerStyle={styles.content} 
         showsVerticalScrollIndicator={false} 
@@ -976,318 +1062,34 @@ export default function MatchesScreen() {
             </Text>
           </View>
         ) : (
-          filteredMatches.map((match) => {
-            const isHost = myTeams.includes(match.host_team_name);
-            const isAway = match.away_team_name && myTeams.includes(match.away_team_name);
-            const myApp = myApplications.find((app) => app.match_id === match.id);
-            const myMercenaryApp = myApplications.find((app) => app.match_id === match.id && app.applicant_user_id === currentUserId && app.application_type === 'mercenary');
-            const isMyMatch = isHost || isAway;
-            
-            const isCompleted = match.status === 'completed';
-            const isFriendly = match.status === 'friendly';
-            const isPending = match.status === 'pending_result';
-            const isMatched = match.status === 'matched';
-
-            const isBothTeams = isHost && isAway;
-            const submitterIsMyHostTeam = match.result_submitter_team === match.host_team_name;
-            const submitterIsMyAwayTeam = match.result_submitter_team === match.away_team_name;
-
-            const canApprove = isBothTeams
-              ? true
-              : (isHost && submitterIsMyAwayTeam) || (isAway && submitterIsMyHostTeam);
-
-            const availableNonHostTeams = myTeams.filter(t => t !== match.host_team_name);
-            const isMercenaryExpanded = expandedMercenaryMatchIds.includes(match.id);
-
-            return (
-              <View key={match.id} style={styles.matchCard}>
-                <View style={styles.cardMetaRow}>
-                  <View style={styles.regionTagPill}>
-                    <Text style={styles.regionTagPillText}>📍 {match.region || '천안'}</Text>
-                  </View>
-
-                  <View style={styles.badgeRightGroup}>
-                    {match.need_mercenary && (
-                      <TouchableOpacity
-                        style={styles.mercenaryBadge}
-                        onPress={() => toggleMercenaryDetails(match.id)}
-                        activeOpacity={0.7}
-                      >
-                        <Text style={styles.mercenaryBadgeText}>
-                          🙋‍♂️ 용병 구함 {isMercenaryExpanded ? '▴' : '▾'}
-                        </Text>
-                      </TouchableOpacity>
-                    )}
-                    <View style={[
-                      styles.statusBadge, 
-                      isCompleted ? styles.statusCompleted : isFriendly ? styles.statusFriendly : isPending ? styles.statusPending : isMatched ? styles.statusMatched : styles.statusOpen
-                    ]}>
-                      <Text style={[
-                        styles.statusText, 
-                        isCompleted ? styles.statusTextCompleted : isFriendly ? styles.statusTextFriendly : isPending ? styles.statusTextPending : isMatched ? styles.statusTextMatched : styles.statusTextOpen
-                      ]}>
-                        {isCompleted ? '공식종료' : isFriendly ? '친선종료' : isPending ? '결과확인중' : isMatched ? '매칭완료' : '모집중'}
-                      </Text>
-                    </View>
-                  </View>
-                </View>
-
-                <View style={styles.scoreboardRow}>
-                  <View style={styles.teamColLeft}>
-                    <Text style={styles.hostTeamText} numberOfLines={1}>{match.host_team_name}</Text>
-                    <Text style={styles.teamRoleLabel}>주최팀</Text>
-                  </View>
-
-                  <View style={styles.vsPill}>
-                    <Text style={styles.vsPillText}>VS</Text>
-                  </View>
-
-                  <View style={styles.teamColRight}>
-                    <Text style={[styles.awayTeamText, !match.away_team_name && styles.textMuted]} numberOfLines={1}>
-                      {match.away_team_name || '상대 모집중'}
-                    </Text>
-                    <Text style={styles.teamRoleLabel}>상대팀</Text>
-                  </View>
-                </View>
-
-                {match.need_mercenary && match.mercenary_details && isMercenaryExpanded ? (
-                  <View style={styles.mercenaryInfoBox}>
-                    <Text style={styles.mercenaryInfoTitle}>🙋‍♂️ 용병 상세 조건</Text>
-                    <Text style={styles.mercenaryInfoText}>{match.mercenary_details}</Text>
-                  </View>
-                ) : null}
-
-                <View style={styles.matchDetailsBox}>
-                  <View style={styles.detailRow}>
-                    <Text style={styles.detailIcon}>📅</Text>
-                    <Text style={styles.detailText}>{match.match_date} ({match.match_time})</Text>
-                  </View>
-                  <View style={styles.detailRow}>
-                    <Text style={styles.detailIcon}>🏢</Text>
-                    <Text style={styles.detailText}>{match.location}</Text>
-                  </View>
-                </View>
-
-                {match.roster_updated_by_name && (
-                  <View style={styles.rosterAuditBox}>
-                    <Text style={styles.rosterAuditText}>
-                      📝 출전명단 업데이트: {match.roster_updated_at} ({match.roster_updated_by_name} 선생님)
-                    </Text>
-                  </View>
-                )}
-
-                {match.description ? (
-                  <View style={styles.descriptionBox}>
-                    <Text style={styles.descriptionText}>"{match.description}"</Text>
-                  </View>
-                ) : null}
-
-                {(match.host_youtube_url || match.away_youtube_url) ? (
-                  <View style={{ marginTop: 10, gap: 6 }}>
-                    {match.host_youtube_url ? (
-                      <TouchableOpacity style={styles.youtubeBarBtn} onPress={() => handleOpenYoutube(match.host_youtube_url!)}>
-                        <Text style={styles.youtubeBarBtnText}>🎥 [{match.host_team_name}] 영상 보기 ▶</Text>
-                      </TouchableOpacity>
-                    ) : null}
-                    {match.away_youtube_url ? (
-                      <TouchableOpacity style={[styles.youtubeBarBtn, { backgroundColor: '#EFF6FF', borderColor: '#BFDBFE' }]} onPress={() => handleOpenYoutube(match.away_youtube_url!)}>
-                        <Text style={[styles.youtubeBarBtnText, { color: '#1D4ED8' }]}>🎥 [{match.away_team_name || '상대팀'}] 영상 보기 ▶</Text>
-                      </TouchableOpacity>
-                    ) : null}
-                  </View>
-                ) : null}
-
-                <View style={{ marginTop: 12 }}>
-                  {isCompleted && (
-                    <View style={{ gap: 8 }}>
-                      <View style={styles.completedBanner}>
-                        <Text style={styles.completedBannerText}>
-                          🏆 전적: {match.winner_team === 'draw' ? '무승부' : `${match.winner_team} 승리!`}
-                        </Text>
-                        {match.set_scores ? (
-                          <Text style={styles.setScoreText}>📊 세트 스코어: {match.set_scores}</Text>
-                        ) : null}
-                        {match.approved_by_name && (
-                          <Text style={styles.auditSubText}>
-                            (최종 확정: {match.approved_by_name} 선생님 승인)
-                          </Text>
-                        )}
-                      </View>
-                      
-                      {isMyMatch && (
-                        <View style={{ gap: 6 }}>
-                          <TouchableOpacity
-                            style={styles.evaluationBtn}
-                            onPress={() => openEvaluationModal(match)}
-                            disabled={actionLoading}
-                          >
-                            <Text style={styles.evaluationBtnText}>
-                              🎁 상대팀 매너 평가 & 칭찬 포도알 보내기
-                            </Text>
-                          </TouchableOpacity>
-                          <View style={{ flexDirection: 'row', gap: 6 }}>
-                            <TouchableOpacity style={[styles.resultBtn, { backgroundColor: '#475569' }]} onPress={() => openResultModal(match)}>
-                              <Text style={styles.resultBtnText}>✏️ 결과 재수정</Text>
-                            </TouchableOpacity>
-                            <TouchableOpacity style={[styles.resultBtn, { backgroundColor: '#0284C7' }]} onPress={() => openRosterOnlyModal(match)}>
-                              <Text style={styles.resultBtnText}>👥 명단 수정</Text>
-                            </TouchableOpacity>
-                          </View>
-                        </View>
-                      )}
-                    </View>
-                  )}
-
-                  {isFriendly && (
-                    <View style={{ gap: 8 }}>
-                      <View style={[styles.completedBanner, { backgroundColor: '#F8FAFC', borderColor: '#CBD5E1' }]}>
-                        <Text style={[styles.completedBannerText, { color: '#64748B' }]}>
-                          🤝 친선: {match.winner_team === 'draw' ? '무승부' : `${match.winner_team} 승리!`}
-                        </Text>
-                        {match.set_scores ? (
-                          <Text style={styles.setScoreText}>📊 세트 스코어: {match.set_scores}</Text>
-                        ) : null}
-                      </View>
-
-                      {isMyMatch && (
-                        <View style={{ gap: 6 }}>
-                          <TouchableOpacity
-                            style={styles.evaluationBtn}
-                            onPress={() => openEvaluationModal(match)}
-                            disabled={actionLoading}
-                          >
-                            <Text style={styles.evaluationBtnText}>
-                              🎁 상대팀 매너 평가 & 칭찬 포도알 보내기
-                            </Text>
-                          </TouchableOpacity>
-                          <View style={{ flexDirection: 'row', gap: 6 }}>
-                            <TouchableOpacity style={[styles.resultBtn, { backgroundColor: '#475569' }]} onPress={() => openResultModal(match)}>
-                              <Text style={styles.resultBtnText}>✏️ 친선 결과 재수정</Text>
-                            </TouchableOpacity>
-                            <TouchableOpacity style={[styles.resultBtn, { backgroundColor: '#0284C7' }]} onPress={() => openRosterOnlyModal(match)}>
-                              <Text style={styles.resultBtnText}>👥 명단 수정</Text>
-                            </TouchableOpacity>
-                          </View>
-                        </View>
-                      )}
-                    </View>
-                  )}
-
-                  {isPending && (
-                    <View style={{ gap: 8 }}>
-                      <View style={styles.pendingBanner}>
-                        <Text style={styles.pendingBannerText}>
-                          제출 결과: {match.winner_team === 'draw' ? '무승부' : `'${match.winner_team}' 승리`}
-                          {match.set_scores ? ` (${match.set_scores})` : ''}
-                        </Text>
-                        {match.submitted_by_name && (
-                          <Text style={styles.auditSubText}>
-                            (제출자: {match.submitted_by_name} 선생님 ➔ 상대팀 승인 대기)
-                          </Text>
-                        )}
-                      </View>
-                      
-                      {canApprove ? (
-                        <View style={{ flexDirection: 'row', gap: 6 }}>
-                          <TouchableOpacity style={[styles.resultBtn, { flex: 1.2, backgroundColor: '#10B981' }]} onPress={() => handleApproveResult(match, true)}>
-                            <Text style={styles.resultBtnText}>✅ 승인</Text>
-                          </TouchableOpacity>
-                          <TouchableOpacity style={[styles.resultBtn, { flex: 1.2, backgroundColor: '#3B82F6' }]} onPress={() => openResultModal(match)}>
-                            <Text style={styles.resultBtnText}>✏️ 수정 제출</Text>
-                          </TouchableOpacity>
-                          <TouchableOpacity style={[styles.cancelAppBtn, { flex: 1, paddingVertical: 12 }]} onPress={() => handleApproveResult(match, false)}>
-                            <Text style={styles.cancelAppBtnText}>❌ 거절</Text>
-                          </TouchableOpacity>
-                        </View>
-                      ) : (
-                        <Text style={styles.pendingWaitText}>⏳ 상대팀 승인 대기 중입니다</Text>
-                      )}
-                    </View>
-                  )}
-
-                  {isMatched && (
-                    <View style={{ gap: 8 }}>
-                      <View style={styles.matchedBanner}>
-                        <Text style={styles.matchedBannerText}>🎉 매칭 완료! 경기가 끝나면 스코어를 등록해 주세요.</Text>
-                      </View>
-                      {isMyMatch && (
-                        <View style={{ flexDirection: 'row', gap: 6 }}>
-                          <TouchableOpacity style={styles.resultBtn} onPress={() => openResultModal(match)}>
-                            <Text style={styles.resultBtnText}>🏆 결과 등록</Text>
-                          </TouchableOpacity>
-                          <TouchableOpacity style={[styles.resultBtn, { backgroundColor: '#0284C7' }]} onPress={() => openRosterOnlyModal(match)}>
-                            <Text style={styles.resultBtnText}>👥 명단 수정</Text>
-                          </TouchableOpacity>
-                        </View>
-                      )}
-                      {isAway && (
-                        <TouchableOpacity style={styles.cancelAppBtn} onPress={() => handleCancelApplication(match)}>
-                          <Text style={styles.cancelAppBtnText}>🚨 매칭 취소</Text>
-                        </TouchableOpacity>
-                      )}
-                    </View>
-                  )}
-
-                  {match.status === 'open' && (
-                    <View style={{ gap: 8 }}>
-                      {isHost && (
-                        <View style={{ flexDirection: 'row', gap: 8 }}>
-                          <TouchableOpacity style={styles.hostManageBtn} onPress={() => openApplicantModal(match)}>
-                            <Text style={styles.hostManageBtnText}>📋 신청 현황 / 승인</Text>
-                          </TouchableOpacity>
-                          <TouchableOpacity style={styles.deleteBtn} onPress={() => handleDeleteMatch(match)}>
-                            <Text style={styles.deleteBtnText}>🗑️</Text>
-                          </TouchableOpacity>
-                        </View>
-                      )}
-
-                      {!isHost && match.need_mercenary && (
-                        myMercenaryApp ? (
-                          <View style={styles.appliedRow}>
-                            <View style={[styles.appliedBadge, { backgroundColor: '#FEF3C7', borderColor: '#FDE68A' }]}>
-                              <Text style={[styles.appliedBadgeText, { color: '#B45309' }]}>🙋‍♂️ 용병 신청 완료</Text>
-                            </View>
-                            <TouchableOpacity style={styles.cancelAppBtn} onPress={() => handleCancelApplication(match)}>
-                              <Text style={styles.cancelAppBtnText}>취소</Text>
-                            </TouchableOpacity>
-                          </View>
-                        ) : (
-                          <TouchableOpacity style={styles.applyMercenaryBtn} onPress={() => handleOpenMercenaryModal(match)}>
-                            <Text style={styles.applyMercenaryBtnText}>🙋‍♂️ 용병(게스트) 신청하기</Text>
-                          </TouchableOpacity>
-                        )
-                      )}
-
-                      {myApp && myApp.application_type !== 'mercenary' ? (
-                        <View style={styles.appliedRow}>
-                          <View style={styles.appliedBadge}>
-                            <Text style={styles.appliedBadgeText}>✅ 팀 신청 완료 ({myApp.applicant_team_name})</Text>
-                          </View>
-                          <TouchableOpacity style={styles.cancelAppBtn} onPress={() => handleCancelApplication(match)}>
-                            <Text style={styles.cancelAppBtnText}>취소</Text>
-                          </TouchableOpacity>
-                        </View>
-                      ) : (
-                        availableNonHostTeams.length > 0 && (
-                          <TouchableOpacity style={styles.applyBtn} onPress={() => handleApplyMatch(match)}>
-                            <Text style={styles.applyBtnText}>
-                              {isHost ? '✨ 다른 팀으로 참가 신청' : '🛡️ 팀 단위 참가 신청'}
-                            </Text>
-                          </TouchableOpacity>
-                        )
-                      )}
-                    </View>
-                  )}
-                </View>
-              </View>
-            );
-          })
+          filteredMatches.map((match) => (
+            <MatchCard
+              key={match.id}
+              match={match}
+              myTeams={myTeams}
+              myApplications={myApplications}
+              currentUserId={currentUserId}
+              expandedMercenaryMatchIds={expandedMercenaryMatchIds}
+              actionLoading={actionLoading}
+              onToggleMercenaryDetails={toggleMercenaryDetails}
+              onOpenCommentModal={openCommentModal}
+              onOpenYoutube={handleOpenYoutube}
+              onOpenEvaluationModal={openEvaluationModal}
+              onOpenResultModal={openResultModal}
+              onOpenRosterOnlyModal={openRosterOnlyModal}
+              onApproveResult={handleApproveResult}
+              onCancelApplication={handleCancelApplication}
+              onOpenApplicantModal={openApplicantModal}
+              onDeleteMatch={handleDeleteMatch}
+              onOpenMercenaryModal={handleOpenMercenaryModal}
+              onApplyMatch={handleApplyMatch}
+            />
+          ))
         )}
       </ScrollView>
 
       <StickyAdBanner />
 
-      {/* 모달 1: 경기 결과 스코어/명단 입력 모달 */}
       <MatchResultModal
         visible={resultModalVisible}
         onClose={() => setResultModalVisible(false)}
@@ -1320,7 +1122,6 @@ export default function MatchesScreen() {
         actionLoading={actionLoading}
       />
 
-      {/* 모달 2: 과거 기록 입력 모달 */}
       <PastMatchRegisterModal
         visible={pastModalVisible}
         onClose={() => setPastMatchModalVisible(false)}
@@ -1358,7 +1159,6 @@ export default function MatchesScreen() {
         actionLoading={actionLoading}
       />
 
-      {/* 모달 3: 용병 참가 신청 연락처 모달 */}
       <Modal visible={mercenaryModalVisible} animationType="slide" transparent={true}>
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
@@ -1413,7 +1213,6 @@ export default function MatchesScreen() {
         </View>
       </Modal>
 
-      {/* 모달 4: 참가 신청 현황 모달 */}
       <Modal visible={modalVisible} animationType="slide" transparent={true} onRequestClose={() => setModalVisible(false)}>
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
@@ -1449,7 +1248,6 @@ export default function MatchesScreen() {
         </View>
       </Modal>
 
-      {/* 모달 5: 출전 팀 선택 모달 */}
       <Modal visible={teamSelectModalVisible} animationType="fade" transparent={true} onRequestClose={() => setTeamSelectModalVisible(false)}>
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
@@ -1467,7 +1265,6 @@ export default function MatchesScreen() {
         </View>
       </Modal>
 
-      {/* 모달 6: 매너 평가 & 칭찬 포도알 모달 */}
       <MatchEvaluationModal
         visible={evalModalVisible}
         onClose={() => setEvalModalVisible(false)}
@@ -1478,7 +1275,22 @@ export default function MatchesScreen() {
         onEvaluationComplete={fetchData}
       />
 
-      {/* 모달 7: 상대방 유저 프로필 모달 */}
+      <MatchCommentModal
+        visible={commentModalVisible}
+        onClose={() => setCommentModalVisible(false)}
+        targetMatch={targetCommentMatch}
+        fetchingComments={fetchingComments}
+        commentsList={commentsList}
+        availableBadges={availableBadges}
+        selectedBadge={selectedBadge}
+        onSelectBadge={setSelectedBadge}
+        commentInput={commentInput}
+        onChangeCommentInput={setCommentInput}
+        onPostComment={handlePostComment}
+        actionLoading={actionLoading}
+        onOpenUserProfile={openUserProfileModal}
+      />
+
       <UserProfileModal
         visible={profileModalVisible}
         userId={selectedUserIdForModal}
@@ -1494,7 +1306,6 @@ export default function MatchesScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#F8FAFC' },
 
-  /* 상단 헤더 */
   header: { 
     flexDirection: 'row', 
     alignItems: 'center', 
@@ -1515,21 +1326,18 @@ const styles = StyleSheet.create({
   addBtn: { backgroundColor: Colors.primary, paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8 },
   addBtnText: { color: '#FFFFFF', fontWeight: '800', fontSize: 12 },
 
-  /* 컨트롤 패널 (월 이동 및 메인 세그먼트 탭) */
   topControlPanel: { backgroundColor: '#FFFFFF', paddingHorizontal: 16, paddingTop: 8, paddingBottom: 10, borderBottomWidth: 1, borderBottomColor: '#E2E8F0' },
   monthPillBar: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: '#F1F5F9', borderRadius: 20, paddingHorizontal: 12, paddingVertical: 6, marginBottom: 8 },
   monthNavBtn: { width: 28, height: 28, borderRadius: 14, backgroundColor: '#FFFFFF', justifyContent: 'center', alignItems: 'center', elevation: 1 },
   monthNavArrow: { fontSize: 18, fontWeight: '800', color: Colors.primary },
   monthPillTitle: { fontSize: 14, fontWeight: '800', color: '#1E293B' },
 
-  /* 입체형 세그먼트 탭 */
   segmentedTabContainer: { flexDirection: 'row', backgroundColor: '#F1F5F9', borderRadius: 12, padding: 4 },
   segmentedTab: { flex: 1, paddingVertical: 8, alignItems: 'center', borderRadius: 9 },
   segmentedTabActive: { backgroundColor: '#FFFFFF', elevation: 2, shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.08, shadowRadius: 2 },
   segmentedTabText: { fontSize: 13, fontWeight: '700', color: '#64748B' },
   segmentedTabTextActive: { color: Colors.primary, fontWeight: '900' },
 
-  /* 필터 칩 영역 */
   filterChipRow: { flexDirection: 'row', paddingHorizontal: 16, marginTop: 10, gap: 6 },
   filterChip: { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 16, backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#E2E8F0' },
   filterChipActive: { backgroundColor: '#EFF6FF', borderColor: '#3B82F6' },
@@ -1544,12 +1352,10 @@ const styles = StyleSheet.create({
   subFilterText: { fontSize: 12, fontWeight: '700', color: '#64748B' },
   subFilterTextActive: { color: '#1D4ED8', fontWeight: '800' },
 
-  /* 검색바 */
   searchContainer: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#FFFFFF', marginHorizontal: 16, marginTop: 10, marginBottom: 8, paddingHorizontal: 12, paddingVertical: 8, borderRadius: 12, borderWidth: 1, borderColor: '#E2E8F0' },
   searchIcon: { fontSize: 14, marginRight: 6 },
   searchInput: { flex: 1, fontSize: 13, color: '#0F172A' },
   
-  /* 지역 탭 */
   regionTabsContainer: { paddingHorizontal: 16, paddingBottom: 8 },
   regionScroll: { gap: 6 },
   regionTab: { paddingHorizontal: 12, paddingVertical: 5, borderRadius: 14, backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#E2E8F0' },
@@ -1557,89 +1363,7 @@ const styles = StyleSheet.create({
   regionTabText: { fontSize: 12, fontWeight: '700', color: '#64748B' },
   regionTabTextActive: { color: '#FFFFFF', fontWeight: '800' },
   
-  /* 메인 매치 카드 목록 */
   content: { paddingHorizontal: 16, paddingTop: 4, paddingBottom: 40, gap: 12 },
-  matchCard: { backgroundColor: '#FFFFFF', borderRadius: 16, padding: 16, borderWidth: 1, borderColor: '#E2E8F0', elevation: 2, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.04, shadowRadius: 4 },
-  
-  /* 매치 카드 상단 서브 헤더 */
-  cardMetaRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 },
-  regionTagPill: { backgroundColor: '#F1F5F9', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6 },
-  regionTagPillText: { fontSize: 11, fontWeight: '800', color: '#475569' },
-  badgeRightGroup: { flexDirection: 'row', gap: 6, alignItems: 'center' },
-
-  /* 전광판 대결 로스터 스타일 */
-  scoreboardRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: '#F8FAFC', paddingVertical: 12, paddingHorizontal: 14, borderRadius: 12, borderWidth: 1, borderColor: '#F1F5F9', marginBottom: 10 },
-  teamColLeft: { flex: 1, alignItems: 'flex-start' },
-  teamColRight: { flex: 1, alignItems: 'flex-end' },
-  hostTeamText: { fontSize: 16, fontWeight: '900', color: Colors.primary },
-  awayTeamText: { fontSize: 16, fontWeight: '900', color: '#0284C7' },
-  teamRoleLabel: { fontSize: 10, fontWeight: '700', color: '#94A3B8', marginTop: 2 },
-  vsPill: { backgroundColor: '#E2E8F0', paddingHorizontal: 8, paddingVertical: 2, borderRadius: 10, marginHorizontal: 8 },
-  vsPillText: { fontSize: 11, fontWeight: '900', color: '#64748B' },
-  textMuted: { color: '#94A3B8', fontSize: 14, fontWeight: '700' },
-  
-  /* 상태 뱃지 */
-  statusBadge: { paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6, borderWidth: 1 },
-  statusOpen: { backgroundColor: '#F0FDF4', borderColor: '#BBF7D0' },
-  statusMatched: { backgroundColor: '#EFF6FF', borderColor: '#BFDBFE' },
-  statusPending: { backgroundColor: '#FEF3C7', borderColor: '#FDE68A' },
-  statusFriendly: { backgroundColor: '#F8FAFC', borderColor: '#E2E8F0' },
-  statusCompleted: { backgroundColor: '#F1F5F9', borderColor: '#CBD5E1' },
-  statusText: { fontSize: 11, fontWeight: '800' },
-  statusTextOpen: { color: '#166534' },
-  statusTextMatched: { color: '#1D4ED8' },
-  statusTextPending: { color: '#B45309' },
-  statusTextFriendly: { color: '#64748B' },
-  statusTextCompleted: { color: '#334155' },
-
-  mercenaryBadge: { backgroundColor: '#FEF3C7', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6, borderWidth: 1, borderColor: '#FDE68A' },
-  mercenaryBadgeText: { fontSize: 11, fontWeight: '800', color: '#B45309' },
-  mercenaryInfoBox: { backgroundColor: '#FEFCE8', borderRadius: 10, padding: 10, borderWidth: 1, borderColor: '#FDE68A', marginBottom: 10 },
-  mercenaryInfoTitle: { fontSize: 11, fontWeight: '800', color: '#B45309' },
-  mercenaryInfoText: { fontSize: 12, color: '#92400E', fontWeight: '700', marginTop: 2 },
-
-  /* 정보 상세 박스 */
-  matchDetailsBox: { gap: 4 },
-  detailRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  detailIcon: { fontSize: 13 },
-  detailText: { fontSize: 13, color: '#334155', fontWeight: '600' },
-
-  rosterAuditBox: { marginTop: 6, paddingHorizontal: 8, paddingVertical: 4, backgroundColor: '#EFF6FF', borderRadius: 6, borderWidth: 1, borderColor: '#BFDBFE' },
-  rosterAuditText: { fontSize: 10.5, fontWeight: '800', color: '#1D4ED8' },
-
-  descriptionBox: { marginTop: 8, paddingLeft: 8, borderLeftWidth: 3, borderLeftColor: '#93C5FD' },
-  descriptionText: { fontSize: 12.5, color: '#64748B', fontStyle: 'italic', lineHeight: 18 },
-
-  youtubeBarBtn: { backgroundColor: '#FEF2F2', borderWidth: 1, borderColor: '#FECACA', borderRadius: 8, paddingVertical: 8, alignItems: 'center' },
-  youtubeBarBtnText: { color: '#DC2626', fontSize: 12, fontWeight: '800' },
-
-  hostManageBtn: { flex: 1, backgroundColor: '#F1F5F9', borderRadius: 10, paddingVertical: 11, alignItems: 'center', borderWidth: 1, borderColor: '#CBD5E1' },
-  hostManageBtnText: { color: Colors.primary, fontSize: 13, fontWeight: '800' },
-  deleteBtn: { backgroundColor: '#FEF2F2', paddingHorizontal: 14, paddingVertical: 11, borderRadius: 10, borderWidth: 1, borderColor: '#FCA5A5', justifyContent: 'center', alignItems: 'center' },
-  deleteBtnText: { color: '#DC2626', fontSize: 13, fontWeight: '800' },
-  resultBtn: { backgroundColor: Colors.primary, borderRadius: 10, paddingVertical: 11, alignItems: 'center', flex: 1 },
-  resultBtnText: { color: '#FFFFFF', fontSize: 13, fontWeight: '800' },
-  
-  applyBtn: { backgroundColor: '#0EA5E9', borderRadius: 10, paddingVertical: 11, alignItems: 'center' },
-  applyBtnText: { color: '#FFFFFF', fontSize: 13, fontWeight: '800' },
-  applyMercenaryBtn: { backgroundColor: '#D97706', borderRadius: 10, paddingVertical: 11, alignItems: 'center' },
-  applyMercenaryBtnText: { color: '#FFFFFF', fontSize: 13, fontWeight: '800' },
-
-  appliedRow: { flexDirection: 'row', gap: 6, alignItems: 'center' },
-  appliedBadge: { flex: 1, backgroundColor: '#F0FDF4', borderRadius: 10, paddingVertical: 11, alignItems: 'center', borderWidth: 1, borderColor: '#BBF7D0' },
-  appliedBadgeText: { color: '#15803D', fontSize: 13, fontWeight: '800' },
-  cancelAppBtn: { backgroundColor: '#FEF2F2', borderWidth: 1, borderColor: '#FECACA', paddingHorizontal: 12, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
-  cancelAppBtnText: { color: '#DC2626', fontSize: 13, fontWeight: '800' },
-  matchedBanner: { backgroundColor: '#EFF6FF', padding: 10, borderRadius: 8, alignItems: 'center' },
-  matchedBannerText: { color: '#1E40AF', fontSize: 12.5, fontWeight: '800' },
-  completedBanner: { backgroundColor: '#F1F5F9', padding: 10, borderRadius: 10, alignItems: 'center', borderWidth: 1, borderColor: '#E2E8F0' },
-  completedBannerText: { color: '#0F172A', fontSize: 14, fontWeight: '900' },
-  setScoreText: { fontSize: 13, fontWeight: '800', color: '#2563EB', marginTop: 2 },
-  auditSubText: { fontSize: 10.5, color: '#64748B', fontWeight: '700', marginTop: 2 },
-  pendingBanner: { backgroundColor: '#FEFCE8', padding: 10, borderRadius: 8, alignItems: 'center', borderWidth: 1, borderColor: '#FEF08A' },
-  pendingBannerText: { color: '#A16207', fontSize: 13, fontWeight: '800' },
-  pendingWaitText: { textAlign: 'center', marginTop: 2, color: '#64748B', fontSize: 12.5, fontWeight: '800' },
-  
   emptyBox: { padding: 40, alignItems: 'center', backgroundColor: '#FFFFFF', borderRadius: 16, borderWidth: 1, borderColor: '#E2E8F0', marginTop: 10 },
   emptyEmoji: { fontSize: 32, marginBottom: 8 },
   emptyText: { color: '#64748B', fontSize: 13.5, fontWeight: '700', textAlign: 'center', lineHeight: 20 },
@@ -1647,9 +1371,6 @@ const styles = StyleSheet.create({
   infoNoticeBox: { backgroundColor: '#FEFCE8', borderRadius: 10, padding: 10, borderWidth: 1, borderColor: '#FDE68A', marginBottom: 10 },
   infoNoticeTitle: { fontSize: 12, fontWeight: '800', color: '#92400E', marginBottom: 2 },
   infoNoticeText: { fontSize: 11, color: '#B45309', lineHeight: 16, fontWeight: '500' },
-
-  evaluationBtn: { backgroundColor: '#9333EA', borderRadius: 10, paddingVertical: 11, alignItems: 'center', marginTop: 6 },
-  evaluationBtnText: { color: '#FFFFFF', fontSize: 13, fontWeight: '800' },
 
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center', padding: 16 },
   modalContent: { backgroundColor: '#FFFFFF', borderRadius: 18, padding: 18, width: '100%', elevation: 5 },
@@ -1665,4 +1386,6 @@ const styles = StyleSheet.create({
   closeBtnText: { color: '#334155', fontSize: 14, fontWeight: '800' },
   inputLabel: { fontSize: 12, fontWeight: '700', color: '#475569', marginBottom: 4 },
   textInput: { borderWidth: 1, borderColor: '#CBD5E1', borderRadius: 8, padding: 10, fontSize: 13, backgroundColor: '#FFFFFF' },
+  applyMercenaryBtn: { backgroundColor: '#D97706', borderRadius: 10, paddingVertical: 11, alignItems: 'center' },
+  applyMercenaryBtnText: { color: '#FFFFFF', fontSize: 13, fontWeight: '800' },
 });

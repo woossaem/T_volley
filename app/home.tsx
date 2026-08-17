@@ -19,7 +19,7 @@ import { supabase } from '../lib/supabase';
 import { Colors } from '../constants/Colors';
 import StickyAdBanner from '../components/StickyAdBanner';
 import BadgeCollectionModal from '../components/BadgeCollectionModal';
-import { getAllBadgesWithStatus, BadgeItem } from '../lib/badgeUtils';
+import { getAllBadgesWithStatus } from '../lib/badgeUtils';
 
 const MENU_ITEMS = [
   { id: 'matches', emoji: '📅', label: '경기 목록', route: '/matches' },
@@ -48,6 +48,13 @@ interface AppNotification {
   created_at: string;
 }
 
+interface HotPollData {
+  id: string;
+  title: string;
+  scope: 'official' | 'public' | 'team';
+  team_id?: string;
+}
+
 export default function HomeScreen() {
   const router = useRouter();
   const { session, signOut } = useAuth();
@@ -58,8 +65,8 @@ export default function HomeScreen() {
   const [unreadCount, setUnreadCount] = useState(0);
   const [showNotiModal, setShowNotiModal] = useState(false);
   const [showTeamsModal, setShowTeamsModal] = useState(false);
-  const [badgeModalVisible, setBadgeModalVisible] = useState(false); // 💡 칭호 도감 모달 State
-  const [equippedBadgeIds, setEquippedBadgeIds] = useState<string[]>([]); // 💡 대표 장착 칭호 ID 배열 (최대 2개)
+  const [badgeModalVisible, setBadgeModalVisible] = useState(false);
+  const [equippedBadgeIds, setEquippedBadgeIds] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
 
   const [stats, setStats] = useState({ total: 0, wins: 0, winRate: 0, recent5: [] as string[] });
@@ -71,7 +78,9 @@ export default function HomeScreen() {
     monthlyAttendance: 0,
   });
 
-  const [liveMatch, setLiveMatch] = useState<any>(null);
+  const [liveOfficialMatch, setLiveOfficialMatch] = useState<any>(null);
+  const [liveIntraMatch, setLiveIntraMatch] = useState<any>(null);
+  const [hotPoll, setHotPoll] = useState<HotPollData | null>(null);
 
   const parseTeamName = (rawName: any): string => {
     if (!rawName) return '';
@@ -118,10 +127,12 @@ export default function HomeScreen() {
       return;
     }
     try {
+      const todayStr = new Date().toISOString().split('T')[0];
+
       const { data: profData } = await supabase.from('profiles').select('*').eq('id', userId).maybeSingle();
       const { data: tmData } = await supabase
         .from('team_members')
-        .select('is_primary, teams(id, name, team_type)')
+        .select('is_primary, team_id, teams(id, name, team_type)')
         .eq('user_id', userId)
         .eq('is_active', true)
         .order('is_primary', { ascending: false });
@@ -159,14 +170,17 @@ export default function HomeScreen() {
       setInvitedCount(invCount || 0);
 
       const teamNames = teamList.map(t => t.name);
+      const teamIds = teamList.map(t => t.id);
 
-      const { data: activeMatches } = await supabase
+      // LIVE 경기 로드
+      const { data: activeOfficialMatches } = await supabase
         .from('matches')
         .select('*')
         .in('status', ['matched', 'pending_result'])
+        .eq('match_date', todayStr)
         .order('created_at', { ascending: false });
 
-      const currentLive = activeMatches?.find((m: any) => {
+      const currentOfficialLive = activeOfficialMatches?.find((m: any) => {
         const isMyTeamHost = teamNames.includes(m.host_team_name);
         const isMyTeamAway = m.away_team_name ? teamNames.includes(m.away_team_name) : false;
         
@@ -178,8 +192,52 @@ export default function HomeScreen() {
         return (isMyTeamHost || isMyTeamAway) && (inHostRoster || inAwayRoster);
       });
 
-      setLiveMatch(currentLive || null);
+      setLiveOfficialMatch(currentOfficialLive || null);
 
+      const { data: activeIntraMatches } = await supabase
+        .from('matches')
+        .select('*')
+        .eq('status', 'intramural')
+        .eq('match_date', todayStr)
+        .order('created_at', { ascending: false });
+
+      const currentIntraLive = activeIntraMatches?.find((m: any) => teamNames.includes(m.host_team_name));
+      setLiveIntraMatch(currentIntraLive || null);
+
+      // 💡 [NEW] 진행 중인 핫 픽(Hot Poll) 투표 로드
+      const { data: activePolls } = await supabase
+        .from('polls')
+        .select('id, title, scope, team_id')
+        .eq('status', 'active')
+        .order('created_at', { ascending: false });
+
+      if (activePolls && activePolls.length > 0) {
+        const relevantPolls = activePolls.filter((p: any) => {
+          if (p.scope === 'official' || p.scope === 'public') return true;
+          if (p.scope === 'team' && p.team_id && teamIds.includes(p.team_id)) return true;
+          return false;
+        });
+
+        if (relevantPolls.length > 0) {
+          const pollIds = relevantPolls.map(p => p.id);
+          const { data: myVotes } = await supabase
+            .from('poll_votes')
+            .select('poll_id')
+            .eq('user_id', userId)
+            .in('poll_id', pollIds);
+
+          const votedPollIds = new Set(myVotes?.map(v => v.poll_id) || []);
+          const unvotedPoll = relevantPolls.find(p => !votedPollIds.has(p.id));
+
+          setHotPoll(unvotedPoll || relevantPolls[0]);
+        } else {
+          setHotPoll(null);
+        }
+      } else {
+        setHotPoll(null);
+      }
+
+      // 통산 매치 통계
       const { data: matchesData } = await supabase.from('matches')
         .select('host_team_name, away_team_name, host_roster, away_roster, host_mercenary_roster, away_mercenary_roster, status, winner_team, host_user_id')
         .eq('status', 'completed')
@@ -267,11 +325,19 @@ export default function HomeScreen() {
     ]);
   };
 
-  const handleGoToLiveMatch = () => {
-    if (!liveMatch) return;
+  const handleGoToLiveOfficialMatch = () => {
+    if (!liveOfficialMatch) return;
     router.push({
-      pathname: '/matches',
-      params: { matchId: liveMatch.id, autoOpen: 'result' },
+      pathname: '/scoreboard',
+      params: { matchId: liveOfficialMatch.id },
+    });
+  };
+
+  const handleGoToLiveIntraMatch = () => {
+    if (!liveIntraMatch) return;
+    router.push({
+      pathname: '/scoreboard',
+      params: { matchId: liveIntraMatch.id },
     });
   };
 
@@ -284,8 +350,14 @@ export default function HomeScreen() {
     if (sets.length === 0) return '1세트 진행 중';
 
     const completedText = sets.map((score: string, idx: number) => `${idx + 1}세트 ${score}`).join(' · ');
-    const currentSetNum = sets.length + 1;
-    return `${completedText} · ${currentSetNum}세트 진행 중`;
+    return completedText;
+  };
+
+  const parseTeamNamesFromDesc = (desc?: string) => {
+    if (!desc) return { teamA: 'A팀', teamB: 'B팀' };
+    const match = desc.match(/^\[(.*?)\ VS (.*?)\]/);
+    if (match) return { teamA: match[1] || 'A팀', teamB: match[2] || 'B팀' };
+    return { teamA: 'A팀', teamB: 'B팀' };
   };
 
   const auraInfo = useMemo(() => {
@@ -296,7 +368,6 @@ export default function HomeScreen() {
     return { style: styles.auraNone };
   }, [invitedCount]);
 
-  // 💡 유저 가공 파라미터
   const badgeUserParams = useMemo(() => ({
     stats: { losses: 0, draws: 0, ...stats, recent5: stats.recent5 || [] },
     userActivityStats: {
@@ -307,7 +378,6 @@ export default function HomeScreen() {
     gender: profile?.gender || '남성',
   }), [stats, userActivityStats, invitedCount, profile?.gender]);
 
-  // 💡 전체 칭호 중 해금된 대표 칭호 최대 2개 추출 (수동 장착 없으면 상위 2개 자동)
   const equippedBadges = useMemo(() => {
     const allBadges = getAllBadgesWithStatus(badgeUserParams);
     const unlocked = allBadges.filter(b => b.isUnlocked);
@@ -316,7 +386,7 @@ export default function HomeScreen() {
       const equipped = allBadges.filter(b => equippedBadgeIds.includes(b.id) && b.isUnlocked);
       if (equipped.length > 0) return equipped;
     }
-    return unlocked.slice(0, 2); // 기본 수동선택 없으면 해금 상위 2개 노출
+    return unlocked.slice(0, 2);
   }, [badgeUserParams, equippedBadgeIds]);
 
   return (
@@ -341,26 +411,52 @@ export default function HomeScreen() {
       </View>
 
       <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
-        {/* 1. 🔴 LIVE 진행 경기 바 */}
-        {liveMatch && (
+        
+        {/* 🔴 공식 매치 LIVE 바 */}
+        {liveOfficialMatch && (
           <TouchableOpacity 
             style={styles.liveMatchBarSlim}
-            onPress={handleGoToLiveMatch}
+            onPress={handleGoToLiveOfficialMatch}
             activeOpacity={0.85}
           >
             <View style={styles.liveBarTopRow}>
               <View style={styles.liveBarLeft}>
-                <View style={styles.liveDotPill}><Text style={styles.liveDotPillText}>🔴 LIVE</Text></View>
+                <View style={styles.liveDotPill}><Text style={styles.liveDotPillText}>🔴 공식전 LIVE</Text></View>
                 <Text style={styles.liveBarTeamsText} numberOfLines={1}>
-                  {liveMatch.host_team_name} vs {liveMatch.away_team_name || '상대팀'}
+                  {liveOfficialMatch.host_team_name} vs {liveOfficialMatch.away_team_name || '상대팀'}
                 </Text>
               </View>
-              <Text style={styles.liveBarActionText}>실시간 확인/입력 ›</Text>
+              <Text style={styles.liveBarActionText}>전광판 스코어보드 ›</Text>
             </View>
 
             <View style={styles.liveBarScoreRow}>
               <Text style={styles.liveBarScoreText} numberOfLines={1}>
-                📊 {formatLiveSetInfo(liveMatch)}
+                📊 {formatLiveSetInfo(liveOfficialMatch)}
+              </Text>
+            </View>
+          </TouchableOpacity>
+        )}
+
+        {/* 💜 팀 내전 LIVE 바 */}
+        {liveIntraMatch && (
+          <TouchableOpacity 
+            style={styles.liveIntraBarSlim}
+            onPress={handleGoToLiveIntraMatch}
+            activeOpacity={0.85}
+          >
+            <View style={styles.liveBarTopRow}>
+              <View style={styles.liveBarLeft}>
+                <View style={styles.liveIntraDotPill}><Text style={styles.liveDotPillText}>💜 팀 내전 LIVE</Text></View>
+                <Text style={styles.liveIntraTeamsText} numberOfLines={1}>
+                  [{liveIntraMatch.host_team_name}] {parseTeamNamesFromDesc(liveIntraMatch.description).teamA} VS {parseTeamNamesFromDesc(liveIntraMatch.description).teamB}
+                </Text>
+              </View>
+              <Text style={styles.liveIntraActionText}>전광판 스코어보드 ›</Text>
+            </View>
+
+            <View style={styles.liveIntraScoreRow}>
+              <Text style={styles.liveIntraScoreText} numberOfLines={1}>
+                ⚔️ 세트 스코어: {liveIntraMatch.set_scores || '세트 진행 중'}
               </Text>
             </View>
           </TouchableOpacity>
@@ -379,14 +475,13 @@ export default function HomeScreen() {
           </View>
         )}
 
-        {/* 💡 스마트 프로필 카드 */}
+        {/* 스마트 프로필 카드 */}
         <View style={styles.profileCard}>
           {loading ? (
             <ActivityIndicator color={Colors.primary} style={{ padding: 20 }} />
           ) : (
             <View style={{ width: '100%' }}>
               
-              {/* 1영역: 프로필 정보 전체 터치 ➔ 프로필 수정 이동 */}
               <TouchableOpacity
                 style={styles.profileHeaderRow}
                 onPress={() => router.push('/profile-setup')}
@@ -409,14 +504,13 @@ export default function HomeScreen() {
                       </Text>
                     </View>
 
-                    {/* 💡 [개선] 2개 대표 칭호 가로 노출 & 터치 시 [칭호 도감 모달] 오픈 */}
                     <View style={{ flexDirection: 'row', gap: 4, flexWrap: 'wrap', alignItems: 'center' }}>
                       {equippedBadges.map((badge) => (
                         <TouchableOpacity
                           key={badge.id}
                           activeOpacity={0.8}
                           onPress={(e) => {
-                            e.stopPropagation(); // 👈 부모 클릭(프로필 이동) 방지
+                            e.stopPropagation();
                             setBadgeModalVisible(true);
                           }}
                           style={[styles.autoTitleBadge, badge.style]}
@@ -439,7 +533,6 @@ export default function HomeScreen() {
                 <Text style={styles.profileHeaderArrow}>›</Text>
               </TouchableOpacity>
 
-              {/* 2영역: 소속팀 스위퍼 & ⚙️ 팀 관리 버튼 */}
               <View style={styles.teamSectionRow}>
                 <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.teamChipsContainer}>
                   {profile?.teams && profile.teams.length > 0 ? (
@@ -479,7 +572,6 @@ export default function HomeScreen() {
                 </TouchableOpacity>
               </View>
 
-              {/* 3영역: 통산 전적 콤팩트 리포트 */}
               <TouchableOpacity
                 style={styles.statsSummaryContainer}
                 onPress={() => router.push('/profile')}
@@ -513,7 +605,45 @@ export default function HomeScreen() {
           )}
         </View>
 
-        {/* 3. 메인 메뉴 그리드 */}
+        {/* 💡 [NEW] 진행 중인 핫 픽(Hot Poll) 알림 바 (프로필 카드 바로 밑) */}
+        {hotPoll && (
+          <TouchableOpacity
+            style={[
+              styles.hotPollBar,
+              hotPoll.scope === 'official' ? styles.hotPollOfficial : hotPoll.scope === 'team' ? styles.hotPollTeam : styles.hotPollPublic
+            ]}
+            onPress={() => router.push('/polls')}
+            activeOpacity={0.85}
+          >
+            <View style={styles.hotPollTopRow}>
+              <View style={styles.hotPollLeft}>
+                <View style={[
+                  styles.hotPollBadgePill,
+                  hotPoll.scope === 'official' ? styles.hotPollBadgePillOfficial : hotPoll.scope === 'team' ? styles.hotPollBadgePillTeam : styles.hotPollBadgePillPublic
+                ]}>
+                  <Text style={[
+                    styles.hotPollBadgeText,
+                    hotPoll.scope === 'official' ? styles.hotPollBadgeTextOfficial : hotPoll.scope === 'team' ? styles.hotPollBadgeTextTeam : styles.hotPollBadgeTextPublic
+                  ]}>
+                    {hotPoll.scope === 'official' ? '👑 공식' : hotPoll.scope === 'team' ? '💬 팀내' : '🌐 공개'}
+                  </Text>
+                </View>
+                <Text style={[
+                  styles.hotPollTitleText,
+                  hotPoll.scope === 'official' ? styles.hotPollTitleOfficial : hotPoll.scope === 'team' ? styles.hotPollTitleTeam : styles.hotPollTitlePublic
+                ]} numberOfLines={1}>
+                  {hotPoll.title}
+                </Text>
+              </View>
+              <Text style={[
+                styles.hotPollActionText,
+                hotPoll.scope === 'official' ? styles.hotPollActionOfficial : hotPoll.scope === 'team' ? styles.hotPollActionTeam : styles.hotPollActionPublic
+              ]}>참여하기 ›</Text>
+            </View>
+          </TouchableOpacity>
+        )}
+
+        {/* 메인 메뉴 그리드 */}
         <View style={styles.menuGrid}>
           {MENU_ITEMS.map((item) => (
             <Pressable key={item.id} style={({ pressed }) => [styles.menuCard, pressed && styles.pressed]} onPress={() => router.push(item.route as any)}>
@@ -523,21 +653,24 @@ export default function HomeScreen() {
           ))}
         </View>
 
-        {/* 서브 정보 바 */}
+        {/* 💡 [수정] 서브 정보 바 3분할 연동 */}
         <View style={styles.subInfoBar}>
           <TouchableOpacity style={styles.subInfoBtn} onPress={() => router.push('/release-notes')}>
             <Text style={styles.subInfoBtnText}>🛠️ 패치노트</Text>
           </TouchableOpacity>
           <View style={styles.subDivider} />
+          <TouchableOpacity style={styles.subInfoBtn} onPress={() => router.push('/polls')}>
+            <Text style={styles.subInfoBtnText}>🗳️ 투표·설문</Text>
+          </TouchableOpacity>
+          <View style={styles.subDivider} />
           <TouchableOpacity style={styles.subInfoBtn} onPress={() => router.push('/feedback')}>
-            <Text style={styles.subInfoBtnText}>🚨 오류 / 건의 제보</Text>
+            <Text style={styles.subInfoBtnText}>🚨 오류/건의</Text>
           </TouchableOpacity>
         </View>
       </ScrollView>
 
       <StickyAdBanner />
 
-      {/* 📖 [신규] 칭호 수집 도감 & 2개 대표 장착 모달 */}
       <BadgeCollectionModal
         visible={badgeModalVisible}
         onClose={() => setBadgeModalVisible(false)}
@@ -546,7 +679,6 @@ export default function HomeScreen() {
         onSaveEquippedBadges={(badgeIds) => setEquippedBadgeIds(badgeIds)}
       />
 
-      {/* 소속 팀 전체보기 팝업 모달 */}
       <Modal visible={showTeamsModal} animationType="fade" transparent={true}>
         <View style={styles.modalOverlayCenter}>
           <View style={styles.teamsModalContent}>
@@ -578,7 +710,6 @@ export default function HomeScreen() {
         </View>
       </Modal>
 
-      {/* 알림 모달 */}
       <Modal visible={showNotiModal} animationType="slide" transparent={true}>
         <View style={styles.modalOverlayBottom}>
           <View style={styles.modalContentBottom}>
@@ -596,12 +727,31 @@ export default function HomeScreen() {
               ) : (
                 notifications.map((noti) => {
                   const dateStr = new Date(noti.created_at).toLocaleDateString('ko-KR', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+                  
+                  const handleNotiClick = () => {
+                    setShowNotiModal(false);
+                    if (noti.title.includes('가입')) {
+                      router.push('/teams');
+                    } else if (noti.title.includes('교류전')) {
+                      router.push('/matches');
+                    } else if (noti.title.includes('내전')) {
+                      router.push('/intramural');
+                    } else if (noti.title.includes('투표') || noti.title.includes('설문')) {
+                      router.push('/polls');
+                    }
+                  };
+
                   return (
-                    <View key={noti.id} style={[styles.notiItem, !noti.is_read && styles.notiItemUnread]}>
+                    <TouchableOpacity 
+                      key={noti.id} 
+                      style={[styles.notiItem, !noti.is_read && styles.notiItemUnread]}
+                      onPress={handleNotiClick}
+                      activeOpacity={0.7}
+                    >
                       <Text style={styles.notiItemTitle}>{noti.title}</Text>
                       <Text style={styles.notiItemDesc}>{noti.message}</Text>
                       <Text style={styles.notiItemDate}>{dateStr}</Text>
-                    </View>
+                    </TouchableOpacity>
                   );
                 })
               )}
@@ -633,7 +783,7 @@ const styles = StyleSheet.create({
   
   scrollContent: { paddingHorizontal: 16, paddingTop: 10, paddingBottom: 12 },
 
-  liveMatchBarSlim: { backgroundColor: '#FEF2F2', borderRadius: 12, paddingHorizontal: 12, paddingVertical: 9, borderWidth: 1, borderColor: '#FECACA', marginBottom: 10 },
+  liveMatchBarSlim: { backgroundColor: '#FEF2F2', borderRadius: 12, paddingHorizontal: 12, paddingVertical: 9, borderWidth: 1, borderColor: '#FECACA', marginBottom: 8 },
   liveBarTopRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   liveBarLeft: { flexDirection: 'row', alignItems: 'center', gap: 6, flex: 1, marginRight: 8 },
   liveDotPill: { backgroundColor: '#EF4444', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4 },
@@ -643,6 +793,42 @@ const styles = StyleSheet.create({
   liveBarScoreRow: { marginTop: 4, paddingTop: 4, borderTopWidth: 1, borderTopColor: '#FEE2E2', flexDirection: 'row', alignItems: 'center' },
   liveBarScoreText: { fontSize: 11, fontWeight: '700', color: '#B91C1C' },
 
+  liveIntraBarSlim: { backgroundColor: '#FAF5FF', borderRadius: 12, paddingHorizontal: 12, paddingVertical: 9, borderWidth: 1, borderColor: '#E9D5FF', marginBottom: 8 },
+  liveIntraDotPill: { backgroundColor: '#9333EA', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4 },
+  liveIntraTeamsText: { fontSize: 12.5, fontWeight: '800', color: '#6B21A8', flex: 1 },
+  liveIntraActionText: { fontSize: 11, fontWeight: '800', color: '#7E22CE' },
+  liveIntraScoreRow: { marginTop: 4, paddingTop: 4, borderTopWidth: 1, borderTopColor: '#F3E8FF', flexDirection: 'row', alignItems: 'center' },
+  liveIntraScoreText: { fontSize: 11, fontWeight: '800', color: '#7E22CE' },
+
+  /* 💡 [NEW] 실시간 핫 픽 투표 알림 바 스타일 */
+  hotPollBar: { borderRadius: 12, paddingHorizontal: 12, paddingVertical: 9, borderWidth: 1, marginBottom: 10 },
+  hotPollOfficial: { backgroundColor: '#FEF3C7', borderColor: '#FDE68A' },
+  hotPollTeam: { backgroundColor: '#FFEDD5', borderColor: '#FDBA74' },
+  hotPollPublic: { backgroundColor: '#EFF6FF', borderColor: '#BFDBFE' },
+
+  hotPollTopRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  hotPollLeft: { flexDirection: 'row', alignItems: 'center', gap: 6, flex: 1, marginRight: 8 },
+  
+  hotPollBadgePill: { paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4 },
+  hotPollBadgePillOfficial: { backgroundColor: '#D97706' },
+  hotPollBadgePillTeam: { backgroundColor: '#EA580C' },
+  hotPollBadgePillPublic: { backgroundColor: '#2563EB' },
+
+  hotPollBadgeText: { color: '#FFFFFF', fontSize: 9.5, fontWeight: '900' },
+  hotPollBadgeTextOfficial: { color: '#FFFFFF' },
+  hotPollBadgeTextTeam: { color: '#FFFFFF' },
+  hotPollBadgeTextPublic: { color: '#FFFFFF' },
+
+  hotPollTitleText: { fontSize: 12.5, fontWeight: '800', flex: 1 },
+  hotPollTitleOfficial: { color: '#B45309' },
+  hotPollTitleTeam: { color: '#C2410C' },
+  hotPollTitlePublic: { color: '#1D4ED8' },
+
+  hotPollActionText: { fontSize: 11, fontWeight: '800' },
+  hotPollActionOfficial: { color: '#D97706' },
+  hotPollActionTeam: { color: '#EA580C' },
+  hotPollActionPublic: { color: '#2563EB' },
+
   onboardingCard: { backgroundColor: '#EFF6FF', borderRadius: 14, padding: 14, borderWidth: 1.5, borderColor: '#3B82F6', marginBottom: 12 },
   onboardingTitle: { fontSize: 14, fontWeight: '900', color: '#1E40AF', marginBottom: 4 },
   onboardingSub: { fontSize: 12, color: '#1D4ED8', lineHeight: 18, marginBottom: 10 },
@@ -650,7 +836,6 @@ const styles = StyleSheet.create({
   onboardingBtnText: { color: '#FFFFFF', fontSize: 13, fontWeight: '800' },
 
   profileCard: { backgroundColor: Colors.surface, borderRadius: 16, padding: 12, borderWidth: 1, borderColor: Colors.border, marginBottom: 10, elevation: 2 },
-  
   profileHeaderRow: { flexDirection: 'row', alignItems: 'center', gap: 10, borderBottomWidth: 1, borderBottomColor: '#F1F5F9', paddingBottom: 8 },
   avatarCircle: { width: 46, height: 48, borderRadius: 23, backgroundColor: '#EFF6FF', alignItems: 'center', justifyContent: 'center', borderWidth: 2, overflow: 'hidden' },
   avatarImage: { width: 42, height: 44, borderRadius: 21 },
@@ -710,8 +895,8 @@ const styles = StyleSheet.create({
   pressed: { opacity: 0.75, transform: [{ scale: 0.98 }] },
 
   subInfoBar: { height: 40, backgroundColor: '#F1F5F9', borderRadius: 10, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-evenly', borderWidth: 1, borderColor: '#E2E8F0', marginBottom: 4 },
-  subInfoBtn: { paddingHorizontal: 12 },
-  subInfoBtnText: { fontSize: 11.5, fontWeight: '700', color: '#475569' },
+  subInfoBtn: { paddingHorizontal: 8 },
+  subInfoBtnText: { fontSize: 11, fontWeight: '700', color: '#475569' },
   subDivider: { width: 1, height: 12, backgroundColor: '#CBD5E1' },
 
   modalOverlayCenter: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center', padding: 20 },

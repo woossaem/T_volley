@@ -295,12 +295,14 @@ export default function ProfileSetupScreen() {
     }
   };
 
+  // 💡 [수정] 조합 중인 한글 자음(ㄱ-ㅎ), 모음(ㅏ-ㅣ)을 지우지 않도록 정규식 보강!
   const handleNameChange = (text: string) => {
-    const koreanOnly = text.replace(/[^가-힣]/g, '');
+    const koreanOnly = text.replace(/[^가-힣ㄱ-ㅎㅏ-ㅣ]/g, '');
     setFullName(koreanOnly);
   };
 
   const handleSaveProfile = async () => {
+    // 💡 최종 저장 시에는 완성된 한글(가-힣)만 추출하여 유효성 검사
     const baseKoreanName = fullName.replace(/[^가-힣]/g, '').trim();
 
     if (!baseKoreanName || baseKoreanName.length < 2 || baseKoreanName.length > 8) {
@@ -515,7 +517,7 @@ export default function ProfileSetupScreen() {
               {/* 5. 주 활동 배구 지역 (UI 슬림화 + 선택 칩 고정 + 자동완성 검색) */}
               <Text style={[styles.label, { marginTop: 14 }]}>5. 내 주 활동 배구 지역 (최대 3개 선택)</Text>
               
-              {/* 💡 선택된 지역 칩만 깔끔하게 상단 노출 (UI 슬림화) */}
+              {/* 📍 선택된 지역 칩만 깔끔하게 상단 노출 (UI 슬림화) */}
               <View style={styles.selectedRegionsContainer}>
                 {selectedRegions.length === 0 ? (
                   <Text style={styles.noRegionText}>선택된 활동 지역이 없습니다.</Text>
@@ -670,13 +672,11 @@ const styles = StyleSheet.create({
   requiredBadgeText: { fontSize: 10, fontWeight: '800', color: '#FFFFFF' },
   inviteBoxSub: { fontSize: 12, color: '#1E40AF', marginBottom: 10, fontWeight: '600', lineHeight: 18 },
 
-  // 📍 선택된 지역 전용 상단 콤팩트 컨테이너 (UI 슬림화)
   selectedRegionsContainer: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginBottom: 10, backgroundColor: '#F8FAFC', padding: 10, borderRadius: 12, borderWidth: 1, borderColor: '#E2E8F0' },
   selectedRegionChip: { backgroundColor: '#EFF6FF', borderColor: '#3B82F6', borderWidth: 1.5, paddingHorizontal: 12, paddingVertical: 6, borderRadius: 16 },
   selectedRegionChipText: { fontSize: 13, fontWeight: '800', color: '#1D4ED8' },
   noRegionText: { fontSize: 12, color: '#94A3B8', fontStyle: 'italic' },
 
-  // ⚡ 퀵 선택 슬림 칩
   quickChip: { backgroundColor: '#F1F5F9', paddingHorizontal: 10, paddingVertical: 5, borderRadius: 12, borderWidth: 1, borderColor: '#CBD5E1' },
   quickChipActive: { backgroundColor: '#2563EB', borderColor: '#1D4ED8' },
   quickChipText: { fontSize: 12, fontWeight: '700', color: '#475569' },

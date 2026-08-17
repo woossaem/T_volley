@@ -96,7 +96,7 @@ export default function RankingScreen() {
   const [selectedTeamForModal, setSelectedTeamForModal] = useState<string | null>(null);
   const [teamReportModalVisible, setTeamReportModalVisible] = useState(false);
 
-  const [badgeModalVisible, setBadgeModalVisible] = useState(false); // 💡 칭호 도감 모달 State
+  const [badgeModalVisible, setBadgeModalVisible] = useState(false);
   const [selectedBadgeUserParams, setSelectedBadgeUserParams] = useState<any>(null);
 
   const [sortCriterion, setSortCriterion] = useState<'points' | 'wins' | 'winRate'>('points');
@@ -141,7 +141,9 @@ export default function RankingScreen() {
       setLoading(true);
 
       const { data: allTeams } = await supabase.from('teams').select('*, manner_temp');
-      const { data: allMatches } = await supabase.from('matches').select('*').eq('status', 'completed');
+      
+      // 💡 [수정] 친선경기('friendly')도 랭킹 합산에 포함되도록 쿼리 확장
+      const { data: allMatches } = await supabase.from('matches').select('*').in('status', ['completed', 'friendly']);
       const { data: allProfiles } = await supabase.from('profiles').select('*');
 
       if (allMatches) setRawMatches(allMatches);
@@ -328,7 +330,8 @@ export default function RankingScreen() {
     const teamData = qualifiedTeamRanks.find(t => t.team_name === teamName) || pendingTeamRanks.find(t => t.team_name === teamName);
 
     const targetMatches = rawMatches.filter((m: any) => {
-      if (m.status !== 'completed') return false;
+      // 💡 친선 경기도 리포트 분석에 반영되도록 포함
+      if (m.status !== 'completed' && m.status !== 'friendly') return false;
       if (selectedPeriod !== 'hall_of_fame') {
         return getMatchSeasonCode(m.match_date || m.created_at) === selectedPeriod;
       }
@@ -656,7 +659,6 @@ export default function RankingScreen() {
                   gender: item.gender,
                 };
 
-                // 💡 대표 칭호 2개 계산
                 const userBadges = getAllBadgesWithStatus(userParams)
                   .filter(b => b.isUnlocked)
                   .slice(0, 2);
@@ -681,14 +683,13 @@ export default function RankingScreen() {
                           <Text style={[styles.miniGenderText, item.gender === '여성' ? styles.femaleText : styles.maleText]}>{item.gender}</Text>
                         </View>
 
-                        {/* 💡 [개선] 2개 대표 칭호 노출 & 터치 시 [칭호 도감 모달] 오픈 */}
                         <View style={{ flexDirection: 'row', gap: 3, flexWrap: 'wrap', alignItems: 'center' }}>
                           {userBadges.map((badge) => (
                             <TouchableOpacity
                               key={badge.id}
                               activeOpacity={0.8}
                               onPress={(e) => {
-                                e.stopPropagation(); // 👈 부모 클릭(프로필 모달) 방지
+                                e.stopPropagation();
                                 setSelectedBadgeUserParams(userParams);
                                 setBadgeModalVisible(true);
                               }}
@@ -719,7 +720,6 @@ export default function RankingScreen() {
 
       <StickyAdBanner />
 
-      {/* 📖 칭호 도감 모달 */}
       {selectedBadgeUserParams && (
         <BadgeCollectionModal
           visible={badgeModalVisible}

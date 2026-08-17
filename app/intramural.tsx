@@ -12,12 +12,14 @@ import {
   TextInput,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useRouter } from 'expo-router';
+import { useRouter, useLocalSearchParams } from 'expo-router';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
 import { Colors } from '../constants/Colors';
 import { sendNotificationToTeam } from '../lib/notificationService';
 import StickyAdBanner from '../components/StickyAdBanner';
+import MatchCommentModal from '../components/MatchCommentModal';
+import UserProfileModal from '../components/UserProfileModal';
 
 interface MatchData {
   id: string;
@@ -56,6 +58,23 @@ interface IntraRankingData {
   winRate: number;
 }
 
+interface CommentData {
+  id: string;
+  match_id: string;
+  user_id: string;
+  content: string;
+  created_at: string;
+  full_name?: string;
+  badgeType?: 'host' | 'applicant' | 'mercenary' | 'general';
+  badgeLabel?: string;
+}
+
+interface BadgeOption {
+  type: 'host' | 'applicant' | 'mercenary' | 'general';
+  teamName?: string;
+  label: string;
+}
+
 type SetRosterMap = { [setIndex: number]: string[] };
 
 const getTeamIcon = (type?: 'school' | 'club') => {
@@ -77,8 +96,10 @@ const parseIntraDescription = (desc?: string) => {
 
 export default function IntramuralScreen() {
   const router = useRouter();
+  const params = useLocalSearchParams<{ openMatchId?: string }>();
   const { session } = useAuth();
   const currentUserId = session?.user?.id;
+  const currentUserName = session?.user?.user_metadata?.full_name || '선생님';
 
   const [matches, setMatches] = useState<MatchData[]>([]);
   const [myTeams, setMyTeams] = useState<string[]>([]);
@@ -117,6 +138,17 @@ export default function IntramuralScreen() {
   const [showCalendar, setShowCalendar] = useState(false);
   const [calYear, setCalYear] = useState(new Date().getFullYear());
   const [calMonth, setCalMonth] = useState(new Date().getMonth() + 1);
+
+  const [commentModalVisible, setCommentModalVisible] = useState(false);
+  const [targetCommentMatch, setTargetCommentMatch] = useState<MatchData | null>(null);
+  const [fetchingComments, setFetchingComments] = useState(false);
+  const [commentsList, setCommentsList] = useState<CommentData[]>([]);
+  const [commentInput, setCommentInput] = useState('');
+  const [availableBadges, setAvailableBadges] = useState<BadgeOption[]>([]);
+  const [selectedBadge, setSelectedBadge] = useState<BadgeOption | null>(null);
+
+  const [selectedUserIdForModal, setSelectedUserIdForModal] = useState<string | null>(null);
+  const [profileModalVisible, setProfileModalVisible] = useState(false);
 
   const parseTeamName = (rawName: any): string => {
     if (!rawName) return '';
@@ -180,7 +212,15 @@ export default function IntramuralScreen() {
 
       const { data: matchData, error } = await supabase.from('matches').select('*').eq('status', 'intramural').order('created_at', { ascending: false });
       if (error) throw error;
-      if (matchData) setMatches(matchData);
+      if (matchData) {
+        setMatches(matchData);
+        if (params.openMatchId) {
+          const target = matchData.find(m => m.id === params.openMatchId);
+          if (target) {
+            openIntraModal(target);
+          }
+        }
+      }
 
     } catch (err) {
       console.error('데이터 조회 오류:', err);
@@ -190,7 +230,7 @@ export default function IntramuralScreen() {
     }
   };
 
-  useEffect(() => { fetchData(); }, [session]);
+  useEffect(() => { fetchData(); }, [session, params.openMatchId]);
   const onRefresh = () => { setRefreshing(true); fetchData(); };
 
   const fetchIntraMembers = async (tName: string) => {
@@ -215,6 +255,81 @@ export default function IntramuralScreen() {
       fetchIntraMembers(selectedTeamFilter);
     }
   }, [selectedTeamFilter]);
+
+  // 💡 [수정됨] 내전에서는 팀원/일반 뱃지를 아예 생성하지 않음 (단일 뱃지 적용)
+  const openCommentModal = async (match: MatchData) => {
+    setTargetCommentMatch(match);
+    setCommentModalVisible(true);
+    setFetchingComments(true);
+    setCommentInput('');
+
+    const badges: BadgeOption[] = [];
+    if (myTeams.includes(match.host_team_name)) {
+      badges.push({ type: 'host', teamName: match.host_team_name, label: `⚔️ 소속팀 (${match.host_team_name})` });
+    }
+    setAvailableBadges(badges);
+    setSelectedBadge(badges[0]);
+
+    try {
+      const { data, error } = await supabase
+        .from('match_comments')
+        .select('*, profiles(full_name)')
+        .eq('match_id', match.id)
+        .order('created_at', { ascending: true });
+
+      if (data) {
+        setCommentsList(data.map((item: any) => ({
+          id: item.id,
+          match_id: item.match_id,
+          user_id: item.user_id,
+          content: item.content,
+          created_at: item.created_at,
+          full_name: item.profiles?.full_name || '팀원',
+          badgeType: item.badge_type,
+          badgeLabel: item.badge_label,
+        })));
+      }
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setFetchingComments(false);
+    }
+  };
+
+  const handlePostComment = async () => {
+    if (!commentInput.trim() || !targetCommentMatch || !currentUserId || !selectedBadge) return;
+    setActionLoading(true);
+    try {
+      const payload = {
+        match_id: targetCommentMatch.id,
+        user_id: currentUserId,
+        content: commentInput.trim(),
+        badge_type: selectedBadge.type,
+        badge_label: selectedBadge.label,
+      };
+      const { data, error } = await supabase.from('match_comments').insert(payload).select('*, profiles(full_name)').single();
+      if (error) throw error;
+
+      if (data) {
+        const newComment: CommentData = {
+          id: data.id,
+          match_id: data.match_id,
+          user_id: data.user_id,
+          content: data.content,
+          created_at: data.created_at,
+          full_name: data.profiles?.full_name || currentUserName,
+          badgeType: data.badge_type,
+          badgeLabel: data.badge_label,
+        };
+        setCommentsList(prev => [...prev, newComment]);
+      }
+      setCommentInput('');
+    } catch (e: any) {
+      Alert.alert('오류', e.message);
+    } finally {
+      setActionLoading(false);
+    }
+  };
 
   const parseRoster = (rosterStr: string | null | undefined): SetRosterMap => {
     if (!rosterStr) return {};
@@ -290,8 +405,10 @@ export default function IntramuralScreen() {
       setIntraRostersB(parseRoster(match.away_roster));
       setIntraActiveSetTab(0);
       setIntraWinner(match.winner_team || '');
+      
       const parsedScores = parseScoresToArray(match.set_scores);
-      setIntraDynamicScores(parsedScores.length > 0 ? parsedScores : [{ hostScore: 25, awayScore: 21 }]);
+      // 💡 [수정됨] 편집 모드에서도 비어있으면 [] 로 띄움
+      setIntraDynamicScores(parsedScores.length > 0 ? parsedScores : []);
       setIntraModalVisible(true);
     } else {
       setEditingIntraId(null);
@@ -301,7 +418,9 @@ export default function IntramuralScreen() {
       setIntraNote('');
       setIntraRostersA({}); setIntraRostersB({});
       setIntraActiveSetTab(0);
-      setIntraDynamicScores([{ hostScore: 25, awayScore: 21 }]); 
+      
+      // 💡 [수정됨] 신규 생성 시 25:21 자동기입 방지 (빈 보드로 시작)
+      setIntraDynamicScores([]); 
       setIntraWinner('');
       if (!intraTeam && myTeams.length > 0) setIntraTeam(selectedTeamFilter || myTeams[0]);
       setIntraModalVisible(true);
@@ -325,7 +444,6 @@ export default function IntramuralScreen() {
   };
 
   const saveIntramuralMatch = async () => {
-    if (!intraWinner) return Alert.alert('알림', '최종 승리 팀을 선택해 주세요.');
     const formattedScores = convertScoresToString(intraDynamicScores);
 
     const tA = teamAName.trim() || 'A팀';
@@ -344,9 +462,9 @@ export default function IntramuralScreen() {
         format: '팀 내전',
         description: formattedDescription,
         status: 'intramural',
-        winner_team: intraWinner,
+        winner_team: intraWinner || 'draw',
         result_submitter_team: intraTeam,
-        set_scores: formattedScores,
+        set_scores: formattedScores, // [] 라면 null 반환됨. 정상적 스코어보드 진입 가능
         host_roster: JSON.stringify(intraRostersA),
         away_roster: JSON.stringify(intraRostersB),
       };
@@ -366,7 +484,7 @@ export default function IntramuralScreen() {
           currentUserId
         );
 
-        Alert.alert('기록 완료 ⚡', '팀 내전 기록이 저장되었습니다!');
+        Alert.alert('기록 완료 ⚡', '팀 내전 기록이 생성되었습니다! 0:0 전광판에서 경기를 이어가세요.');
       }
       setIntraModalVisible(false);
     } catch (err: any) { Alert.alert('오류', err.message); }
@@ -430,7 +548,7 @@ export default function IntramuralScreen() {
       const winner = match.winner_team;
       const isAWin = winner === teamA || winner === 'A팀' || winner === '청팀';
       const isBWin = winner === teamB || winner === 'B팀' || winner === '백팀';
-      const isDraw = winner === 'draw' || winner === '무승부';
+      const isDraw = winner === 'draw' || winner === '무승부' || !winner;
 
       rosterAIds.forEach(uId => {
         userStats[uId].total++;
@@ -526,7 +644,6 @@ export default function IntramuralScreen() {
 
   return (
     <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
-      {/* 1. 상단 헤더 */}
       <View style={styles.header}>
         <TouchableOpacity style={styles.backBtn} onPress={() => router.back()} hitSlop={10}>
           <Text style={styles.backText}>‹</Text>
@@ -537,7 +654,6 @@ export default function IntramuralScreen() {
         </TouchableOpacity>
       </View>
 
-      {/* 2. 소속팀 선택 슬림 탭 스위퍼 (학교 🏫 vs 동호회 🛡️ 구분) */}
       {myTeams.length > 0 && (
         <View style={styles.teamSwiperBar}>
           <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 6, paddingHorizontal: 14 }}>
@@ -560,7 +676,6 @@ export default function IntramuralScreen() {
         </View>
       )}
 
-      {/* 3. 모던 세그먼트 탭 컨트롤 */}
       <View style={styles.segmentedContainer}>
         <TouchableOpacity style={[styles.segmentBtn, mainTab === 'list' && styles.segmentBtnActive]} onPress={() => setMainTab('list')}>
           <Text style={[styles.segmentText, mainTab === 'list' && styles.segmentTextActive]}>📜 내전 기록 목록</Text>
@@ -572,7 +687,6 @@ export default function IntramuralScreen() {
 
       {mainTab === 'list' ? (
         <>
-          {/* 월 선택 내비게이션 */}
           <View style={styles.monthSelectorBar}>
             <TouchableOpacity onPress={() => changeListMonth(-1)} style={styles.monthSelectorBtn}>
               <Text style={styles.monthSelectorArrow}>‹</Text>
@@ -619,15 +733,31 @@ export default function IntramuralScreen() {
 
                     <View style={styles.scoreBanner}>
                       <Text style={styles.scoreBannerWinner}>
-                        🏆 {match.winner_team === 'draw' ? '무승부' : `${match.winner_team} 승리!`}
+                        🏆 {!match.winner_team || match.winner_team === 'draw' ? '자체 연습경기 (세트전)' : `${match.winner_team} 승리!`}
                       </Text>
                       {match.set_scores ? (
                         <Text style={styles.scoreBannerSetText}>세트 스코어 {match.set_scores}</Text>
                       ) : null}
                     </View>
+
+                    <TouchableOpacity
+                      style={styles.scoreboardLiveBtn}
+                      onPress={() => router.push({ pathname: '/scoreboard', params: { matchId: match.id } })}
+                      activeOpacity={0.85}
+                    >
+                      <Text style={styles.scoreboardLiveBtnText}>📊 실시간 전광판 스코어보드 진입 ▶</Text>
+                    </TouchableOpacity>
+
+                    <TouchableOpacity
+                      style={styles.commentBarBtn}
+                      onPress={() => openCommentModal(match)}
+                      activeOpacity={0.85}
+                    >
+                      <Text style={styles.commentBarBtnText}>💬 팀 내전 소통 / 질문 댓글방</Text>
+                    </TouchableOpacity>
                     
                     <TouchableOpacity style={styles.editCardBtn} onPress={() => openIntraModal(match)}>
-                      <Text style={styles.editCardBtnText}>✏️ 기록 수정 및 라인업 변경</Text>
+                      <Text style={styles.editCardBtnText}>✏️ 경기 수동입력 / 수정 변경</Text>
                     </TouchableOpacity>
                   </View>
                 );
@@ -696,12 +826,11 @@ export default function IntramuralScreen() {
 
       <StickyAdBanner />
 
-      {/* 내전 기록 모달 */}
       <Modal visible={intraModalVisible} animationType="slide" transparent={true}>
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>⚔️ 팀 내전(연습경기) 기록하기</Text>
-            <Text style={styles.modalSub}>세트별 라인업을 터치하여 배정하고 점수를 기록하세요!</Text>
+            <Text style={styles.modalTitle}>⚡ 결과 빠른 입력 및 초기 설정</Text>
+            <Text style={styles.modalSub}>생성 후 바로 0:0 전광판으로 진입하거나 점수를 먼저 입력할 수 있습니다.</Text>
             <ScrollView style={{ maxHeight: 440, marginVertical: 8 }} showsVerticalScrollIndicator={false}>
               
               <View style={styles.modalSectionBox}>
@@ -743,7 +872,7 @@ export default function IntramuralScreen() {
                     />
                   </View>
                   <View style={{ flex: 1 }}>
-                    <Text style={styles.subInputLabel}>⚪ B팀 명칭</Text>
+                    <Text style={styles.subInputLabel}>🔴 B팀 명칭</Text>
                     <TextInput
                       style={styles.textInput}
                       placeholder="예: B팀, 후배팀, 비주전"
@@ -769,7 +898,7 @@ export default function IntramuralScreen() {
               </View>
 
               <View style={styles.modalSectionBox}>
-                <Text style={styles.inputLabel}>4. 세트별 명단 터치 배정 (🔵 ➔ ⚪ ➔ 🪑)</Text>
+                <Text style={styles.inputLabel}>4. 세트별 명단 터치 배정 (🔵 ➔ 🔴 ➔ 🪑)</Text>
                 
                 <View style={styles.setTabContainer}>
                   {intraDynamicScores.map((_, idx) => (
@@ -783,6 +912,11 @@ export default function IntramuralScreen() {
                       </Text>
                     </TouchableOpacity>
                   ))}
+                  {intraDynamicScores.length === 0 && (
+                    <TouchableOpacity style={[styles.setTab, styles.setTabActive]}>
+                      <Text style={styles.setTabTextActive}>1세트 명단</Text>
+                    </TouchableOpacity>
+                  )}
                 </View>
 
                 <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 5 }}>
@@ -799,12 +933,12 @@ export default function IntramuralScreen() {
                         style={[
                           styles.rosterChip,
                           isA && { backgroundColor: '#EFF6FF', borderColor: '#3B82F6' },
-                          isB && { backgroundColor: '#F8FAFC', borderColor: '#64748B' }
+                          isB && { backgroundColor: '#FFF1F2', borderColor: '#F43F5E' }
                         ]}
                         onPress={() => toggleIntraSetRoster(m.user_id)}
                       >
-                        <Text style={[styles.rosterChipText, isA && { color: '#1D4ED8', fontWeight: '800' }, isB && { color: '#334155', fontWeight: '800' }]}>
-                          {isA ? `🔵 ${displayTeamA} ` : isB ? `⚪ ${displayTeamB} ` : '🪑 대기 '}{m.full_name}
+                        <Text style={[styles.rosterChipText, isA && { color: '#1D4ED8', fontWeight: '800' }, isB && { color: '#BE123C', fontWeight: '800' }]}>
+                          {isA ? `🔵 ${displayTeamA} ` : isB ? `🔴 ${displayTeamB} ` : '🪑 대기 '}{m.full_name}
                         </Text>
                       </TouchableOpacity>
                     );
@@ -813,53 +947,58 @@ export default function IntramuralScreen() {
               </View>
 
               <View style={styles.modalSectionBox}>
-                <Text style={styles.inputLabel}>5. 세트 스코어 입력 (생략 가능)</Text>
-                <View style={styles.scoreCalcBox}>
-                  {intraDynamicScores.map((ds, idx) => (
-                    <View key={idx} style={[styles.setRow, idx > 0 && { marginTop: 12 }]}>
-                      <View style={{ alignItems: 'center' }}>
-                        <Text style={styles.setLabel}>{idx + 1}세트</Text>
-                        {intraDynamicScores.length > 1 && (
-                          <TouchableOpacity style={{ marginTop: 2 }} onPress={() => removeIntraDynamicSet(idx)}>
-                            <Text style={{ fontSize: 10, color: '#EF4444', fontWeight: '800' }}>[X 삭제]</Text>
-                          </TouchableOpacity>
-                        )}
-                      </View>
+                <Text style={styles.inputLabel}>5. 세트 스코어 빠른 입력 (생략 가능)</Text>
+                <Text style={{ fontSize: 11, color: '#64748B', marginBottom: 6 }}>
+                  ※ 스코어를 빈칸으로 남겨두고 하단 저장 시, 0:0 상태로 전광판을 시작할 수 있습니다.
+                </Text>
+                {intraDynamicScores.length > 0 && (
+                  <View style={styles.scoreCalcBox}>
+                    {intraDynamicScores.map((ds, idx) => (
+                      <View key={idx} style={[styles.setRow, idx > 0 && { marginTop: 12 }]}>
+                        <View style={{ alignItems: 'center' }}>
+                          <Text style={styles.setLabel}>{idx + 1}세트</Text>
+                          {intraDynamicScores.length > 1 && (
+                            <TouchableOpacity style={{ marginTop: 2 }} onPress={() => removeIntraDynamicSet(idx)}>
+                              <Text style={{ fontSize: 10, color: '#EF4444', fontWeight: '800' }}>[X 삭제]</Text>
+                            </TouchableOpacity>
+                          )}
+                        </View>
 
-                      <View style={styles.teamScoreCol}>
-                        <Text style={styles.teamScoreLabel}>🔵 {teamAName || 'A팀'}</Text>
-                        <View style={styles.stepperRow}>
-                          <TouchableOpacity style={styles.stepBtn} onPress={() => updateIntraDynamicScore(idx, true, -1)}><Text style={styles.stepBtnText}>-1</Text></TouchableOpacity>
-                          <Text style={styles.scoreValText}>{ds.hostScore}</Text>
-                          <TouchableOpacity style={styles.stepBtn} onPress={() => updateIntraDynamicScore(idx, true, 1)}><Text style={styles.stepBtnText}>+1</Text></TouchableOpacity>
+                        <View style={styles.teamScoreCol}>
+                          <Text style={styles.teamScoreLabel}>🔵 {teamAName || 'A팀'}</Text>
+                          <View style={styles.stepperRow}>
+                            <TouchableOpacity style={styles.stepBtn} onPress={() => updateIntraDynamicScore(idx, true, -1)}><Text style={styles.stepBtnText}>-1</Text></TouchableOpacity>
+                            <Text style={styles.scoreValText}>{ds.hostScore}</Text>
+                            <TouchableOpacity style={styles.stepBtn} onPress={() => updateIntraDynamicScore(idx, true, 1)}><Text style={styles.stepBtnText}>+1</Text></TouchableOpacity>
+                          </View>
+                        </View>
+
+                        <Text style={styles.vsColon}>:</Text>
+
+                        <View style={styles.teamScoreCol}>
+                          <Text style={styles.teamScoreLabel}>🔴 {teamBName || 'B팀'}</Text>
+                          <View style={styles.stepperRow}>
+                            <TouchableOpacity style={styles.stepBtn} onPress={() => updateIntraDynamicScore(idx, false, -1)}><Text style={styles.stepBtnText}>-1</Text></TouchableOpacity>
+                            <Text style={styles.scoreValText}>{ds.awayScore}</Text>
+                            <TouchableOpacity style={styles.stepBtn} onPress={() => updateIntraDynamicScore(idx, false, 1)}><Text style={styles.stepBtnText}>+1</Text></TouchableOpacity>
+                          </View>
                         </View>
                       </View>
+                    ))}
+                  </View>
+                )}
 
-                      <Text style={styles.vsColon}>:</Text>
-
-                      <View style={styles.teamScoreCol}>
-                        <Text style={styles.teamScoreLabel}>⚪ {teamBName || 'B팀'}</Text>
-                        <View style={styles.stepperRow}>
-                          <TouchableOpacity style={styles.stepBtn} onPress={() => updateIntraDynamicScore(idx, false, -1)}><Text style={styles.stepBtnText}>-1</Text></TouchableOpacity>
-                          <Text style={styles.scoreValText}>{ds.awayScore}</Text>
-                          <TouchableOpacity style={styles.stepBtn} onPress={() => updateIntraDynamicScore(idx, false, 1)}><Text style={styles.stepBtnText}>+1</Text></TouchableOpacity>
-                        </View>
-                      </View>
-                    </View>
-                  ))}
-
-                  <TouchableOpacity style={styles.toggleSet3Btn} onPress={addIntraDynamicSet}>
-                    <Text style={styles.toggleSet3Text}>+ 세트 추가하기</Text>
-                  </TouchableOpacity>
-                </View>
+                <TouchableOpacity style={styles.toggleSet3Btn} onPress={addIntraDynamicSet}>
+                  <Text style={styles.toggleSet3Text}>➕ 수동 세트 점수칸 추가하기</Text>
+                </TouchableOpacity>
               </View>
 
               <View style={styles.modalSectionBox}>
-                <Text style={styles.inputLabel}>6. 최종 승리 팀 선택 (필수)</Text>
+                <Text style={styles.inputLabel}>6. 최종 승리 팀 선택 (선택 사항)</Text>
                 <View style={{ flexDirection: 'row', gap: 6 }}>
                   <TouchableOpacity
                     style={[styles.winnerGridBtn, intraWinner === (teamAName || 'A팀') && styles.winnerGridBtnActiveA]}
-                    onPress={() => setIntraWinner(teamAName || 'A팀')}
+                    onPress={() => setIntraWinner(prev => prev === (teamAName || 'A팀') ? '' : (teamAName || 'A팀'))}
                   >
                     <Text style={[styles.winnerGridText, intraWinner === (teamAName || 'A팀') && styles.winnerGridTextActive]}>
                       🥇 {teamAName || 'A팀'} 승
@@ -868,7 +1007,7 @@ export default function IntramuralScreen() {
 
                   <TouchableOpacity
                     style={[styles.winnerGridBtn, intraWinner === (teamBName || 'B팀') && styles.winnerGridBtnActiveB]}
-                    onPress={() => setIntraWinner(teamBName || 'B팀')}
+                    onPress={() => setIntraWinner(prev => prev === (teamBName || 'B팀') ? '' : (teamBName || 'B팀'))}
                   >
                     <Text style={[styles.winnerGridText, intraWinner === (teamBName || 'B팀') && styles.winnerGridTextActive]}>
                       🥇 {teamBName || 'B팀'} 승
@@ -877,7 +1016,7 @@ export default function IntramuralScreen() {
 
                   <TouchableOpacity
                     style={[styles.winnerGridBtn, intraWinner === 'draw' && styles.winnerGridBtnActiveDraw]}
-                    onPress={() => setIntraWinner('draw')}
+                    onPress={() => setIntraWinner(prev => prev === 'draw' ? '' : 'draw')}
                   >
                     <Text style={[styles.winnerGridText, intraWinner === 'draw' && styles.winnerGridTextActive]}>
                       🤝 무승부
@@ -898,14 +1037,43 @@ export default function IntramuralScreen() {
                 </TouchableOpacity>
               )}
               <TouchableOpacity style={[styles.submitModalBtn, { flex: 2, backgroundColor: '#9333EA' }]} onPress={saveIntramuralMatch} disabled={actionLoading}>
-                {actionLoading ? <ActivityIndicator color="#FFFFFF" /> : <Text style={styles.submitModalBtnText}>⚡ 내전 기록 저장</Text>}
+                {actionLoading ? <ActivityIndicator color="#FFFFFF" /> : <Text style={styles.submitModalBtnText}>⚡ 경기 저장 / 시작</Text>}
               </TouchableOpacity>
             </View>
           </View>
         </View>
       </Modal>
 
-      {/* 시즌 선택 모달 */}
+      {/* 내전 소통 댓글 모달 */}
+      <MatchCommentModal
+        visible={commentModalVisible}
+        onClose={() => setCommentModalVisible(false)}
+        targetMatch={targetCommentMatch}
+        fetchingComments={fetchingComments}
+        commentsList={commentsList}
+        availableBadges={availableBadges}
+        selectedBadge={selectedBadge}
+        onSelectBadge={setSelectedBadge}
+        commentInput={commentInput}
+        onChangeCommentInput={setCommentInput}
+        onPostComment={handlePostComment}
+        actionLoading={actionLoading}
+        onOpenUserProfile={(uId) => {
+          setSelectedUserIdForModal(uId);
+          setProfileModalVisible(true);
+        }}
+      />
+
+      {/* 유저 프로필 모달 */}
+      <UserProfileModal
+        visible={profileModalVisible}
+        userId={selectedUserIdForModal}
+        onClose={() => {
+          setProfileModalVisible(false);
+          setSelectedUserIdForModal(null);
+        }}
+      />
+
       <Modal visible={seasonPickerVisible} animationType="fade" transparent={true} onRequestClose={() => setSeasonPickerVisible(false)}>
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
@@ -958,7 +1126,6 @@ export default function IntramuralScreen() {
   );
 }
 
-// 💡 35개 에러를 모두 완벽히 잡는 전체 스타일 선언 객체
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: Colors.background },
   header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 20, paddingVertical: 14, backgroundColor: Colors.surface, borderBottomWidth: 1, borderBottomColor: Colors.border },
@@ -1004,6 +1171,12 @@ const styles = StyleSheet.create({
   scoreBannerWinner: { color: '#6B21A8', fontSize: 14, fontWeight: '900' },
   scoreBannerSetText: { fontSize: 12, fontWeight: '800', color: '#7E22CE', marginTop: 2 },
 
+  scoreboardLiveBtn: { backgroundColor: '#0F172A', borderRadius: 10, paddingVertical: 10, alignItems: 'center', marginTop: 8 },
+  scoreboardLiveBtnText: { color: '#38BDF8', fontSize: 12.5, fontWeight: '900' },
+
+  commentBarBtn: { backgroundColor: '#FAF5FF', borderRadius: 10, paddingVertical: 10, alignItems: 'center', marginTop: 6, borderWidth: 1, borderColor: '#E9D5FF' },
+  commentBarBtnText: { color: '#7E22CE', fontSize: 12.5, fontWeight: '800' },
+
   editCardBtn: { backgroundColor: '#6B21A8', borderRadius: 8, paddingVertical: 10, alignItems: 'center', marginTop: 10 },
   editCardBtnText: { color: '#FFFFFF', fontSize: 12.5, fontWeight: '800' },
 
@@ -1036,7 +1209,7 @@ const styles = StyleSheet.create({
 
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center', padding: 16 },
   modalContent: { backgroundColor: Colors.surface, borderRadius: 18, padding: 16, width: '100%', elevation: 5 },
-  modalTitle: { fontSize: 16, fontWeight: '800', color: Colors.text, marginBottom: 2 },
+  modalTitle: { fontSize: 16, fontWeight: '900', color: Colors.text, marginBottom: 2 },
   modalSub: { fontSize: 11.5, color: Colors.textMuted, marginBottom: 8 },
 
   modalSectionBox: { backgroundColor: '#F8FAFC', borderRadius: 10, padding: 10, borderWidth: 1, borderColor: '#E2E8F0', marginBottom: 8 },
@@ -1092,6 +1265,7 @@ const styles = StyleSheet.create({
   teamSelectChipActive: { backgroundColor: '#2563EB', borderColor: '#1D4ED8' },
   teamSelectChipText: { fontSize: 12, fontWeight: '800', color: '#334155' },
   teamSelectChipTextActive: { color: '#FFFFFF' },
+
   winnerGridBtn: { flex: 1, backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#CBD5E1', borderRadius: 8, paddingVertical: 10, alignItems: 'center' },
   winnerGridBtnActiveA: { backgroundColor: '#2563EB', borderColor: '#1D4ED8' },
   winnerGridBtnActiveB: { backgroundColor: '#475569', borderColor: '#334155' },

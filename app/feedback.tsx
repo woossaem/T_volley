@@ -33,22 +33,50 @@ export default function FeedbackScreen() {
 
     setSubmitting(true);
     try {
-      const { error } = await supabase.from('notifications').insert({
-        user_id: userId || 'anonymous',
-        title: `[${category === 'bug' ? '오류제보' : category === 'feature' ? '기능제안' : '기타문의'}]`,
-        message: `내용: ${content.trim()}\n연락처: ${contact.trim() || '미작성'}`,
-        is_read: false,
+      const categoryLabel =
+        category === 'bug'
+          ? '오류/버그 제보'
+          : category === 'feature'
+          ? '신규 기능 제안'
+          : '기타 문의';
+
+      // 1. 새로 만드신 `feedbacks` 테이블에 저장
+      const { error: dbError } = await supabase.from('feedbacks').insert({
+        user_id: userId || null,
+        category: categoryLabel,
+        content: content.trim(),
+        contact: contact.trim() || null,
       });
 
-      if (error) throw error;
+      if (dbError) throw dbError;
+
+      // 2. 개발자 이메일(wpro424@gmail.com)로 실시간 자동 발송
+      try {
+        await fetch('https://formsubmit.co/ajax/wpro424@gmail.com', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Accept: 'application/json',
+          },
+          body: JSON.stringify({
+            _subject: `[티볼리] 새로운 ${categoryLabel}가 접수되었습니다.`,
+            카테고리: categoryLabel,
+            건의내용: content.trim(),
+            회신연락처: contact.trim() || '미작성',
+            작성자ID: userId || '비로그인 유저',
+          }),
+        });
+      } catch (emailErr) {
+        console.log('이메일 전송 예외 (DB에는 정상 저장됨):', emailErr);
+      }
 
       Alert.alert(
         '전송 완료! 🎉',
-        '선생님의 의견이 개발자(Rudolfuu)에게 전달되었습니다. 더 멋진 티볼리를 만들어 가겠습니다.',
+        '선생님의 의견이 안전하게 등록되었습니다. 더 멋진 티볼리를 만들어 가겠습니다.',
         [{ text: '확인', onPress: () => router.back() }]
       );
     } catch (err: any) {
-      Alert.alert('오류', err.message);
+      Alert.alert('오류', err.message || '의견 제출 중 문제가 발생했습니다.');
     } finally {
       setSubmitting(false);
     }

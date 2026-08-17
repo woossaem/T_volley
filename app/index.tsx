@@ -1,8 +1,12 @@
 import React, { useEffect } from 'react';
-import { View, Text, StyleSheet, Image, ActivityIndicator } from 'react-native';
+import { View, Text, StyleSheet, ActivityIndicator } from 'react-native';
 import { useRouter } from 'expo-router';
+import Constants from 'expo-constants';
 import { useAuth } from '../contexts/AuthContext';
 import { getCurrentSeasonInfo } from '../lib/season';
+
+// 💡 app.json의 version 정보를 자동으로 동기화
+const APP_VERSION = `v${Constants.expoConfig?.version || '2.0.1'}`;
 
 export default function IndexScreen() {
   const router = useRouter();
@@ -43,7 +47,7 @@ export default function IndexScreen() {
         <View style={styles.sloganTag}>
           <Text style={styles.sloganText}>부상 없이 즐겁게! 깨끗한 교사 배구 문화 🏐</Text>
         </View>
-        <Text style={styles.versionText}>v1.5.0</Text>
+        <Text style={styles.versionText}>{APP_VERSION}</Text>
         <Text style={styles.developerText}>Created by Rudolfuu</Text>
         {loading && <ActivityIndicator color="#3B82F6" style={{ marginTop: 10 }} />}
       </View>

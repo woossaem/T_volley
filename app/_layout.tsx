@@ -3,9 +3,13 @@ import { View, Text, StyleSheet, Animated, Alert, Image } from 'react-native';
 import { Stack } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Updates from 'expo-updates';
+import Constants from 'expo-constants';
 import { AuthProvider, useAuth } from '../contexts/AuthContext';
 import { registerForPushNotificationsAsync } from '../lib/notificationService';
 import { getCurrentSeasonInfo } from '../lib/season';
+
+// 💡 app.json의 version 정보를 자동으로 동기화
+const APP_VERSION = `v${Constants.expoConfig?.version || '2.0.1'}`;
 
 function RootLayoutContent() {
   const { session } = useAuth();
@@ -15,7 +19,6 @@ function RootLayoutContent() {
 
   const currentSeason = getCurrentSeasonInfo();
 
-  // 앱 구동 시 최신 업데이트 체크 & 다운로드
   useEffect(() => {
     async function checkAndApplyUpdate() {
       if (__DEV__) return;
@@ -109,7 +112,7 @@ function RootLayoutContent() {
             <View style={styles.splashNoticeChip}>
               <Text style={styles.splashNoticeText}>부상 없이 즐겁게! 깨끗한 교사 배구 문화 🏐</Text>
             </View>
-            <Text style={styles.versionText}>v1.5.0</Text>
+            <Text style={styles.versionText}>{APP_VERSION}</Text>
             <Text style={styles.developerText}>
               Created by <Text style={styles.authorText}>Rudolfuu</Text>
             </Text>
@@ -142,7 +145,7 @@ const styles = StyleSheet.create({
   },
   centerContent: {
     alignItems: 'center',
-    justifyContent: 'center', // 💡 에러 수정 완료!
+    justifyContent: 'center',
   },
   logoCircle: {
     width: 90,
