@@ -14,10 +14,12 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, useLocalSearchParams, useFocusEffect } from 'expo-router';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
+import { sendNotificationToTeam } from '../lib/notificationService';
 import * as ScreenOrientation from 'expo-screen-orientation';
 
 import ScoreTimeline, { MatchEvent } from '../components/ScoreTimeline';
 import PlayerActionModal, { Member } from '../components/PlayerActionModal';
+import MatchPostgameReportModal from '../components/MatchPostgameReportModal';
 
 interface MatchRecord {
   id: string;
@@ -30,6 +32,7 @@ interface MatchRecord {
   recorder_away_id?: string | null;
   host_roster?: string;
   away_roster?: string;
+  winner_team?: string;
 }
 
 export default function ScoreboardScreen() {
@@ -69,6 +72,9 @@ export default function ScoreboardScreen() {
   const [editModalVisible, setEditModalVisible] = useState(false);
   const [tempHostScore, setTempHostScore] = useState(0);
   const [tempAwayScore, setTempAwayScore] = useState(0);
+
+  const [finishModalVisible, setFinishModalVisible] = useState(false);
+  const [reportModalVisible, setReportModalVisible] = useState(false);
 
   const isInitialLoadRef = useRef(true);
   const currentSetIndexRef = useRef(currentSetIndex);
@@ -179,7 +185,7 @@ export default function ScoreboardScreen() {
 
         const hMems = await fetchMembers(data.host_team_name);
         setHostMembers(hMems);
-        if (isIntramural) setAwayMembers(hMems);
+        if (data.status === 'intramural') setAwayMembers(hMems);
         else if (data.away_team_name) {
           const aMems = await fetchMembers(data.away_team_name);
           setAwayMembers(aMems);
@@ -217,7 +223,7 @@ export default function ScoreboardScreen() {
     } finally {
       setLoading(false);
     }
-  }, [matchId, currentUserId, isIntramural, recalcScores]);
+  }, [matchId, currentUserId, recalcScores]);
 
   useEffect(() => {
     fetchMatchDetails();
@@ -441,7 +447,6 @@ export default function ScoreboardScreen() {
           const newEvents = events.map(e => e.id === lastEvent.id ? { ...e, is_canceled: true } : e);
           setEvents(newEvents);
           recalcScores(newEvents, currentSetIndex);
-          
           await supabase.from('match_events').update({ is_canceled: true }).eq('id', lastEvent.id);
         }
       }
@@ -473,6 +478,103 @@ export default function ScoreboardScreen() {
         }
       ]
     );
+  };
+
+  const handleOpenFinishMatch = () => {
+    if (myRole === 'spectator') return;
+
+    if (isIntramural) {
+      setFinishModalVisible(true);
+    } else {
+      Alert.alert(
+        '🏆 경기 최종 마감',
+        '현재까지의 점수를 포함하여 경기를 마감하시겠습니까?\n마감 시 상대 팀에 결과 승인 요청이 전달됩니다.',
+        [
+          { text: '취소', style: 'cancel' },
+          { text: '최종 마감', onPress: () => processOfficialMatchFinish() }
+        ]
+      );
+    }
+  };
+
+  const handleConfirmIntramuralFinish = async (winner: string) => {
+    setActionLoading(true);
+    try {
+      let finalHistory = [...setHistory];
+      if (currentScores.host > 0 || currentScores.away > 0) {
+        finalHistory.push(`${currentScores.host}:${currentScores.away}`);
+      }
+      const formattedSetScores = finalHistory.join(', ');
+
+      await supabase.from('matches').update({
+        set_scores: formattedSetScores,
+        winner_team: winner,
+        recorder_host_id: null,
+        recorder_away_id: null,
+      }).eq('id', matchId);
+
+      Alert.alert('내전 마감 완료! ⚔️', '팀 내전 전적이 정상 기록되었습니다.', [
+        { text: '확인', onPress: () => setReportModalVisible(true) }
+      ]);
+    } catch (e: any) {
+      Alert.alert('오류', e.message);
+    } finally {
+      setActionLoading(false);
+      setFinishModalVisible(false);
+    }
+  };
+
+  const processOfficialMatchFinish = async () => {
+    setActionLoading(true);
+    try {
+      let finalHistory = [...setHistory];
+      if (currentScores.host > 0 || currentScores.away > 0) {
+        finalHistory.push(`${currentScores.host}:${currentScores.away}`);
+      }
+      const formattedSetScores = finalHistory.join(', ');
+
+      const myTeamInMatch = match && myTeams.includes(match.host_team_name)
+        ? match.host_team_name
+        : match?.away_team_name;
+
+      const otherTeam = myTeamInMatch === match?.host_team_name ? match?.away_team_name : match?.host_team_name;
+
+      let winningTeam = 'draw';
+      let hostSetWins = 0, awaySetWins = 0;
+      finalHistory.forEach(s => {
+        const [h, a] = s.split(':').map(Number);
+        if (h > a) hostSetWins++;
+        else if (a > h) awaySetWins++;
+      });
+      if (hostSetWins > awaySetWins) winningTeam = match?.host_team_name || '';
+      else if (awaySetWins > hostSetWins) winningTeam = match?.away_team_name || '';
+
+      await supabase.from('matches').update({
+        status: 'pending_result',
+        set_scores: formattedSetScores,
+        winner_team: winningTeam,
+        result_submitter_team: myTeamInMatch,
+        submitted_by_name: currentUserName,
+        recorder_host_id: null,
+        recorder_away_id: null,
+      }).eq('id', matchId);
+
+      if (otherTeam) {
+        await sendNotificationToTeam(
+          otherTeam,
+          '⚠️ [경기 결과 승인 요청]',
+          `'${myTeamInMatch}'팀에서 전광판 경기를 마감하고 결과 승인을 요청했습니다.`
+        );
+      }
+
+      Alert.alert('마감 전달 완료 🏆', '상대 팀에 결과 승인 요청을 전달했습니다.', [
+        { text: '확인', onPress: () => setReportModalVisible(true) }
+      ]);
+    } catch (e: any) {
+      Alert.alert('오류', e.message);
+    } finally {
+      setActionLoading(false);
+    }
   };
 
   const handleOpenEditModal = () => {
@@ -537,7 +639,6 @@ export default function ScoreboardScreen() {
     return { court: baseMembers, bench: [] };
   };
 
-  // 💡 [수정] 1인 마스터 판별 및 오해 차단 문구 로직
   const isHostMaster = match?.recorder_host_id && !match?.recorder_away_id;
   const isAwayMaster = !match?.recorder_host_id && match?.recorder_away_id;
   const masterName = isHostMaster ? hostRecorderName : awayRecorderName;
@@ -563,7 +664,6 @@ export default function ScoreboardScreen() {
                 </Text>
               ) : (
                 <>
-                  {/* 💡 [수정] 1인 마스터 조작 중일 때 텍스트 직관성 강화 */}
                   <Text style={styles.recorderStatusText}>
                     🔵 {displayHostName}: <Text style={{ color: match?.recorder_host_id ? '#38BDF8' : '#94A3B8' }}>{match?.recorder_host_id ? hostRecorderName : '공석'}</Text>
                   </Text>
@@ -651,13 +751,18 @@ export default function ScoreboardScreen() {
         </View>
 
         <View style={styles.headerSlimCenter}>
-          {/* 💡 [수정] 헤더 중앙 문구 상황별 직관적 분기 */}
           <Text style={styles.recorderInfoTextSlim} numberOfLines={1}>
             {headerCenterText}
           </Text>
         </View>
 
         <View style={styles.headerSlimRight}>
+          {events.length > 0 && (
+            <TouchableOpacity style={styles.reportBtnSlim} onPress={() => setReportModalVisible(true)}>
+              <Text style={styles.reportBtnTextSlim}>📊 분석 리포트</Text>
+            </TouchableOpacity>
+          )}
+
           {myRole !== 'spectator' && (
             <TouchableOpacity style={styles.leaveRoleBtnSlim} onPress={handleLeaveRole}>
               <Text style={styles.leaveRoleBtnTextSlim}>🚪 반납</Text>
@@ -670,11 +775,9 @@ export default function ScoreboardScreen() {
       </View>
 
       <View style={styles.scoreboardMainGrid}>
-        
         <View style={[styles.teamCourtHalf, leftTeamData.isHost ? styles.hostCourtBg : styles.awayCourtBg]}>
           <View style={styles.courtTopRow}>
             <Text style={styles.courtTeamName} numberOfLines={1}>{leftTeamData.name}</Text>
-            
             {leftTeamData.canControl && (
               <View style={styles.stackedUtilityBtns}>
                 <TouchableOpacity style={styles.glassBtnCompact} onPress={() => handleOpenEditModal()}>
@@ -686,12 +789,9 @@ export default function ScoreboardScreen() {
               </View>
             )}
           </View>
-
           <TouchableOpacity 
             style={styles.bigScoreTouchArea} 
-            onPress={() => {
-              if (leftTeamData.canControl) openActionModal(leftTeamData.key, 'score');
-            }} 
+            onPress={() => { if (leftTeamData.canControl) openActionModal(leftTeamData.key, 'score'); }} 
             disabled={!leftTeamData.canControl}
             activeOpacity={0.8}
           >
@@ -709,7 +809,6 @@ export default function ScoreboardScreen() {
         <View style={[styles.teamCourtHalf, rightTeamData.isHost ? styles.hostCourtBg : styles.awayCourtBg]}>
           <View style={styles.courtTopRow}>
             <Text style={styles.courtTeamName} numberOfLines={1}>{rightTeamData.name}</Text>
-            
             {rightTeamData.canControl && (
               <View style={styles.stackedUtilityBtns}>
                 <TouchableOpacity style={styles.glassBtnCompact} onPress={() => handleOpenEditModal()}>
@@ -721,12 +820,9 @@ export default function ScoreboardScreen() {
               </View>
             )}
           </View>
-
           <TouchableOpacity 
             style={styles.bigScoreTouchArea} 
-            onPress={() => {
-              if (rightTeamData.canControl) openActionModal(rightTeamData.key, 'score');
-            }} 
+            onPress={() => { if (rightTeamData.canControl) openActionModal(rightTeamData.key, 'score'); }} 
             disabled={!rightTeamData.canControl}
             activeOpacity={0.8}
           >
@@ -738,7 +834,6 @@ export default function ScoreboardScreen() {
             )}
           </TouchableOpacity>
         </View>
-
       </View>
 
       <View style={styles.bottomControlBar}>
@@ -761,6 +856,9 @@ export default function ScoreboardScreen() {
             <TouchableOpacity style={styles.finishSetBtn} onPress={handleFinishSet}>
               <Text style={styles.finishSetBtnText}>🏁 세트 마감</Text>
             </TouchableOpacity>
+            <TouchableOpacity style={styles.finishMatchBtn} onPress={handleOpenFinishMatch}>
+              <Text style={styles.finishMatchBtnText}>🏆 경기 최종 종료</Text>
+            </TouchableOpacity>
           </View>
         )}
       </View>
@@ -771,10 +869,7 @@ export default function ScoreboardScreen() {
         teamName={actionTeam === 'host' ? displayHostName : displayAwayName}
         courtMembers={getSetRosters(actionTeam === 'host').court}
         benchMembers={getSetRosters(actionTeam === 'host').bench}
-        onClose={() => {
-          setActionModalVisible(false);
-          if (actionMode === 'score') handleScoreConfirm(null);
-        }}
+        onClose={() => { setActionModalVisible(false); if (actionMode === 'score') handleScoreConfirm(null); }}
         onScoreConfirm={handleScoreConfirm}
         onSubConfirm={handleSubConfirm}
       />
@@ -784,7 +879,6 @@ export default function ScoreboardScreen() {
           <View style={styles.modalContent}>
             <Text style={styles.modalTitle}>✏️ 점수 수동 보정</Text>
             <Text style={styles.modalSub}>오입력된 점수를 직접 수정하세요.</Text>
-
             <View style={styles.manualScoreGrid}>
               <View style={styles.manualTeamCol}>
                 <Text style={styles.manualTeamName}>🔵 {displayHostName}</Text>
@@ -794,9 +888,7 @@ export default function ScoreboardScreen() {
                   <TouchableOpacity style={styles.stepBtn} onPress={() => setTempHostScore(prev => prev + 1)}><Text style={styles.stepBtnText}>+</Text></TouchableOpacity>
                 </View>
               </View>
-
               <Text style={styles.manualColon}>:</Text>
-
               <View style={styles.manualTeamCol}>
                 <Text style={styles.manualTeamName}>🔴 {displayAwayName}</Text>
                 <View style={styles.stepperRow}>
@@ -806,18 +898,46 @@ export default function ScoreboardScreen() {
                 </View>
               </View>
             </View>
-
             <View style={styles.modalBtnRow}>
-              <TouchableOpacity style={styles.modalCancelBtn} onPress={() => setEditModalVisible(false)}>
-                <Text style={styles.modalCancelBtnText}>취소</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={styles.modalSaveBtn} onPress={handleSaveManualScores}>
-                <Text style={styles.modalSaveBtnText}>점수 반영</Text>
-              </TouchableOpacity>
+              <TouchableOpacity style={styles.modalCancelBtn} onPress={() => setEditModalVisible(false)}><Text style={styles.modalCancelBtnText}>취소</Text></TouchableOpacity>
+              <TouchableOpacity style={styles.modalSaveBtn} onPress={handleSaveManualScores}><Text style={styles.modalSaveBtnText}>점수 반영</Text></TouchableOpacity>
             </View>
           </View>
         </View>
       </Modal>
+
+      <Modal visible={finishModalVisible} animationType="fade" transparent={true}>
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>🏆 팀 내전 경기 최종 마감</Text>
+            <Text style={styles.modalSub}>오늘의 팀 내전 연습경기 결과를 선택하여 확정하세요.</Text>
+            <View style={{ gap: 8, marginVertical: 14 }}>
+              <TouchableOpacity style={[styles.modalSaveBtn, { backgroundColor: '#0284C7', paddingVertical: 14 }]} onPress={() => handleConfirmIntramuralFinish(displayHostName)}>
+                <Text style={styles.modalSaveBtnText}>🥇 🔵 [{displayHostName}] 승리</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={[styles.modalSaveBtn, { backgroundColor: '#BE123C', paddingVertical: 14 }]} onPress={() => handleConfirmIntramuralFinish(displayAwayName)}>
+                <Text style={styles.modalSaveBtnText}>🥇 🔴 [{displayAwayName}] 승리</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={[styles.modalCancelBtn, { paddingVertical: 14, backgroundColor: '#334155' }]} onPress={() => handleConfirmIntramuralFinish('draw')}>
+                <Text style={[styles.modalCancelBtnText, { color: '#FFFFFF' }]}>🤝 무승부 (연습경기 마감)</Text>
+              </TouchableOpacity>
+            </View>
+            <TouchableOpacity style={styles.modalCancelBtn} onPress={() => setFinishModalVisible(false)}><Text style={styles.modalCancelBtnText}>취소</Text></TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      {reportModalVisible && match && (
+        <MatchPostgameReportModal
+          visible={reportModalVisible}
+          onClose={() => {
+            setReportModalVisible(false);
+            router.back();
+          }}
+          match={match}
+          initialEvents={events}
+        />
+      )}
     </SafeAreaView>
   );
 }
@@ -826,72 +946,60 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#020617' },
   loadingContainer: { flex: 1, backgroundColor: '#020617', justifyContent: 'center', alignItems: 'center' },
   loadingText: { color: '#94A3B8', marginTop: 12, fontSize: 13, fontWeight: '700' },
-
   headerSlim: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 12, paddingVertical: 4, backgroundColor: '#0F172A', borderBottomWidth: 1, borderBottomColor: '#1E293B', height: 42 },
   headerSlimLeft: { flexDirection: 'row', alignItems: 'center', gap: 6, flex: 1.5 },
   backBtnSlim: { width: 24, height: 24, justifyContent: 'center', alignItems: 'center' },
   backTextSlim: { fontSize: 26, color: '#FFFFFF', lineHeight: 26 },
-  
   setTabNavRow: { flexDirection: 'row', gap: 4 },
   setNavPill: { paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4, backgroundColor: '#1E293B' },
   setNavPillActive: { backgroundColor: '#2563EB' },
   setNavPillText: { fontSize: 10.5, fontWeight: '700', color: '#94A3B8' },
   setNavPillTextActive: { color: '#FFFFFF', fontWeight: '900' },
-
   setHistoryCompact: { fontSize: 10, color: '#38BDF8', fontWeight: '700', marginLeft: 4 },
-  
   headerSlimCenter: { flex: 2, alignItems: 'center', justifyContent: 'center' },
   recorderInfoTextSlim: { fontSize: 11, color: '#CBD5E1', fontWeight: '800' },
-
-  headerSlimRight: { flexDirection: 'row', gap: 4, flex: 1.2, justifyContent: 'flex-end' },
+  headerSlimRight: { flexDirection: 'row', gap: 4, flex: 1.2, justifyContent: 'flex-end', alignItems: 'center' },
+  reportBtnSlim: { backgroundColor: '#FEFCE8', paddingHorizontal: 6, paddingVertical: 4, borderRadius: 6, borderWidth: 1, borderColor: '#FDE047' },
+  reportBtnTextSlim: { color: '#A16207', fontWeight: '800', fontSize: 10.5 },
   leaveRoleBtnSlim: { backgroundColor: '#FEF2F2', paddingHorizontal: 6, paddingVertical: 4, borderRadius: 6, borderWidth: 1, borderColor: '#FECACA' },
   leaveRoleBtnTextSlim: { color: '#DC2626', fontWeight: '800', fontSize: 10.5 },
   switchCourtBtnSlim: { backgroundColor: '#1E293B', paddingHorizontal: 6, paddingVertical: 4, borderRadius: 6, borderWidth: 1, borderColor: '#334155' },
   switchCourtBtnTextSlim: { color: '#38BDF8', fontWeight: '800', fontSize: 10.5 },
-
   scoreboardMainGrid: { flex: 1, flexDirection: 'row', backgroundColor: '#020617' },
   teamCourtHalf: { flex: 1, paddingHorizontal: 12, paddingTop: 6, paddingBottom: 10, justifyContent: 'space-between' },
   hostCourtBg: { backgroundColor: '#0284C7' },
   awayCourtBg: { backgroundColor: '#BE123C' },
   centerDividerLine: { width: 2, backgroundColor: '#1E293B' },
-
-  courtTopRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', width: '100%', zIndex: 10, },
+  courtTopRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', width: '100%', zIndex: 10 },
   courtTeamName: { fontSize: 22, fontWeight: '900', color: '#FFFFFF', letterSpacing: -0.5, marginTop: 2 },
-  
   stackedUtilityBtns: { flexDirection: 'column', gap: 4, alignItems: 'flex-end' },
   glassBtnCompact: { backgroundColor: 'rgba(0, 0, 0, 0.25)', paddingHorizontal: 10, paddingVertical: 5, borderRadius: 12, borderWidth: 1, borderColor: 'rgba(255, 255, 255, 0.2)', alignItems: 'center' },
   glassBtnText: { color: '#FFFFFF', fontSize: 11, fontWeight: '800' },
-
   bigScoreTouchArea: { flex: 1, justifyContent: 'center', alignItems: 'center', marginTop: -50, width: '100%' },
   bigScoreNumber: { fontSize: 195, fontWeight: '900', color: '#FFFFFF', letterSpacing: -6, lineHeight: 180 },
   editHintText: { fontSize: 12, color: 'rgba(255, 255, 255, 0.85)', fontWeight: '800', marginTop: -5 },
   spectatorHintText: { fontSize: 11, color: 'rgba(255, 255, 255, 0.5)', fontWeight: '700', marginTop: -5 },
-
   bottomControlBar: { flexDirection: 'row', paddingHorizontal: 12, paddingVertical: 6, backgroundColor: '#0F172A', borderTopWidth: 1, borderTopColor: '#1E293B', alignItems: 'center' },
   timelineArea: { flex: 1, marginRight: 10 },
-
   actionButtonsArea: { flexDirection: 'row', gap: 6 },
   undoBtn: { backgroundColor: '#334155', paddingHorizontal: 12, paddingVertical: 8, borderRadius: 8, alignItems: 'center', borderWidth: 1, borderColor: '#475569' },
   undoBtnText: { color: '#F8FAFC', fontSize: 12, fontWeight: '800' },
   finishSetBtn: { backgroundColor: '#2563EB', paddingHorizontal: 12, paddingVertical: 8, borderRadius: 8, alignItems: 'center' },
   finishSetBtnText: { color: '#FFFFFF', fontSize: 12, fontWeight: '900' },
-
+  finishMatchBtn: { backgroundColor: '#9333EA', paddingHorizontal: 12, paddingVertical: 8, borderRadius: 8, alignItems: 'center' },
+  finishMatchBtnText: { color: '#FFFFFF', fontSize: 12, fontWeight: '900' },
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.7)', justifyContent: 'center', alignItems: 'center', padding: 20 },
   modalContent: { backgroundColor: '#1E293B', borderRadius: 18, padding: 20, width: 400, maxWidth: '100%', borderWidth: 1, borderColor: '#334155' },
   roleModalContent: { backgroundColor: '#0F172A', borderRadius: 20, padding: 20, width: 400, maxWidth: '100%', borderWidth: 1, borderColor: '#334155', alignItems: 'center' },
   modalTitle: { fontSize: 17, fontWeight: '900', color: '#FFFFFF', marginBottom: 4 },
   modalSub: { fontSize: 12, color: '#94A3B8', marginBottom: 12 },
-
   recorderStatusBox: { width: '100%', backgroundColor: '#1E293B', borderRadius: 12, padding: 12, borderWidth: 1, borderColor: '#334155', marginBottom: 16 },
   recorderStatusTitle: { fontSize: 11, fontWeight: '800', color: '#94A3B8', marginBottom: 4 },
   recorderStatusText: { fontSize: 13, fontWeight: '800', color: '#F8FAFC', marginBottom: 2 },
-
   roleBtn: { width: '100%', paddingVertical: 14, borderRadius: 10, borderWidth: 1, borderColor: '#475569', alignItems: 'center' },
   roleBtnText: { color: '#FFFFFF', fontSize: 14, fontWeight: '800' },
-
   roleCancelBtn: { width: '100%', paddingVertical: 12, borderRadius: 10, backgroundColor: '#334155', borderWidth: 1, borderColor: '#475569', alignItems: 'center', marginTop: 6 },
   roleCancelBtnText: { color: '#F8FAFC', fontSize: 13, fontWeight: '800' },
-
   manualScoreGrid: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-around', backgroundColor: '#0F172A', padding: 16, borderRadius: 12, marginBottom: 14 },
   manualTeamCol: { alignItems: 'center' },
   manualTeamName: { fontSize: 14, fontWeight: '800', color: '#F8FAFC', marginBottom: 8 },
@@ -900,7 +1008,6 @@ const styles = StyleSheet.create({
   stepBtnText: { color: '#FFFFFF', fontSize: 18, fontWeight: '900' },
   manualScoreVal: { fontSize: 28, fontWeight: '900', color: '#38BDF8', minWidth: 32, textAlign: 'center' },
   manualColon: { fontSize: 28, fontWeight: '900', color: '#64748B' },
-
   modalBtnRow: { flexDirection: 'row', gap: 8 },
   modalCancelBtn: { flex: 1, backgroundColor: '#334155', paddingVertical: 12, borderRadius: 8, alignItems: 'center' },
   modalCancelBtnText: { color: '#94A3B8', fontWeight: '800', fontSize: 13 },

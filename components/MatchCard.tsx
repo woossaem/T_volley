@@ -61,6 +61,7 @@ interface MatchCardProps {
   onDeleteMatch: (match: MatchData) => void;
   onOpenMercenaryModal: (match: MatchData) => void;
   onApplyMatch: (match: MatchData) => void;
+  onOpenReportModal?: (match: MatchData) => void; // 💡 에러 해결: Props 타입 추가
 }
 
 export default function MatchCard({
@@ -82,6 +83,7 @@ export default function MatchCard({
   onDeleteMatch,
   onOpenMercenaryModal,
   onApplyMatch,
+  onOpenReportModal,
 }: MatchCardProps) {
   const router = useRouter();
 
@@ -264,6 +266,17 @@ export default function MatchCard({
           ) : null}
         </View>
       ) : null}
+
+      {/* 💡 경기 결과 분석 리포트 버튼 (종료/결과확인중/세트점수 기록 존재 시 노출) */}
+      {(isCompleted || isFriendly || isPending || !!match.set_scores) && onOpenReportModal && (
+        <TouchableOpacity
+          style={styles.reportBarBtn}
+          onPress={() => onOpenReportModal(match)}
+          activeOpacity={0.85}
+        >
+          <Text style={styles.reportBarBtnText}>📊 경기 결과 분석 리포트 보기 ›</Text>
+        </TouchableOpacity>
+      )}
 
       <View style={{ marginTop: 12 }}>
         {isCompleted && (
@@ -511,6 +524,10 @@ const styles = StyleSheet.create({
   descriptionText: { fontSize: 12.5, color: '#64748B', fontStyle: 'italic', lineHeight: 18 },
   youtubeBarBtn: { backgroundColor: '#FEF2F2', borderWidth: 1, borderColor: '#FECACA', borderRadius: 8, paddingVertical: 8, alignItems: 'center' },
   youtubeBarBtnText: { color: '#DC2626', fontSize: 12, fontWeight: '800' },
+
+  reportBarBtn: { backgroundColor: '#FEFCE8', borderRadius: 10, paddingVertical: 10, alignItems: 'center', marginTop: 8, borderWidth: 1, borderColor: '#FDE047' },
+  reportBarBtnText: { color: '#A16207', fontSize: 12.5, fontWeight: '900' },
+
   hostManageBtn: { flex: 1, backgroundColor: '#F1F5F9', borderRadius: 10, paddingVertical: 11, alignItems: 'center', borderWidth: 1, borderColor: '#CBD5E1' },
   hostManageBtnText: { color: Colors.primary, fontSize: 13, fontWeight: '800' },
   deleteBtn: { backgroundColor: '#FEF2F2', paddingHorizontal: 14, paddingVertical: 11, borderRadius: 10, borderWidth: 1, borderColor: '#FCA5A5', justifyContent: 'center', alignItems: 'center' },

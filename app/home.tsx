@@ -172,7 +172,7 @@ export default function HomeScreen() {
       const teamNames = teamList.map(t => t.name);
       const teamIds = teamList.map(t => t.id);
 
-      // LIVE 경기 로드
+      // LIVE 공식 경기 로드
       const { data: activeOfficialMatches } = await supabase
         .from('matches')
         .select('*')
@@ -194,6 +194,7 @@ export default function HomeScreen() {
 
       setLiveOfficialMatch(currentOfficialLive || null);
 
+      // 💡 [핵심 수정] 팀 내전 LIVE 로드: 마감되지 않고 '진행 중(!m.winner_team)'인 당일 내전만 필터링!
       const { data: activeIntraMatches } = await supabase
         .from('matches')
         .select('*')
@@ -201,10 +202,12 @@ export default function HomeScreen() {
         .eq('match_date', todayStr)
         .order('created_at', { ascending: false });
 
-      const currentIntraLive = activeIntraMatches?.find((m: any) => teamNames.includes(m.host_team_name));
+      const currentIntraLive = activeIntraMatches?.find((m: any) => 
+        teamNames.includes(m.host_team_name) && !m.winner_team
+      );
       setLiveIntraMatch(currentIntraLive || null);
 
-      // 💡 [NEW] 진행 중인 핫 픽(Hot Poll) 투표 로드
+      // 진행 중인 핫 픽(Hot Poll) 투표 로드
       const { data: activePolls } = await supabase
         .from('polls')
         .select('id, title, scope, team_id')
@@ -356,7 +359,7 @@ export default function HomeScreen() {
   const parseTeamNamesFromDesc = (desc?: string) => {
     if (!desc) return { teamA: 'A팀', teamB: 'B팀' };
     const match = desc.match(/^\[(.*?)\ VS (.*?)\]/);
-    if (match) return { teamA: match[1] || 'A팀', teamB: match[2] || 'B팀' };
+    if (match) return { teamA: match[1] || 'A팀', teamB: 'B팀' };
     return { teamA: 'A팀', teamB: 'B팀' };
   };
 
@@ -437,7 +440,7 @@ export default function HomeScreen() {
           </TouchableOpacity>
         )}
 
-        {/* 💜 팀 내전 LIVE 바 */}
+        {/* 💜 팀 내전 LIVE 바 (승패 미정이고 진행 중인 경우에만 노출) */}
         {liveIntraMatch && (
           <TouchableOpacity 
             style={styles.liveIntraBarSlim}
@@ -605,7 +608,7 @@ export default function HomeScreen() {
           )}
         </View>
 
-        {/* 💡 [NEW] 진행 중인 핫 픽(Hot Poll) 알림 바 (프로필 카드 바로 밑) */}
+        {/* 진행 중인 핫 픽(Hot Poll) 알림 바 */}
         {hotPoll && (
           <TouchableOpacity
             style={[
@@ -653,7 +656,7 @@ export default function HomeScreen() {
           ))}
         </View>
 
-        {/* 💡 [수정] 서브 정보 바 3분할 연동 */}
+        {/* 서브 정보 바 */}
         <View style={styles.subInfoBar}>
           <TouchableOpacity style={styles.subInfoBtn} onPress={() => router.push('/release-notes')}>
             <Text style={styles.subInfoBtnText}>🛠️ 패치노트</Text>
@@ -800,7 +803,6 @@ const styles = StyleSheet.create({
   liveIntraScoreRow: { marginTop: 4, paddingTop: 4, borderTopWidth: 1, borderTopColor: '#F3E8FF', flexDirection: 'row', alignItems: 'center' },
   liveIntraScoreText: { fontSize: 11, fontWeight: '800', color: '#7E22CE' },
 
-  /* 💡 [NEW] 실시간 핫 픽 투표 알림 바 스타일 */
   hotPollBar: { borderRadius: 12, paddingHorizontal: 12, paddingVertical: 9, borderWidth: 1, marginBottom: 10 },
   hotPollOfficial: { backgroundColor: '#FEF3C7', borderColor: '#FDE68A' },
   hotPollTeam: { backgroundColor: '#FFEDD5', borderColor: '#FDBA74' },

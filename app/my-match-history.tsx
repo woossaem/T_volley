@@ -16,6 +16,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
 import { Colors } from '../constants/Colors';
 import StickyAdBanner from '../components/StickyAdBanner';
+import MatchPostgameReportModal from '../components/MatchPostgameReportModal'; // 💡 경기 결과 분석 리포트 모달 추가
 
 interface MatchHistoryItem {
   id: string;
@@ -57,6 +58,10 @@ export default function MyMatchHistoryScreen() {
   const [matchTypeFilter, setMatchTypeFilter] = useState<'all' | 'official' | 'tournament' | 'intra' | 'mercenary'>('all');
   const [resultFilter, setResultFilter] = useState<'all' | 'win' | 'loss'>('all');
   const [searchQuery, setSearchQuery] = useState('');
+
+  // 💡 [신규] 분석 리포트 모달 State
+  const [reportModalVisible, setReportModalVisible] = useState(false);
+  const [reportTargetMatch, setReportTargetMatch] = useState<MatchHistoryItem | null>(null);
 
   const parseTeamName = (rawName: any): string => {
     if (!rawName) return '';
@@ -270,7 +275,6 @@ export default function MyMatchHistoryScreen() {
         </TouchableOpacity>
       </View>
 
-      {/* 🏆 경기 성격 3단계 분리 필터 */}
       <View style={styles.typeFilterRow}>
         <TouchableOpacity
           style={[styles.typeChip, matchTypeFilter === 'all' && styles.typeChipActive]}
@@ -426,7 +430,6 @@ export default function MyMatchHistoryScreen() {
                     </View>
                   ) : null}
 
-                  {/* 🛡️ 실명 감사 로그 노출 */}
                   {(match.submitted_by_name || match.approved_by_name || match.roster_updated_by_name) && (
                     <View style={styles.auditRow}>
                       <Text style={styles.auditText}>
@@ -437,6 +440,18 @@ export default function MyMatchHistoryScreen() {
                     </View>
                   )}
                 </View>
+
+                {/* 💡 [신규] 결과 분석 리포트 확인 버튼 */}
+                <TouchableOpacity
+                  style={styles.reportBtn}
+                  onPress={() => {
+                    setReportTargetMatch(match);
+                    setReportModalVisible(true);
+                  }}
+                  activeOpacity={0.85}
+                >
+                  <Text style={styles.reportBtnText}>📊 경기 결과 분석 리포트 보기 ›</Text>
+                </TouchableOpacity>
               </View>
             );
           })
@@ -444,6 +459,18 @@ export default function MyMatchHistoryScreen() {
       </ScrollView>
 
       <StickyAdBanner />
+
+      {/* 💡 [신규] 분석 리포트 모달 렌더링 */}
+      {reportModalVisible && reportTargetMatch && (
+        <MatchPostgameReportModal
+          visible={reportModalVisible}
+          onClose={() => {
+            setReportModalVisible(false);
+            setReportTargetMatch(null);
+          }}
+          match={reportTargetMatch}
+        />
+      )}
 
       <Modal visible={seasonPickerModalVisible} animationType="fade" transparent={true} onRequestClose={() => setSeasonPickerModalVisible(false)}>
         <View style={styles.modalOverlay}>
@@ -569,6 +596,10 @@ const styles = StyleSheet.create({
 
   auditRow: { marginTop: 4, paddingTop: 4, borderTopWidth: 1, borderTopColor: '#E2E8F0' },
   auditText: { fontSize: 10, color: '#1D4ED8', fontWeight: '800' },
+
+  /* 💡 [신규] 분석 리포트 버튼 스타일 */
+  reportBtn: { backgroundColor: '#FEFCE8', borderRadius: 8, paddingVertical: 8, alignItems: 'center', marginTop: 8, borderWidth: 1, borderColor: '#FDE047' },
+  reportBtnText: { color: '#A16207', fontSize: 12, fontWeight: '800' },
 
   emptyBox: { padding: 30, alignItems: 'center', backgroundColor: Colors.surface, borderRadius: 14, borderWidth: 1, borderColor: Colors.border, marginTop: 16 },
   emptyEmoji: { fontSize: 36, marginBottom: 8 },

@@ -20,6 +20,7 @@ import { sendNotificationToTeam } from '../lib/notificationService';
 import StickyAdBanner from '../components/StickyAdBanner';
 import MatchCommentModal from '../components/MatchCommentModal';
 import UserProfileModal from '../components/UserProfileModal';
+import MatchPostgameReportModal from '../components/MatchPostgameReportModal'; // 💡 신규 임포트
 
 interface MatchData {
   id: string;
@@ -30,7 +31,7 @@ interface MatchData {
   match_time: string;
   description?: string;
   status: string;
-  winner_team?: string;
+  winner_team?: string | null;
   set_scores?: string | null;
   host_roster?: string;
   away_roster?: string;
@@ -132,7 +133,7 @@ export default function IntramuralScreen() {
   const [intraRostersB, setIntraRostersB] = useState<SetRosterMap>({});
   
   const [intraDynamicScores, setIntraDynamicScores] = useState<DynamicSetScore[]>([]);
-  const [intraWinner, setIntraWinner] = useState('');
+  const [intraWinner, setIntraWinner] = useState<string | null>(null);
   const [editingIntraId, setEditingIntraId] = useState<string | null>(null);
 
   const [showCalendar, setShowCalendar] = useState(false);
@@ -149,6 +150,10 @@ export default function IntramuralScreen() {
 
   const [selectedUserIdForModal, setSelectedUserIdForModal] = useState<string | null>(null);
   const [profileModalVisible, setProfileModalVisible] = useState(false);
+
+  // 💡 [신규] 분석 리포트 모달 State
+  const [reportModalVisible, setReportModalVisible] = useState(false);
+  const [reportTargetMatch, setReportTargetMatch] = useState<MatchData | null>(null);
 
   const parseTeamName = (rawName: any): string => {
     if (!rawName) return '';
@@ -256,7 +261,6 @@ export default function IntramuralScreen() {
     }
   }, [selectedTeamFilter]);
 
-  // 💡 [수정됨] 내전에서는 팀원/일반 뱃지를 아예 생성하지 않음 (단일 뱃지 적용)
   const openCommentModal = async (match: MatchData) => {
     setTargetCommentMatch(match);
     setCommentModalVisible(true);
@@ -404,10 +408,9 @@ export default function IntramuralScreen() {
       setIntraRostersA(parseRoster(match.host_roster));
       setIntraRostersB(parseRoster(match.away_roster));
       setIntraActiveSetTab(0);
-      setIntraWinner(match.winner_team || '');
+      setIntraWinner(match.winner_team || null);
       
       const parsedScores = parseScoresToArray(match.set_scores);
-      // 💡 [수정됨] 편집 모드에서도 비어있으면 [] 로 띄움
       setIntraDynamicScores(parsedScores.length > 0 ? parsedScores : []);
       setIntraModalVisible(true);
     } else {
@@ -419,9 +422,8 @@ export default function IntramuralScreen() {
       setIntraRostersA({}); setIntraRostersB({});
       setIntraActiveSetTab(0);
       
-      // 💡 [수정됨] 신규 생성 시 25:21 자동기입 방지 (빈 보드로 시작)
       setIntraDynamicScores([]); 
-      setIntraWinner('');
+      setIntraWinner(null); 
       if (!intraTeam && myTeams.length > 0) setIntraTeam(selectedTeamFilter || myTeams[0]);
       setIntraModalVisible(true);
     }
@@ -462,9 +464,9 @@ export default function IntramuralScreen() {
         format: '팀 내전',
         description: formattedDescription,
         status: 'intramural',
-        winner_team: intraWinner || 'draw',
+        winner_team: intraWinner || null, 
         result_submitter_team: intraTeam,
-        set_scores: formattedScores, // [] 라면 null 반환됨. 정상적 스코어보드 진입 가능
+        set_scores: formattedScores,
         host_roster: JSON.stringify(intraRostersA),
         away_roster: JSON.stringify(intraRostersB),
       };
@@ -529,39 +531,68 @@ export default function IntramuralScreen() {
         if (year !== targetYear) return;
       }
 
-      const { teamA, teamB } = parseIntraDescription(match.description);
-      
+      const winner = match.winner_team;
+      if (!winner) return;
+
       const parsedA = parseRoster(match.host_roster);
       const parsedB = parseRoster(match.away_roster);
-      
-      const rosterAIds = new Set<string>();
-      Object.values(parsedA).forEach(arr => arr.forEach(id => rosterAIds.add(id)));
-      
-      const rosterBIds = new Set<string>();
-      Object.values(parsedB).forEach(arr => arr.forEach(id => rosterBIds.add(id)));
+      const parsedScores = parseScoresToArray(match.set_scores);
 
-      const allMatchUsers = new Set([...rosterAIds, ...rosterBIds]);
-      allMatchUsers.forEach(uId => {
-        if (!userStats[uId]) userStats[uId] = { wins: 0, draws: 0, losses: 0, total: 0 };
-      });
+      if (parsedScores.length === 0) {
+        const { teamA, teamB } = parseIntraDescription(match.description);
+        const rosterAIds = new Set<string>();
+        Object.values(parsedA).forEach(arr => arr.forEach(id => rosterAIds.add(id)));
+        const rosterBIds = new Set<string>();
+        Object.values(parsedB).forEach(arr => arr.forEach(id => rosterBIds.add(id)));
 
-      const winner = match.winner_team;
-      const isAWin = winner === teamA || winner === 'A팀' || winner === '청팀';
-      const isBWin = winner === teamB || winner === 'B팀' || winner === '백팀';
-      const isDraw = winner === 'draw' || winner === '무승부' || !winner;
+        const allMatchUsers = new Set([...rosterAIds, ...rosterBIds]);
+        allMatchUsers.forEach(uId => {
+          if (!userStats[uId]) userStats[uId] = { wins: 0, draws: 0, losses: 0, total: 0 };
+        });
 
-      rosterAIds.forEach(uId => {
-        userStats[uId].total++;
-        if (isAWin) userStats[uId].wins++;
-        else if (isDraw) userStats[uId].draws++;
-        else if (isBWin) userStats[uId].losses++;
-      });
+        const isAWin = winner === teamA || winner === 'A팀' || winner === '청팀';
+        const isBWin = winner === teamB || winner === 'B팀' || winner === '백팀';
+        const isDraw = winner === 'draw' || winner === '무승부';
 
-      rosterBIds.forEach(uId => {
-        userStats[uId].total++;
-        if (isBWin) userStats[uId].wins++;
-        else if (isDraw) userStats[uId].draws++;
-        else if (isAWin) userStats[uId].losses++;
+        rosterAIds.forEach(uId => {
+          userStats[uId].total++;
+          if (isAWin) userStats[uId].wins++;
+          else if (isDraw) userStats[uId].draws++;
+          else if (isBWin) userStats[uId].losses++;
+        });
+
+        rosterBIds.forEach(uId => {
+          userStats[uId].total++;
+          if (isBWin) userStats[uId].wins++;
+          else if (isDraw) userStats[uId].draws++;
+          else if (isAWin) userStats[uId].losses++;
+        });
+        return;
+      }
+
+      parsedScores.forEach((score, idx) => {
+        const rosterA = parsedA[idx] || parsedA[0] || [];
+        const rosterB = parsedB[idx] || parsedB[0] || [];
+        
+        const isAWin = score.hostScore > score.awayScore;
+        const isBWin = score.awayScore > score.hostScore;
+        const isDraw = score.hostScore === score.awayScore;
+
+        rosterA.forEach(uId => {
+          if (!userStats[uId]) userStats[uId] = { wins: 0, draws: 0, losses: 0, total: 0 };
+          userStats[uId].total++;
+          if (isAWin) userStats[uId].wins++;
+          else if (isDraw) userStats[uId].draws++;
+          else if (isBWin) userStats[uId].losses++;
+        });
+
+        rosterB.forEach(uId => {
+          if (!userStats[uId]) userStats[uId] = { wins: 0, draws: 0, losses: 0, total: 0 };
+          userStats[uId].total++;
+          if (isBWin) userStats[uId].wins++;
+          else if (isDraw) userStats[uId].draws++;
+          else if (isAWin) userStats[uId].losses++;
+        });
       });
     });
 
@@ -710,6 +741,8 @@ export default function IntramuralScreen() {
               filteredMatches.map((match) => {
                 const { teamA, teamB, note } = parseIntraDescription(match.description);
                 const currentTeamIcon = getTeamIcon(teamTypeMap[match.host_team_name]);
+                const isFinished = !!match.winner_team;
+
                 return (
                   <View key={match.id} style={styles.matchCard}>
                     <View style={styles.cardHeader}>
@@ -721,8 +754,11 @@ export default function IntramuralScreen() {
                           <Text style={styles.vsSubChipText}>{teamA} VS {teamB}</Text>
                         </View>
                       </View>
-                      <View style={styles.statusBadge}>
-                        <Text style={styles.statusText}>내전종료</Text>
+                      
+                      <View style={[styles.statusBadge, !isFinished && { backgroundColor: '#DBEAFE', borderColor: '#3B82F6' }]}>
+                        <Text style={[styles.statusText, !isFinished && { color: '#1D4ED8' }]}>
+                          {isFinished ? '내전종료' : '진행 중 (대기)'}
+                        </Text>
                       </View>
                     </View>
 
@@ -733,7 +769,9 @@ export default function IntramuralScreen() {
 
                     <View style={styles.scoreBanner}>
                       <Text style={styles.scoreBannerWinner}>
-                        🏆 {!match.winner_team || match.winner_team === 'draw' ? '자체 연습경기 (세트전)' : `${match.winner_team} 승리!`}
+                        {isFinished 
+                          ? (match.winner_team === 'draw' ? '🤝 무승부 (연습경기 마감)' : `🏆 ${match.winner_team} 승리!`)
+                          : '⚡ 경기 진행 중 (승패 미정)'}
                       </Text>
                       {match.set_scores ? (
                         <Text style={styles.scoreBannerSetText}>세트 스코어 {match.set_scores}</Text>
@@ -747,6 +785,20 @@ export default function IntramuralScreen() {
                     >
                       <Text style={styles.scoreboardLiveBtnText}>📊 실시간 전광판 스코어보드 진입 ▶</Text>
                     </TouchableOpacity>
+
+                    {/* 💡 [신규] 분석 리포트 확인 버튼 */}
+                    {isFinished && (
+                      <TouchableOpacity
+                        style={styles.reportBarBtn}
+                        onPress={() => {
+                          setReportTargetMatch(match);
+                          setReportModalVisible(true);
+                        }}
+                        activeOpacity={0.85}
+                      >
+                        <Text style={styles.reportBarBtnText}>📊 경기 결과 분석 리포트 보기</Text>
+                      </TouchableOpacity>
+                    )}
 
                     <TouchableOpacity
                       style={styles.commentBarBtn}
@@ -784,8 +836,8 @@ export default function IntramuralScreen() {
               </TouchableOpacity>
             </View>
             <Text style={styles.ruleText}>
-              • 팀 자체 내전 기록을 기반으로 자동 산정되는 개인 순위입니다.{'\n'}
-              • <Text style={{ fontWeight: '800' }}>다승 &gt; 승률 &gt; 출전 경기 수</Text> 순으로 랭킹이 정렬됩니다.
+              • 팀 자체 내전 기록을 기반으로 자동 산정되는 세트별 개인 순위입니다.{'\n'}
+              • <Text style={{ fontWeight: '800' }}>세트 승수 &gt; 세트 승률 &gt; 출전 세트 수</Text> 순으로 랭킹이 정렬됩니다.
             </Text>
           </View>
 
@@ -794,7 +846,7 @@ export default function IntramuralScreen() {
           ) : intramuralRankings.length === 0 ? (
             <View style={styles.emptyCard}>
               <Text style={styles.emptyEmoji}>📊</Text>
-              <Text style={styles.emptyText}>아직 [{selectedTeamFilter}] 팀의 내전 출전 기록이 없습니다.</Text>
+              <Text style={styles.emptyText}>아직 [{selectedTeamFilter}] 팀의 마감된 내전 출전 기록이 없습니다.</Text>
             </View>
           ) : (
             intramuralRankings.map((item, index) => (
@@ -811,7 +863,7 @@ export default function IntramuralScreen() {
                 <View style={{ flex: 1, marginHorizontal: 10 }}>
                   <Text style={styles.rankUserName}>👤 {item.fullName} 선생님</Text>
                   <Text style={styles.rankRecordText}>
-                    {item.totalMatches}전 {item.wins}승 {item.draws > 0 ? `${item.draws}무 ` : ''}{item.losses}패
+                    {item.totalMatches}세트 출전 ({item.wins}승 {item.draws > 0 ? `${item.draws}무 ` : ''}{item.losses}패)
                   </Text>
                 </View>
                 <View style={{ alignItems: 'flex-end' }}>
@@ -825,6 +877,18 @@ export default function IntramuralScreen() {
       )}
 
       <StickyAdBanner />
+
+      {/* 💡 [신규] 분석 리포트 모달 렌더링 */}
+      {reportModalVisible && reportTargetMatch && (
+        <MatchPostgameReportModal
+          visible={reportModalVisible}
+          onClose={() => {
+            setReportModalVisible(false);
+            setReportTargetMatch(null);
+          }}
+          match={reportTargetMatch}
+        />
+      )}
 
       <Modal visible={intraModalVisible} animationType="slide" transparent={true}>
         <View style={styles.modalOverlay}>
@@ -994,11 +1058,15 @@ export default function IntramuralScreen() {
               </View>
 
               <View style={styles.modalSectionBox}>
-                <Text style={styles.inputLabel}>6. 최종 승리 팀 선택 (선택 사항)</Text>
+                <Text style={styles.inputLabel}>6. 최종 승패 선택 (경기 전 생략 가능)</Text>
+                <Text style={{ fontSize: 11, color: '#64748B', marginBottom: 8 }}>
+                  ※ 스코어보드에서 경기를 진행하려면 승패 선택을 해제(빈칸)하고 저장하세요.
+                </Text>
+
                 <View style={{ flexDirection: 'row', gap: 6 }}>
                   <TouchableOpacity
                     style={[styles.winnerGridBtn, intraWinner === (teamAName || 'A팀') && styles.winnerGridBtnActiveA]}
-                    onPress={() => setIntraWinner(prev => prev === (teamAName || 'A팀') ? '' : (teamAName || 'A팀'))}
+                    onPress={() => setIntraWinner(prev => prev === (teamAName || 'A팀') ? null : (teamAName || 'A팀'))}
                   >
                     <Text style={[styles.winnerGridText, intraWinner === (teamAName || 'A팀') && styles.winnerGridTextActive]}>
                       🥇 {teamAName || 'A팀'} 승
@@ -1007,7 +1075,7 @@ export default function IntramuralScreen() {
 
                   <TouchableOpacity
                     style={[styles.winnerGridBtn, intraWinner === (teamBName || 'B팀') && styles.winnerGridBtnActiveB]}
-                    onPress={() => setIntraWinner(prev => prev === (teamBName || 'B팀') ? '' : (teamBName || 'B팀'))}
+                    onPress={() => setIntraWinner(prev => prev === (teamBName || 'B팀') ? null : (teamBName || 'B팀'))}
                   >
                     <Text style={[styles.winnerGridText, intraWinner === (teamBName || 'B팀') && styles.winnerGridTextActive]}>
                       🥇 {teamBName || 'B팀'} 승
@@ -1016,7 +1084,7 @@ export default function IntramuralScreen() {
 
                   <TouchableOpacity
                     style={[styles.winnerGridBtn, intraWinner === 'draw' && styles.winnerGridBtnActiveDraw]}
-                    onPress={() => setIntraWinner(prev => prev === 'draw' ? '' : 'draw')}
+                    onPress={() => setIntraWinner(prev => prev === 'draw' ? null : 'draw')}
                   >
                     <Text style={[styles.winnerGridText, intraWinner === 'draw' && styles.winnerGridTextActive]}>
                       🤝 무승부
@@ -1044,7 +1112,6 @@ export default function IntramuralScreen() {
         </View>
       </Modal>
 
-      {/* 내전 소통 댓글 모달 */}
       <MatchCommentModal
         visible={commentModalVisible}
         onClose={() => setCommentModalVisible(false)}
@@ -1064,7 +1131,6 @@ export default function IntramuralScreen() {
         }}
       />
 
-      {/* 유저 프로필 모달 */}
       <UserProfileModal
         visible={profileModalVisible}
         userId={selectedUserIdForModal}
@@ -1173,6 +1239,10 @@ const styles = StyleSheet.create({
 
   scoreboardLiveBtn: { backgroundColor: '#0F172A', borderRadius: 10, paddingVertical: 10, alignItems: 'center', marginTop: 8 },
   scoreboardLiveBtnText: { color: '#38BDF8', fontSize: 12.5, fontWeight: '900' },
+
+  /* 💡 [신규] 분석 리포트 확인 버튼 스타일 */
+  reportBarBtn: { backgroundColor: '#FEFCE8', borderRadius: 10, paddingVertical: 10, alignItems: 'center', marginTop: 6, borderWidth: 1, borderColor: '#FDE047' },
+  reportBarBtnText: { color: '#A16207', fontSize: 12.5, fontWeight: '900' },
 
   commentBarBtn: { backgroundColor: '#FAF5FF', borderRadius: 10, paddingVertical: 10, alignItems: 'center', marginTop: 6, borderWidth: 1, borderColor: '#E9D5FF' },
   commentBarBtnText: { color: '#7E22CE', fontSize: 12.5, fontWeight: '800' },

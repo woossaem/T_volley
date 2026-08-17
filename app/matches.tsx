@@ -25,6 +25,7 @@ import MatchResultModal from '../components/MatchResultModal';
 import PastMatchRegisterModal from '../components/PastMatchRegisterModal';
 import MatchEvaluationModal from '../components/MatchEvaluationModal';
 import MatchCommentModal from '../components/MatchCommentModal';
+import MatchPostgameReportModal from '../components/MatchPostgameReportModal'; // 💡 경기 결과 분석 리포트 모달 추가
 import MatchCard, { MatchData, ApplicationData } from '../components/MatchCard';
 
 interface MemberInfo {
@@ -139,6 +140,10 @@ export default function MatchesScreen() {
   const [commentInput, setCommentInput] = useState('');
   const [availableBadges, setAvailableBadges] = useState<BadgeOption[]>([]);
   const [selectedBadge, setSelectedBadge] = useState<BadgeOption | null>(null);
+
+  // 💡 [신규] 경기 결과 분석 리포트 모달 State
+  const [reportModalVisible, setReportModalVisible] = useState(false);
+  const [reportTargetMatch, setReportTargetMatch] = useState<MatchData | null>(null);
 
   useEffect(() => {
     if (currentUserId) {
@@ -815,6 +820,12 @@ export default function MatchesScreen() {
     setResultModalVisible(true);
   };
 
+  // 💡 [신규] 분석 리포트 모달 오픈 핸들러
+  const openReportModal = (match: MatchData) => {
+    setReportTargetMatch(match);
+    setReportModalVisible(true);
+  };
+
   const handleApproveResult = (match: MatchData, isApproved: boolean) => {
     Alert.alert(
       isApproved ? '결과 승인' : '결과 거절',
@@ -1083,12 +1094,25 @@ export default function MatchesScreen() {
               onDeleteMatch={handleDeleteMatch}
               onOpenMercenaryModal={handleOpenMercenaryModal}
               onApplyMatch={handleApplyMatch}
+              onOpenReportModal={openReportModal} // 💡 분석 리포트 모달 콜백 전달
             />
           ))
         )}
       </ScrollView>
 
       <StickyAdBanner />
+
+      {/* 💡 [신규] 분석 리포트 모달 렌더링 */}
+      {reportModalVisible && reportTargetMatch && (
+        <MatchPostgameReportModal
+          visible={reportModalVisible}
+          onClose={() => {
+            setReportModalVisible(false);
+            setReportTargetMatch(null);
+          }}
+          match={reportTargetMatch}
+        />
+      )}
 
       <MatchResultModal
         visible={resultModalVisible}
@@ -1138,7 +1162,7 @@ export default function MatchesScreen() {
         pastHostYoutube={pastHostYoutube}
         onChangePastHostYoutube={setPastHostYoutube}
         pastAwayYoutube={pastAwayYoutube}
-        onChangePastAwayYoutube={setPastAwayYoutube}
+        onChangePastAwayYoutube={setAwayYoutube}
         pastDynamicScores={pastDynamicScores}
         onAddPastSet={() => {
           if (pastDynamicScores.length >= 7) return Alert.alert('알림', '최대 7세트까지만 가능합니다.');
