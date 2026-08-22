@@ -2,6 +2,7 @@ import React from 'react';
 import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Colors } from '../constants/Colors';
+import { formatTeamDisplayName } from '../lib/teamStatus';
 
 export interface MatchData {
   id: string;
@@ -62,6 +63,7 @@ interface MatchCardProps {
   onOpenMercenaryModal: (match: MatchData) => void;
   onApplyMatch: (match: MatchData) => void;
   onOpenReportModal?: (match: MatchData) => void; // 💡 에러 해결: Props 타입 추가
+  teamStatusByName?: Record<string, string>;
 }
 
 export default function MatchCard({
@@ -84,8 +86,12 @@ export default function MatchCard({
   onOpenMercenaryModal,
   onApplyMatch,
   onOpenReportModal,
+  teamStatusByName,
 }: MatchCardProps) {
   const router = useRouter();
+
+  const displayTeamName = (name?: string | null) =>
+    formatTeamDisplayName(name, name ? teamStatusByName?.[name] : undefined);
 
   const isHost = myTeams.includes(match.host_team_name);
   const isAway = match.away_team_name ? myTeams.includes(match.away_team_name) : false;
@@ -176,7 +182,7 @@ export default function MatchCard({
       <View style={styles.scoreboardRow}>
         <View style={styles.teamColLeft}>
           <Text style={styles.hostTeamText} numberOfLines={1}>
-            {match.host_team_name}
+            {displayTeamName(match.host_team_name)}
           </Text>
           <Text style={styles.teamRoleLabel}>주최팀</Text>
         </View>
@@ -187,7 +193,7 @@ export default function MatchCard({
 
         <View style={styles.teamColRight}>
           <Text style={[styles.awayTeamText, !match.away_team_name && styles.textMuted]} numberOfLines={1}>
-            {match.away_team_name || '상대 모집중'}
+            {match.away_team_name ? displayTeamName(match.away_team_name) : '상대 모집중'}
           </Text>
           <Text style={styles.teamRoleLabel}>상대팀</Text>
         </View>
@@ -251,7 +257,7 @@ export default function MatchCard({
         <View style={{ marginTop: 10, gap: 6 }}>
           {match.host_youtube_url ? (
             <TouchableOpacity style={styles.youtubeBarBtn} onPress={() => onOpenYoutube(match.host_youtube_url!)}>
-              <Text style={styles.youtubeBarBtnText}>🎥 [{match.host_team_name}] 영상 보기 ▶</Text>
+              <Text style={styles.youtubeBarBtnText}>🎥 [{displayTeamName(match.host_team_name)}] 영상 보기 ▶</Text>
             </TouchableOpacity>
           ) : null}
           {match.away_youtube_url ? (
@@ -260,7 +266,7 @@ export default function MatchCard({
               onPress={() => onOpenYoutube(match.away_youtube_url!)}
             >
               <Text style={[styles.youtubeBarBtnText, { color: '#1D4ED8' }]}>
-                🎥 [{match.away_team_name || '상대팀'}] 영상 보기 ▶
+                🎥 [{match.away_team_name ? displayTeamName(match.away_team_name) : '상대팀'}] 영상 보기 ▶
               </Text>
             </TouchableOpacity>
           ) : null}

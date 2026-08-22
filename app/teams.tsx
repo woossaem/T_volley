@@ -21,6 +21,7 @@ import UserProfileModal from '../components/UserProfileModal';
 import TeamReportModal, { TeamReportAnalytics } from '../components/TeamReportModal';
 import StickyAdBanner from '../components/StickyAdBanner';
 import BatchProposalModal from '../components/BatchProposalModal';
+import { isActiveTeamStatus } from '../lib/teamStatus';
 
 interface TeamMemberObj {
   userId: string;
@@ -179,12 +180,16 @@ export default function AllTeamsListScreen() {
     try {
       let activeMyTeams: string[] = [];
       if (currentUserId) {
-        const { data: myMems } = await supabase.from('team_members').select('team_id, is_active, teams(name)').eq('user_id', currentUserId);
+        const { data: myMems } = await supabase.from('team_members').select('team_id, is_active, teams(name, status)').eq('user_id', currentUserId);
         if (myMems) {
           activeMyTeams = (myMems || []).filter((m: any) => m.is_active).map((m: any) => m.team_id as string);
           setMyTeamIds(activeMyTeams);
           
-          const names = (myMems || []).filter((m: any) => m.is_active).map((m: any) => {
+          const names = (myMems || []).filter((m: any) => {
+            if (!m.is_active) return false;
+            const teamObj = Array.isArray(m.teams) ? m.teams[0] : m.teams;
+            return isActiveTeamStatus(teamObj?.status);
+          }).map((m: any) => {
             const teamObj = Array.isArray(m.teams) ? m.teams[0] : m.teams;
             return parseTeamName(teamObj?.name);
           }).filter(Boolean);
@@ -241,6 +246,7 @@ export default function AllTeamsListScreen() {
         const profileObj = Array.isArray(item.profiles) ? item.profiles[0] : item.profiles;
         const uId = item.user_id;
         if (!teamObj) return;
+        if (!isActiveTeamStatus(teamObj.status)) return;
 
         const cleanName = parseTeamName(teamObj.name);
         if (!cleanName) return;
@@ -270,7 +276,10 @@ export default function AllTeamsListScreen() {
         teamMap.set(teamObj.id, existing);
       });
 
-      const { data: allTeamsDB } = await supabase.from('teams').select('*');
+      const { data: allTeamsDB } = await supabase
+        .from('teams')
+        .select('*')
+        .eq('status', 'active');
       if (allTeamsDB) {
         allTeamsDB.forEach((t: any) => {
           const cleanName = parseTeamName(t.name) || parseTeamName(t.team_name);
@@ -429,6 +438,7 @@ export default function AllTeamsListScreen() {
         password: newTeamPassword || null,
         youtube_channel_url: newTeamYoutube.trim() || null,
         leader_id: currentUserId,
+        status: 'active',
       }).select().single();
       
       if (error) throw error;
@@ -654,6 +664,8 @@ export default function AllTeamsListScreen() {
       mannerTemp: selectedTeamForReport.manner_temp,
       isOfficial: selectedTeamForReport.isOfficial,
       memberCount: selectedTeamForReport.memberCount,
+      status: 'active',
+      teamId: selectedTeamForReport.team_id,
       totalMatches: careerStats.totalMatches,
       setsWon: careerStats.setsWon,
       setsLost: careerStats.setsLost,

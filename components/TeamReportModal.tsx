@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import {
   View,
   Text,
@@ -9,6 +9,8 @@ import {
 } from 'react-native';
 import { Colors } from '../constants/Colors';
 import StickyAdBanner from './StickyAdBanner';
+import { supabase } from '../lib/supabase';
+import { buildTeamStatusByName, formatTeamDisplayName } from '../lib/teamStatus';
 
 export interface TeamReportStat {
   totalMatches: number;
@@ -35,6 +37,8 @@ export interface TeamReportAnalytics {
   mannerTemp?: number;
   isOfficial?: boolean;
   memberCount?: number;
+  status?: string;
+  teamId?: string;
 
   totalMatches: number;
   totalWins?: number;
@@ -69,18 +73,52 @@ const getTeamIcon = (type?: 'school' | 'club') => {
   return type === 'school' ? '🏫' : '🛡️';
 };
 
-// 📍 지역명 정돈 및 예외 처리 완벽 방어 함수
-const cleanRegionName = (rawInput?: any): string => {
-  if (!rawInput) return '천안';
-  let str = typeof rawInput === 'string' ? rawInput.trim() : String(rawInput).trim();
-  if (!str || str === 'undefined' || str === 'null' || str === '[object Object]' || str.length === 0) return '천안';
+const safeExtractTeamName = (raw: any): string => {
+  if (!raw) return '';
+  if (typeof raw === 'string') {
+    const trimmed = raw.trim();
+    if (!trimmed || trimmed === 'null' || trimmed === 'undefined' || trimmed === '{}' || trimmed === '[]' || trimmed === '[object Object]') return '';
+    if ((trimmed.startsWith('{') && trimmed.endsWith('}')) || (trimmed.startsWith('[') && trimmed.endsWith(']'))) {
+      try { return safeExtractTeamName(JSON.parse(trimmed)); } catch (e) {}
+    }
+    return trimmed;
+  }
+  if (Array.isArray(raw)) {
+    for (const item of raw) {
+      const res = safeExtractTeamName(item);
+      if (res) return res;
+    }
+    return '';
+  }
+  if (typeof raw === 'object' && raw !== null) {
+    const keysToTry = ['name', 'team_name', 'formatted', 'title', 'label'];
+    for (const key of keysToTry) {
+      if (raw[key] && typeof raw[key] === 'string' && raw[key].trim().length > 0) {
+        const res = safeExtractTeamName(raw[key]);
+        if (res) return res;
+      }
+    }
+    for (const k of Object.keys(raw)) {
+      if (['id', 'team_id', 'user_id', 'created_at', 'updated_at'].includes(k)) continue;
+      if (typeof raw[k] === 'string' && raw[k].trim().length > 0) {
+        const res = safeExtractTeamName(raw[k]);
+        if (res) return res;
+      }
+    }
+  }
+  return '';
+};
 
-  let clean = str.replace(/^(충남|충북|충청남도|충청북도|전남|전북|경남|경북|경기|경기도|강원|강원도|제주|제주도|서울|서울특별시|인천|인천광역시|대전|대전광역시|대구|대구광역시|광주|광주광역시|부산|부산광역시|울산|울산광역시|세종|세종특별자치시)\s*/, '');
+const cleanRegionName = (rawInput?: any): string => {
+  const parsed = safeExtractTeamName(rawInput) || (typeof rawInput === 'string' ? rawInput.trim() : '');
+  if (!parsed) return '천안';
+
+  let clean = parsed.replace(/^(충남|충북|충청남도|충청북도|전남|전북|경남|경북|경기|경기도|강원|강원도|제주|제주도|서울|서울특별시|인천|인천광역시|대전|대전광역시|대구|대구광역시|광주|광주광역시|부산|부산광역시|울산|울산광역시|세종|세종특별자치시)\s*/, '');
   if (clean.length >= 2 && (clean.endsWith('시') || clean.endsWith('군'))) {
     clean = clean.slice(0, -1);
   }
   clean = clean.trim();
-  return clean.length > 0 ? clean : '천안';
+  return clean.length > 0 ? clean : parsed || '천안';
 };
 
 export default function TeamReportModal({
@@ -89,47 +127,73 @@ export default function TeamReportModal({
   analytics,
   selectedSeason,
 }: TeamReportModalProps) {
-  if (!analytics) return null;
-
   const [viewMode, setViewMode] = useState<'career' | string>('career');
+  const [statusByName, setStatusByName] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    if (!visible) return;
+    let cancelled = false;
+    (async () => {
+      const { data } = await supabase.from('teams').select('id, name, status');
+      if (cancelled || !data) return;
+      setStatusByName(buildTeamStatusByName(data));
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [visible]);
 
   const rootStat: TeamReportStat = useMemo(() => {
-    const wins = analytics.totalWins ?? 0;
-    const total = analytics.totalMatches || 0;
+    const wins = analytics?.totalWins ?? 0;
+    const total = analytics?.totalMatches || 0;
     return {
       totalMatches: total,
       totalWins: wins,
-      totalDraws: analytics.totalDraws ?? 0,
-      totalLosses: analytics.totalLosses ?? 0,
-      winRate: analytics.winRate ?? (total > 0 ? Math.round((wins / total) * 100) : 0),
-      setsWon: analytics.setsWon || 0,
-      setsLost: analytics.setsLost || 0,
-      setDiff: analytics.setDiff || 0,
-      shutoutWins: analytics.shutoutWins || 0,
-      fullsetWins: analytics.fullsetWins || 0,
-      nemesis: analytics.nemesis || '없음',
-      nemesisStat: analytics.nemesisStat || '',
-      victim: analytics.victim || '없음',
-      victimStat: analytics.victimStat || '',
-      teamRecent5: analytics.teamRecent5 || [],
+      totalDraws: analytics?.totalDraws ?? 0,
+      totalLosses: analytics?.totalLosses ?? 0,
+      winRate: analytics?.winRate ?? (total > 0 ? Math.round((wins / total) * 100) : 0),
+      setsWon: analytics?.setsWon || 0,
+      setsLost: analytics?.setsLost || 0,
+      setDiff: analytics?.setDiff || 0,
+      shutoutWins: analytics?.shutoutWins || 0,
+      fullsetWins: analytics?.fullsetWins || 0,
+      nemesis: analytics?.nemesis || '없음',
+      nemesisStat: analytics?.nemesisStat || '',
+      victim: analytics?.victim || '없음',
+      victimStat: analytics?.victimStat || '',
+      teamRecent5: analytics?.teamRecent5 || [],
     };
   }, [analytics]);
 
   const currentData = useMemo(() => {
+    if (!analytics) return rootStat;
     if (viewMode === 'career' || !analytics.seasons || !analytics.seasons[viewMode]) {
       return analytics.career || rootStat;
     }
     return analytics.seasons[viewMode];
   }, [viewMode, analytics, rootStat]);
 
-  const teamIcon = getTeamIcon(analytics.teamType);
-  const mannerTemp = analytics.mannerTemp || 36.5;
-  const regionName = cleanRegionName(analytics?.region) || '천안';
-
   const availableSeasons = useMemo(() => {
-    if (!analytics.seasons) return [];
+    if (!analytics?.seasons) return [];
     return Object.keys(analytics.seasons).sort((a, b) => Number(b) - Number(a));
-  }, [analytics.seasons]);
+  }, [analytics]);
+
+  if (!analytics) return null;
+
+  const formatNamedTeam = (rawInput: any) => {
+    const raw = safeExtractTeamName(rawInput) || (typeof rawInput === 'string' ? rawInput : '');
+    if (!raw || raw === '없음') return raw || '없음';
+    return formatTeamDisplayName(raw, statusByName[raw]);
+  };
+
+  const teamIcon = getTeamIcon(analytics.teamType);
+  const rawTeamName = safeExtractTeamName(analytics.teamName) || analytics.teamName || '소속팀';
+  const displayTeamName = formatTeamDisplayName(
+    rawTeamName,
+    analytics.status || statusByName[rawTeamName]
+  );
+  const mannerTemp = analytics.mannerTemp || 36.5;
+  const regionName = cleanRegionName(analytics?.region);
 
   return (
     <Modal
@@ -144,7 +208,7 @@ export default function TeamReportModal({
           <View style={styles.modalHeader}>
             <View style={styles.headerTitleRow}>
               <Text style={styles.modalTitle}>
-                {teamIcon} {analytics.teamName}
+                {teamIcon} {displayTeamName}
               </Text>
               {analytics.isOfficial && (
                 <View style={styles.officialBadge}>
@@ -154,7 +218,7 @@ export default function TeamReportModal({
             </View>
 
             <View style={styles.headerMetaRow}>
-              <Text style={styles.metaRegionTag}>📍 {regionName || '천안'}</Text>
+              <Text style={styles.metaRegionTag}>📍 {regionName}</Text>
               <Text style={styles.metaDivider}>•</Text>
               <Text style={styles.metaSubText}>
                 {analytics.teamType === 'school' ? '학교 팀' : '동호회 팀'}
@@ -252,13 +316,13 @@ export default function TeamReportModal({
             <View style={{ flexDirection: 'row', gap: 6, marginBottom: 6 }}>
               <View style={[styles.reportBox, styles.nemesisBox]}>
                 <Text style={styles.nemesisLabel}>😈 까다로운 천적 팀</Text>
-                <Text style={styles.nemesisName}>{currentData.nemesis}</Text>
+                <Text style={styles.nemesisName}>{formatNamedTeam(currentData.nemesis)}</Text>
                 <Text style={styles.nemesisStat}>{currentData.nemesisStat || '기록 없음'}</Text>
               </View>
 
               <View style={[styles.reportBox, styles.victimBox]}>
                 <Text style={styles.victimLabel}>🎯 상대적 우위 팀</Text>
-                <Text style={styles.victimName}>{currentData.victim}</Text>
+                <Text style={styles.victimName}>{formatNamedTeam(currentData.victim)}</Text>
                 <Text style={styles.victimStat}>{currentData.victimStat || '기록 없음'}</Text>
               </View>
             </View>
@@ -288,7 +352,7 @@ export default function TeamReportModal({
             </View>
           </ScrollView>
 
-          {/* 💡 모달 전용 광고판 규격(isModal={true}) 적용 */}
+          {/* 모달 전용 스티커 광고 배너 */}
           <View style={styles.adWrapper}>
             <StickyAdBanner isModal={true} />
           </View>

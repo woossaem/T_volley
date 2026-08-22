@@ -20,6 +20,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
 import { Colors } from '../constants/Colors';
 import StickyAdBanner from '../components/StickyAdBanner';
+import { isActiveTeamStatus } from '../lib/teamStatus';
 
 const MATCH_FORMATS = ['3세트 매치', '5세트 매치', '2시간 교류전', '기타'];
 
@@ -75,16 +76,19 @@ export default function CreateMatchScreen() {
     try {
       const { data, error } = await supabase
         .from('team_members')
-        .select(`team_id, teams (id, name, region)`)
+        .select(`team_id, teams (id, name, region, status)`)
         .eq('user_id', userId)
         .eq('is_active', true);
 
       if (error) throw error;
 
-      const teamsList: MyTeamData[] = (data || []).map((item: any) => item.teams).filter(Boolean);
+      const teamsList: MyTeamData[] = (data || [])
+        .map((item: any) => (Array.isArray(item.teams) ? item.teams[0] : item.teams))
+        .filter((t: any) => t && isActiveTeamStatus(t.status))
+        .map((t: any) => ({ id: t.id, name: t.name, region: t.region }));
 
       if (teamsList.length === 0) {
-        Alert.alert('알림', '가입된 소속 팀이 없습니다. 프로필 설정에서 팀을 먼저 추가해주세요.');
+        Alert.alert('알림', '활동 중인 소속 팀이 없습니다. 휴면/삭제된 팀으로는 신규 매치를 등록할 수 없습니다.');
         router.replace('/profile-setup');
       } else {
         setMyTeams(teamsList);

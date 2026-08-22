@@ -27,6 +27,7 @@ import MatchResultModal from '../components/MatchResultModal';
 import PastMatchRegisterModal from '../components/PastMatchRegisterModal';
 import MatchCommentModal from '../components/MatchCommentModal';
 import MatchCard, { MatchData, ApplicationData } from '../components/MatchCard';
+import { buildTeamStatusByName, isActiveTeamStatus } from '../lib/teamStatus';
 
 interface MemberInfo {
   user_id: string;
@@ -71,6 +72,7 @@ export default function MyMatchesScreen() {
   const [myApplications, setMyApplications] = useState<ApplicationData[]>([]);
   const [myTeams, setMyTeams] = useState<string[]>([]);
   const [allTeams, setAllTeams] = useState<string[]>([]);
+  const [teamStatusByName, setTeamStatusByName] = useState<Record<string, string>>({});
   
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -181,8 +183,15 @@ export default function MyMatchesScreen() {
         if (apps) setMyApplications(apps);
       }
 
-      const { data: teamsData } = await supabase.from('teams').select('name');
-      if (teamsData) setAllTeams(teamsData.map((t: any) => parseTeamName(t.name)).filter(Boolean));
+      const { data: teamsData } = await supabase.from('teams').select('id, name, status');
+      if (teamsData) {
+        const parsed = teamsData.map((t: any) => ({
+          name: parseTeamName(t.name),
+          status: t.status || 'active',
+        })).filter((t: any) => t.name);
+        setTeamStatusByName(buildTeamStatusByName(parsed));
+        setAllTeams(parsed.filter((t: any) => isActiveTeamStatus(t.status)).map((t: any) => t.name));
+      }
 
       const { data: matchData, error } = await supabase.from('matches').select('*').order('created_at', { ascending: false });
       if (error) throw error;
@@ -1000,6 +1009,7 @@ export default function MyMatchesScreen() {
               onDeleteMatch={handleDeleteMatch}
               onOpenMercenaryModal={handleOpenMercenaryModal}
               onApplyMatch={handleApplyMatch}
+              teamStatusByName={teamStatusByName}
             />
           ))
         )}

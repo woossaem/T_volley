@@ -8,17 +8,18 @@ import {
   ActivityIndicator,
   Image,
   ScrollView,
-  Alert,
 } from 'react-native';
 import { supabase } from '../lib/supabase';
 import { Colors } from '../constants/Colors';
 import StickyAdBanner from './StickyAdBanner';
 import BadgeCollectionModal from './BadgeCollectionModal';
 import { getAllBadgesWithStatus } from '../lib/badgeUtils';
+import { formatTeamDisplayName } from '../lib/teamStatus';
 
 interface UserProfileModalProps {
   visible: boolean;
   userId: string | null;
+  isMyTeamMember?: boolean; // 💡 내 팀원 여부 (true면 실명 노출, false/undefined면 마스킹)
   onClose: () => void;
 }
 
@@ -34,12 +35,26 @@ interface UserProfileData {
   manner_temp?: number;
 }
 
-export default function UserProfileModal({ visible, userId, onClose }: UserProfileModalProps) {
+// 💡 기존 이름 마스킹 규칙 적용 (홍길동 -> 홍*동 / 김철 -> 김* / 남궁민수 -> 남**수)
+const maskName = (name?: string): string => {
+  if (!name) return '선생님';
+  const trimmed = name.trim();
+  if (trimmed.length <= 1) return trimmed;
+  if (trimmed.length === 2) return `${trimmed[0]}*`;
+  return `${trimmed[0]}${'*'.repeat(trimmed.length - 2)}${trimmed[trimmed.length - 1]}`;
+};
+
+export default function UserProfileModal({ 
+  visible, 
+  userId, 
+  isMyTeamMember = false, 
+  onClose 
+}: UserProfileModalProps) {
   const [loading, setLoading] = useState(true);
   const [profile, setProfile] = useState<UserProfileData | null>(null);
   const [invitedCount, setInvitedCount] = useState<number>(0);
   const [grapeBoardModalVisible, setGrapeBoardModalVisible] = useState(false);
-  const [badgeModalVisible, setBadgeModalVisible] = useState(false); // 💡 칭호 도감 모달 State
+  const [badgeModalVisible, setBadgeModalVisible] = useState(false);
 
   const [stats, setStats] = useState({
     total: 0,
@@ -48,6 +63,7 @@ export default function UserProfileModal({ visible, userId, onClose }: UserProfi
     losses: 0,
     winRate: 0,
   });
+  const [userTeams, setUserTeams] = useState<{ id: string; name: string; status?: string }[]>([]);
 
   useEffect(() => {
     if (visible && userId) {
@@ -76,7 +92,27 @@ export default function UserProfileModal({ visible, userId, onClose }: UserProfi
 
       setInvitedCount(count || 0);
 
-      // 내전 제외 공식 경기만 조회
+      const { data: tmData } = await supabase
+        .from('team_members')
+        .select('team_id, teams(id, name, status)')
+        .eq('user_id', userId)
+        .eq('is_active', true);
+
+      const teamsList: { id: string; name: string; status?: string }[] = [];
+      const addedIds = new Set<string>();
+      (tmData || []).forEach((tm: any) => {
+        const teamObj = Array.isArray(tm.teams) ? tm.teams[0] : tm.teams;
+        if (teamObj?.id && !addedIds.has(teamObj.id)) {
+          addedIds.add(teamObj.id);
+          teamsList.push({
+            id: teamObj.id,
+            name: teamObj.name,
+            status: teamObj.status || 'active',
+          });
+        }
+      });
+      setUserTeams(teamsList);
+
       const { data: allMatches } = await supabase
         .from('matches')
         .select('*')
@@ -123,7 +159,10 @@ export default function UserProfileModal({ visible, userId, onClose }: UserProfi
     return { title: null, style: null };
   }, [invitedCount]);
 
-  const displayName = profile?.full_name || '선생님';
+  // 💡 내 팀원이면 실명, 타 팀원이면 홍*동 처리
+  const rawName = profile?.full_name || '선생님';
+  const displayName = isMyTeamMember ? rawName : maskName(rawName);
+
   const avatarIco = profile?.avatar_icon || '🏐';
   const avatarUrl = profile?.avatar_url;
   const gender = profile?.gender || '남성';
@@ -137,7 +176,6 @@ export default function UserProfileModal({ visible, userId, onClose }: UserProfi
     ? profile.region.split(',').map((r, idx) => `${idx + 1}순위 ${r.trim()}`).join(' · ')
     : '활동 지역 미설정';
 
-  // 💡 모달용 유저 스탯 파라미터 연산
   const userParams = useMemo(() => ({
     stats,
     userActivityStats: { recordCount: 0, praiseCount: grapeCount },
@@ -145,7 +183,6 @@ export default function UserProfileModal({ visible, userId, onClose }: UserProfi
     gender,
   }), [stats, grapeCount, invitedCount, gender]);
 
-  // 💡 해금된 대표 칭호 2개 자동 추출
   const userBadges = useMemo(() => {
     const all = getAllBadgesWithStatus(userParams);
     return all.filter(b => b.isUnlocked).slice(0, 2);
@@ -178,7 +215,6 @@ export default function UserProfileModal({ visible, userId, onClose }: UserProfi
                     </View>
                   </View>
 
-                  {/* 💡 2개 대표 칭호 노출 & 클릭 시 [칭호 도감 모달] 오픈 */}
                   <View style={{ flexDirection: 'row', gap: 4, flexWrap: 'wrap', justifyContent: 'center', marginBottom: 6 }}>
                     {userBadges.map((badge) => (
                       <TouchableOpacity
@@ -197,10 +233,14 @@ export default function UserProfileModal({ visible, userId, onClose }: UserProfi
                   <Text style={styles.subText}>
                     🏫 {profile?.school_name || '학교 미설정'} · 🏐 {profile?.position || '포지션 미설정'}
                   </Text>
+                  {userTeams.length > 0 ? (
+                    <Text style={styles.subText}>
+                      🛡️ {userTeams.map((t) => formatTeamDisplayName(t.name, t.status)).join(' · ')}
+                    </Text>
+                  ) : null}
                   <Text style={styles.regionText}>📍 {formattedRegions}</Text>
                 </View>
 
-                {/* 🍇 칭찬 포도알 & 🌡️ 매너 온도 */}
                 <View style={styles.assetMannerRow}>
                   <TouchableOpacity 
                     style={styles.grapeBox} 
@@ -245,7 +285,6 @@ export default function UserProfileModal({ visible, userId, onClose }: UserProfi
                   </Text>
                 </View>
 
-                {/* 통산 출전 성적 박스 */}
                 <View style={styles.statsCard}>
                   <Text style={styles.statsCardTitle}>🏆 공식전 개인 출전 전적</Text>
                   <Text style={styles.statsMainText}>
@@ -270,7 +309,6 @@ export default function UserProfileModal({ visible, userId, onClose }: UserProfi
         </View>
       </View>
 
-      {/* 📖 칭호 수집 도감 모달 */}
       <BadgeCollectionModal
         visible={badgeModalVisible}
         onClose={() => setBadgeModalVisible(false)}
@@ -279,7 +317,6 @@ export default function UserProfileModal({ visible, userId, onClose }: UserProfi
         onSaveEquippedBadges={() => {}}
       />
 
-      {/* 🍇 칭찬 포도알 모달 */}
       <Modal visible={grapeBoardModalVisible} animationType="fade" transparent={true} onRequestClose={() => setGrapeBoardModalVisible(false)}>
         <View style={styles.modalOverlay}>
           <View style={[styles.modalContent, { backgroundColor: '#FAF5FF', borderColor: '#E9D5FF', borderWidth: 1.5 }]}>

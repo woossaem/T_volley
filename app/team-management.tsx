@@ -16,7 +16,7 @@ import { useRouter } from 'expo-router';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
 import { Colors } from '../constants/Colors';
-import StickyAdBanner from '../components/StickyAdBanner'; // 💡 스티커 배너 Import
+import StickyAdBanner from '../components/StickyAdBanner';
 
 interface OfficialSchool { id: string; region: string; name: string; formatted: string; }
 interface TeamData { id: string; name: string; region: string; pin_code?: string | null; }
@@ -94,7 +94,7 @@ export default function TeamManagementScreen() {
         setDbSchools(formattedSchools);
       }
 
-      const { data: tData } = await supabase.from('teams').select('id, name, region, pin_code');
+      const { data: tData } = await supabase.from('teams').select('id, name, region, pin_code').eq('status', 'active');
       if (tData) {
         tData.forEach(t => { 
           if (t.region) {
@@ -157,6 +157,9 @@ export default function TeamManagementScreen() {
 
       const { data: targetTeam } = await supabase.from('teams').select('*').eq('name', searchName).maybeSingle();
       if (!targetTeam) return Alert.alert('가입 실패', `'${joinTeamName}' 팀을 찾을 수 없습니다. 정확한 팀명을 선택해 주세요.`);
+      if (targetTeam.status && targetTeam.status !== 'active') {
+        return Alert.alert('가입 불가', '휴면 또는 삭제된 팀에는 가입할 수 없습니다.');
+      }
       
       if (targetTeam.pin_code && targetTeam.pin_code.trim().length > 0) {
         if (!joinPinCode.trim()) {
@@ -250,6 +253,7 @@ export default function TeamManagementScreen() {
         pin_code: finalPinCode,
         youtube_channel_url: newTeamYoutube.trim() || null,
         leader_id: userId,
+        status: 'active',
       }).select().single();
 
       if (createErr) throw createErr;
@@ -265,7 +269,7 @@ export default function TeamManagementScreen() {
   const getTeamIcon = (type?: string) => (type === 'club' ? '🛡️' : '🏫');
 
   return (
-    <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
+    <SafeAreaView style={styles.container} edges={['top', 'left', 'right', 'bottom']}>
       <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
         
         <View style={styles.header}>
@@ -437,7 +441,7 @@ export default function TeamManagementScreen() {
         </ScrollView>
       </KeyboardAvoidingView>
       
-      {/* 💡 스티커 광고 배너 부착 */}
+      {/* 💡 화면 최하단 스티커 광고 배너 부착 */}
       <StickyAdBanner />
     </SafeAreaView>
   );
@@ -450,7 +454,6 @@ const styles = StyleSheet.create({
   backText: { fontSize: 32, color: Colors.text, lineHeight: 32 },
   headerTitle: { fontSize: 16, fontWeight: '800', color: Colors.text },
   
-  // 💡 광고 가림 방지 여백 추가
   content: { padding: 20, gap: 16, paddingBottom: 60 },
   
   section: { backgroundColor: Colors.surface, borderRadius: 16, padding: 18, borderWidth: 1, borderColor: Colors.border },

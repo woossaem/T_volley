@@ -27,6 +27,7 @@ import MatchEvaluationModal from '../components/MatchEvaluationModal';
 import MatchCommentModal from '../components/MatchCommentModal';
 import MatchPostgameReportModal from '../components/MatchPostgameReportModal'; // 💡 경기 결과 분석 리포트 모달 추가
 import MatchCard, { MatchData, ApplicationData } from '../components/MatchCard';
+import { buildTeamStatusByName, isActiveTeamStatus } from '../lib/teamStatus';
 
 interface MemberInfo {
   user_id: string;
@@ -70,6 +71,7 @@ export default function MatchesScreen() {
   const [myApplications, setMyApplications] = useState<ApplicationData[]>([]);
   const [myTeams, setMyTeams] = useState<string[]>([]);
   const [allTeams, setAllTeams] = useState<string[]>([]);
+  const [teamStatusByName, setTeamStatusByName] = useState<Record<string, string>>({});
   
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -210,8 +212,15 @@ export default function MatchesScreen() {
         if (apps) setMyApplications(apps);
       }
 
-      const { data: teamsData } = await supabase.from('teams').select('name');
-      if (teamsData) setAllTeams(teamsData.map((t: any) => parseTeamName(t.name)).filter(Boolean));
+      const { data: teamsData } = await supabase.from('teams').select('id, name, status');
+      if (teamsData) {
+        const parsed = teamsData.map((t: any) => ({
+          name: parseTeamName(t.name),
+          status: t.status || 'active',
+        })).filter((t: any) => t.name);
+        setTeamStatusByName(buildTeamStatusByName(parsed));
+        setAllTeams(parsed.filter((t: any) => isActiveTeamStatus(t.status)).map((t: any) => t.name));
+      }
 
       const { data: matchData, error } = await supabase.from('matches').select('*').order('created_at', { ascending: false });
       if (error) throw error;
@@ -1095,6 +1104,7 @@ export default function MatchesScreen() {
               onOpenMercenaryModal={handleOpenMercenaryModal}
               onApplyMatch={handleApplyMatch}
               onOpenReportModal={openReportModal} // 💡 분석 리포트 모달 콜백 전달
+              teamStatusByName={teamStatusByName}
             />
           ))
         )}

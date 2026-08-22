@@ -14,6 +14,7 @@ import DateTimePicker from '@react-native-community/datetimepicker';
 import { supabase } from '../lib/supabase';
 import { sendNotificationToTeam } from '../lib/notificationService';
 import { Colors } from '../constants/Colors';
+import { isActiveTeamStatus } from '../lib/teamStatus';
 
 const MATCH_FORMATS = ['3세트 매치', '5세트 매치', '2시간 교류전', '미니 리그전', '기타'];
 
@@ -78,6 +79,8 @@ export default function BatchProposalModal({
 
   const [lastLocation, setLastLocation] = useState('');
   const [lastDescription, setLastDescription] = useState('');
+  const [activeTargetIds, setActiveTargetIds] = useState<string[]>([]);
+  const [activeMyTeamNames, setActiveMyTeamNames] = useState<string[]>([]);
 
   useEffect(() => {
     if (cleanMyTeams.length > 0 && !myProposingTeam) {
@@ -90,6 +93,51 @@ export default function BatchProposalModal({
       fetchRecentHistory();
     }
   }, [visible, currentUserId]);
+
+  useEffect(() => {
+    if (!visible) return;
+    let cancelled = false;
+
+    const loadActiveTeams = async () => {
+      if (selectedTeamIds.length > 0) {
+        const { data: targetRows } = await supabase
+          .from('teams')
+          .select('id, status')
+          .in('id', selectedTeamIds);
+        if (!cancelled) {
+          setActiveTargetIds(
+            (targetRows || [])
+              .filter((t: any) => isActiveTeamStatus(t.status))
+              .map((t: any) => t.id)
+          );
+        }
+      } else if (!cancelled) {
+        setActiveTargetIds([]);
+      }
+
+      if (cleanMyTeams.length > 0) {
+        const { data: myRows } = await supabase
+          .from('teams')
+          .select('name, status')
+          .in('name', cleanMyTeams);
+        if (!cancelled) {
+          const activeNames = (myRows || [])
+            .filter((t: any) => isActiveTeamStatus(t.status))
+            .map((t: any) => parseTeamName(t.name))
+            .filter(Boolean);
+          setActiveMyTeamNames(activeNames);
+          if (activeNames.length > 0 && !activeNames.includes(myProposingTeam)) {
+            setMyProposingTeam(activeNames[0]);
+          }
+        }
+      }
+    };
+
+    loadActiveTeams();
+    return () => {
+      cancelled = true;
+    };
+  }, [visible, selectedTeamIds, cleanMyTeams]);
 
   const fetchRecentHistory = async () => {
     if (!currentUserId) return;
@@ -110,10 +158,15 @@ export default function BatchProposalModal({
 
   const handleSendBatchProposal = async () => {
     if (!myProposingTeam) return Alert.alert('알림', '제안을 보낼 내 소속 팀을 선택해 주세요.');
+    if (activeMyTeamNames.length > 0 && !activeMyTeamNames.includes(myProposingTeam)) {
+      return Alert.alert('알림', '휴면/삭제된 팀으로는 교류전을 제안할 수 없습니다.');
+    }
     if (!proposalLocation.trim()) return Alert.alert('알림', '경기 장소(체육관)를 입력해 주세요.');
     if (!currentUserId) return;
 
-    const targetTeams = allTeams.filter(t => selectedTeamIds.includes(t.team_id));
+    const targetTeams = allTeams.filter(
+      (t) => selectedTeamIds.includes(t.team_id) && activeTargetIds.includes(t.team_id)
+    );
     const validTargets = targetTeams.filter(t => parseTeamName(t.team_name) !== myProposingTeam);
 
     if (validTargets.length === 0) {
@@ -197,7 +250,7 @@ export default function BatchProposalModal({
           <ScrollView style={{ maxHeight: 420, marginVertical: 8 }} showsVerticalScrollIndicator={false}>
             <Text style={styles.inputLabel}>1. 어느 팀 이름으로 주최하시나요?</Text>
             <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginBottom: 12 }}>
-              {cleanMyTeams.map((tName: string) => {
+              {(activeMyTeamNames.length > 0 ? activeMyTeamNames : cleanMyTeams).map((tName: string) => {
                 const isSel = myProposingTeam === tName;
                 return (
                   <TouchableOpacity

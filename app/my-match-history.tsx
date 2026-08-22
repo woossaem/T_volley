@@ -16,7 +16,8 @@ import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
 import { Colors } from '../constants/Colors';
 import StickyAdBanner from '../components/StickyAdBanner';
-import MatchPostgameReportModal from '../components/MatchPostgameReportModal'; // 💡 경기 결과 분석 리포트 모달 추가
+import MatchPostgameReportModal from '../components/MatchPostgameReportModal';
+import { buildTeamStatusByName, formatTeamDisplayName } from '../lib/teamStatus';
 
 interface MatchHistoryItem {
   id: string;
@@ -49,6 +50,7 @@ export default function MyMatchHistoryScreen() {
 
   const [rawMatches, setRawMatches] = useState<MatchHistoryItem[]>([]);
   const [myTeams, setMyTeams] = useState<string[]>([]);
+  const [teamStatusByName, setTeamStatusByName] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
@@ -59,7 +61,6 @@ export default function MyMatchHistoryScreen() {
   const [resultFilter, setResultFilter] = useState<'all' | 'win' | 'loss'>('all');
   const [searchQuery, setSearchQuery] = useState('');
 
-  // 💡 [신규] 분석 리포트 모달 State
   const [reportModalVisible, setReportModalVisible] = useState(false);
   const [reportTargetMatch, setReportTargetMatch] = useState<MatchHistoryItem | null>(null);
 
@@ -129,10 +130,19 @@ export default function MyMatchHistoryScreen() {
       }
       setMyTeams(teamNames);
 
+      const { data: teamsData } = await supabase.from('teams').select('id, name, status');
+      if (teamsData) {
+        const parsed = teamsData.map((t: any) => ({
+          name: parseTeamName(t.name),
+          status: t.status || 'active',
+        })).filter((t: any) => t.name);
+        setTeamStatusByName(buildTeamStatusByName(parsed));
+      }
+
       const { data: matchesData, error } = await supabase
         .from('matches')
         .select('*')
-        .in('status', ['completed', 'friendly', 'intramural'])
+        .in('status', ['completed', 'friendly', 'intramural', 'pending_result', 'matched'])
         .order('created_at', { ascending: false });
 
       if (error) throw error;
@@ -176,9 +186,13 @@ export default function MyMatchHistoryScreen() {
 
       const isIntra = match.status === 'intramural';
       const isTournament = match.format?.includes('대회') || match.format?.includes('토너먼트') || match.format?.includes('리그');
-      let result: 'win' | 'loss' | 'draw' = 'loss';
+      
+      // 💡 [핵심] winner_team 데이터가 없으면 'pending' (진행중) 처리
+      let result: 'win' | 'loss' | 'draw' | 'pending' = 'pending';
 
-      if (isIntra) {
+      if (!match.winner_team) {
+        result = 'pending';
+      } else if (isIntra) {
         let teamA = 'A팀';
         let teamB = 'B팀';
         if (match.description) {
@@ -199,6 +213,8 @@ export default function MyMatchHistoryScreen() {
           result = 'win';
         } else if (inAway && isBWin) {
           result = 'win';
+        } else {
+          result = 'loss';
         }
       } else {
         const myPlayedTeam = (inHost || isHostMerc || isMyTeamHost)
@@ -209,6 +225,8 @@ export default function MyMatchHistoryScreen() {
           result = 'draw';
         } else if (match.winner_team === myPlayedTeam) {
           result = 'win';
+        } else {
+          result = 'loss';
         }
       }
 
@@ -241,15 +259,17 @@ export default function MyMatchHistoryScreen() {
 
       const query = searchQuery.toLowerCase().trim();
       if (query) {
-        const passHost = item.host_team_name.toLowerCase().includes(query);
-        const passAway = item.away_team_name?.toLowerCase().includes(query);
+        const hostDisplay = formatTeamDisplayName(item.host_team_name, teamStatusByName[item.host_team_name]).toLowerCase();
+        const awayDisplay = formatTeamDisplayName(item.away_team_name, teamStatusByName[item.away_team_name || '']).toLowerCase();
+        const passHost = item.host_team_name.toLowerCase().includes(query) || hostDisplay.includes(query);
+        const passAway = item.away_team_name?.toLowerCase().includes(query) || awayDisplay.includes(query);
         const passLocation = item.location.toLowerCase().includes(query);
         if (!passHost && !passAway && !passLocation) return false;
       }
 
       return true;
     });
-  }, [processedMatches, selectedSeason, matchTypeFilter, resultFilter, searchQuery]);
+  }, [processedMatches, selectedSeason, matchTypeFilter, resultFilter, searchQuery, teamStatusByName]);
 
   return (
     <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
@@ -365,29 +385,30 @@ export default function MyMatchHistoryScreen() {
           filteredMatches.map((match: any) => {
             const isWin = match.myResult === 'win';
             const isDraw = match.myResult === 'draw';
+            const isPending = match.myResult === 'pending';
 
             return (
               <View key={match.id} style={styles.historyCard}>
                 <View style={styles.cardHeader}>
                   <View style={styles.teamInfo}>
-                    <Text style={styles.hostTeamText}>{match.host_team_name}</Text>
+                    <Text style={styles.hostTeamText}>{formatTeamDisplayName(match.host_team_name, teamStatusByName[match.host_team_name])}</Text>
                     <Text style={styles.vsText}>VS</Text>
-                    <Text style={styles.awayTeamText}>{match.away_team_name || '자체 내전'}</Text>
+                    <Text style={styles.awayTeamText}>{match.away_team_name ? formatTeamDisplayName(match.away_team_name, teamStatusByName[match.away_team_name]) : '자체 내전'}</Text>
                   </View>
 
                   <View
                     style={[
                       styles.resultBadge,
-                      isWin ? styles.winBadge : isDraw ? styles.drawBadge : styles.lossBadge,
+                      isWin ? styles.winBadge : isDraw ? styles.drawBadge : isPending ? styles.pendingBadge : styles.lossBadge,
                     ]}
                   >
                     <Text
                       style={[
                         styles.resultBadgeText,
-                        isWin ? styles.winBadgeText : isDraw ? styles.drawBadgeText : styles.lossBadgeText,
+                        isWin ? styles.winBadgeText : isDraw ? styles.drawBadgeText : isPending ? styles.pendingBadgeText : styles.lossBadgeText,
                       ]}
                     >
-                      {isWin ? '🏆 승리' : isDraw ? '🤝 무승부' : '❌ 패배'}
+                      {isWin ? '🏆 승리' : isDraw ? '🤝 무승부' : isPending ? '⏳ 진행중' : '❌ 패배'}
                     </Text>
                   </View>
                 </View>
@@ -441,7 +462,6 @@ export default function MyMatchHistoryScreen() {
                   )}
                 </View>
 
-                {/* 💡 [신규] 결과 분석 리포트 확인 버튼 */}
                 <TouchableOpacity
                   style={styles.reportBtn}
                   onPress={() => {
@@ -460,7 +480,6 @@ export default function MyMatchHistoryScreen() {
 
       <StickyAdBanner />
 
-      {/* 💡 [신규] 분석 리포트 모달 렌더링 */}
       {reportModalVisible && reportTargetMatch && (
         <MatchPostgameReportModal
           visible={reportModalVisible}
@@ -583,6 +602,8 @@ const styles = StyleSheet.create({
   winBadgeText: { color: '#059669', fontSize: 11, fontWeight: '800' },
   drawBadge: { backgroundColor: '#F8FAFC', borderColor: '#CBD5E1' },
   drawBadgeText: { color: '#475569', fontSize: 11, fontWeight: '800' },
+  pendingBadge: { backgroundColor: '#FEF3C7', borderColor: '#FDE68A' },
+  pendingBadgeText: { color: '#B45309', fontSize: 11, fontWeight: '800' },
   lossBadge: { backgroundColor: '#FEF2F2', borderColor: '#FECACA' },
   lossBadgeText: { color: '#DC2626', fontSize: 11, fontWeight: '800' },
   resultBadgeText: { fontSize: 11, fontWeight: '800' },
@@ -597,7 +618,6 @@ const styles = StyleSheet.create({
   auditRow: { marginTop: 4, paddingTop: 4, borderTopWidth: 1, borderTopColor: '#E2E8F0' },
   auditText: { fontSize: 10, color: '#1D4ED8', fontWeight: '800' },
 
-  /* 💡 [신규] 분석 리포트 버튼 스타일 */
   reportBtn: { backgroundColor: '#FEFCE8', borderRadius: 8, paddingVertical: 8, alignItems: 'center', marginTop: 8, borderWidth: 1, borderColor: '#FDE047' },
   reportBtnText: { color: '#A16207', fontSize: 12, fontWeight: '800' },
 
