@@ -99,9 +99,152 @@ function collectIds(value: unknown, bucket: Set<string>) {
     }
     trimmed.split(',').forEach((id) => {
       const cleaned = id.trim();
-      if (cleaned) bucket.add(cleaned);
+      if (cleaned && !isAnonymousSlotId(cleaned)) bucket.add(cleaned);
     });
   }
+}
+
+export function listHasUser(list: unknown, userId: string | null | undefined): boolean {
+  if (!userId) return false;
+  if (Array.isArray(list)) {
+    return list.some((id) => String(id) === userId || safeIncludes(id, userId));
+  }
+  return safeIncludes(list, userId);
+}
+
+export function rosterHasUser(roster: unknown, userId: string | null | undefined): boolean {
+  if (!userId) return false;
+  return parseRosterUserIds(roster).includes(userId) || safeIncludes(roster, userId);
+}
+
+export const COURT_SLOT_COUNT = 6;
+export const LINE_MIN = 1;
+export const LINE_MAX = 5;
+export const ANON_SLOT_PREFIX = 'anon:';
+export const ANONYMOUS_PLAYER_NAME = '무기명';
+
+export function isAnonymousSlotId(id?: string | null): boolean {
+  if (!id) return true;
+  return id.includes(ANON_SLOT_PREFIX) || id === 'anonymous';
+}
+
+export function isAnonymousPlayer(player?: { user_id?: string | null; full_name?: string | null } | null): boolean {
+  if (!player) return true;
+  if (isAnonymousSlotId(player.user_id)) return true;
+  const name = (player.full_name || '').trim();
+  return !name || name === ANONYMOUS_PLAYER_NAME;
+}
+
+export function makeAnonSlotId(index: number): string {
+  return `${ANON_SLOT_PREFIX}${index}`;
+}
+
+export function clampLineCount(value: unknown, fallback = 3): number {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(LINE_MAX, Math.max(LINE_MIN, Math.round(n)));
+}
+
+const FRONT_LINE_LABELS = [
+  ['전위'],
+  ['레프트', '라이트'],
+  ['레프트', '전위센터', '라이트'],
+  ['레프트', '전위센터', '라이트', '전위라이트'],
+  ['레프트', '세컨레프트', '전위센터', '세컨라이트', '라이트'],
+];
+
+const BACK_LINE_LABELS = [
+  ['후위'],
+  ['후위레프트', '후위라이트'],
+  ['후위레프트', '후위센터', '후위라이트'],
+  ['후위레프트', '후위센터', '후위라이트', '후위서브'],
+  ['후위레프트', '세컨백레프트', '후위센터', '세컨백라이트', '후위라이트'],
+];
+
+export function lineSlotLabels(row: 'front' | 'back', count: number): string[] {
+  const n = clampLineCount(count);
+  return (row === 'front' ? FRONT_LINE_LABELS : BACK_LINE_LABELS)[n - 1];
+}
+
+/** 코트 슬롯 순서: 전위 레프트-센터-라이트, 후위 레프트-센터-라이트 */
+export const COURT_SLOT_META = [
+  { key: '4', label: '레프트', short: 'L', row: 'front' as const },
+  { key: '3', label: '전위센터', short: 'C', row: 'front' as const },
+  { key: '2', label: '라이트', short: 'R', row: 'front' as const },
+  { key: '5', label: '후위레프트', short: 'BL', row: 'back' as const },
+  { key: '6', label: '후위센터', short: 'BC', row: 'back' as const },
+  { key: '1', label: '후위라이트', short: 'BR', row: 'back' as const },
+] as const;
+
+export interface SetFormation {
+  court: string[];
+  bench: string[];
+  late: string[];
+  frontCount?: number;
+  backCount?: number;
+}
+
+function asIdArray(value: unknown): string[] {
+  if (Array.isArray(value)) return value.map(String).filter(Boolean);
+  if (typeof value === 'string') {
+    return value.split(',').map((s) => s.trim()).filter(Boolean);
+  }
+  return parseRosterUserIds(value);
+}
+
+function formationFromValue(value: unknown): SetFormation {
+  if (Array.isArray(value) || typeof value === 'string') {
+    return { court: asIdArray(value), bench: [], late: [] };
+  }
+  if (value && typeof value === 'object') {
+    const rec = value as Record<string, unknown>;
+    if (Array.isArray(rec.court) || Array.isArray(rec.bench) || Array.isArray(rec.late) || rec.slots) {
+      const fromSlots = rec.slots && typeof rec.slots === 'object'
+        ? COURT_SLOT_META.map((slot) => String((rec.slots as Record<string, unknown>)[slot.key] || '')).filter(Boolean)
+        : [];
+      return {
+        court: asIdArray(rec.court).length > 0 ? asIdArray(rec.court) : fromSlots,
+        bench: asIdArray(rec.bench),
+        late: asIdArray(rec.late),
+        frontCount: clampLineCount(rec.frontCount, 3),
+        backCount: clampLineCount(rec.backCount, 3),
+      };
+    }
+    return { court: asIdArray(value), bench: [], late: [] };
+  }
+  return { court: [], bench: [], late: [] };
+}
+
+export function parseSetFormationMap(roster: unknown): { [setIndex: number]: SetFormation } {
+  if (roster == null || roster === '') return {};
+  const parsed = typeof roster === 'string'
+    ? (() => {
+        try { return JSON.parse(roster); } catch { return roster; }
+      })()
+    : roster;
+
+  if (Array.isArray(parsed)) {
+    return { 0: formationFromValue(parsed) };
+  }
+  if (parsed && typeof parsed === 'object') {
+    const result: { [setIndex: number]: SetFormation } = {};
+    Object.entries(parsed as Record<string, unknown>).forEach(([key, value]) => {
+      const idx = Number(key);
+      if (Number.isNaN(idx)) return;
+      result[idx] = formationFromValue(value);
+    });
+    return result;
+  }
+  return {};
+}
+
+export function parseSetFormation(roster: unknown, setIndex: number): SetFormation {
+  const map = parseSetFormationMap(roster);
+  return map[setIndex] || map[0] || { court: [], bench: [], late: [] };
+}
+
+export function serializeSetFormationMap(map: { [setIndex: number]: SetFormation }): string {
+  return JSON.stringify(map);
 }
 
 export function parseRosterUserIds(roster: unknown): string[] {
@@ -119,9 +262,11 @@ export function parseSetRosterMap(roster: unknown): SetRosterMap {
       const idx = Number(key);
       if (Number.isNaN(idx)) return;
       if (Array.isArray(value)) {
-        result[idx] = value.map(String).filter(Boolean);
+        result[idx] = value.map(String).filter((id) => id && !isAnonymousSlotId(id));
       } else if (typeof value === 'string') {
-        result[idx] = value.split(',').map((s) => s.trim()).filter(Boolean);
+        result[idx] = value.split(',').map((s) => s.trim()).filter((id) => id && !isAnonymousSlotId(id));
+      } else if (value && typeof value === 'object') {
+        result[idx] = formationFromValue(value).court.filter((id) => id && !isAnonymousSlotId(id));
       }
     });
     return result;

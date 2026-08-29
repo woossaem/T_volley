@@ -18,11 +18,13 @@ import { sendNotificationToTeam } from '../lib/notificationService';
 import * as ScreenOrientation from 'expo-screen-orientation';
 
 import ScoreTimeline, { MatchEvent } from '../components/ScoreTimeline';
-import PlayerActionModal, { Member } from '../components/PlayerActionModal';
+import PlayerActionModal, { Member, ScoreKind } from '../components/PlayerActionModal';
 import MatchPostgameReportModal from '../components/MatchPostgameReportModal';
-import { parseSetRosterMap, safeIncludes, safeNameText, teamsInclude } from '../lib/roster';
+import FormationModal from '../components/FormationModal';
+import { ANONYMOUS_PLAYER_NAME, clampLineCount, isAnonymousPlayer, isAnonymousSlotId, listHasUser, makeAnonSlotId, parseSetFormation, parseSetFormationMap, parseSetRosterMap, safeIncludes, safeNameText, teamsInclude, type SetFormation } from '../lib/roster';
 import {
   MAX_SETS,
+  deleteSetAndReindex,
   fetchMatchSets,
   isBestOfFiveDecided,
   parseRosterJson,
@@ -85,6 +87,10 @@ export default function ScoreboardScreen() {
   const [finishModalVisible, setFinishModalVisible] = useState(false);
   const [reportModalVisible, setReportModalVisible] = useState(false);
   const [timelineEpoch, setTimelineEpoch] = useState(0);
+  const [pendingDeleteSet, setPendingDeleteSet] = useState<number | null>(null);
+  const [pendingDeleteEvent, setPendingDeleteEvent] = useState<MatchEvent | null>(null);
+  const [formationVisible, setFormationVisible] = useState(false);
+  const [formationTeam, setFormationTeam] = useState<'host' | 'away'>('host');
 
   const isInitialLoadRef = useRef(true);
   const matchClosedRef = useRef(false);
@@ -122,6 +128,7 @@ export default function ScoreboardScreen() {
     setTimelineEpoch((n) => n + 1);
     setActionModalVisible(false);
     setEditingEventId(null);
+    setPendingDeleteEvent(null);
   }, []);
 
   const openPostMatchReport = useCallback(async () => {
@@ -179,14 +186,15 @@ export default function ScoreboardScreen() {
   };
 
   const recalcScores = useCallback((allEvents: MatchEvent[], cIndex: number) => {
-    const validScores = allEvents.filter(e => e.set_index === cIndex && !e.is_canceled && e.event_type !== 'sub');
+    const idx = Number(cIndex);
+    const validScores = allEvents.filter((e) => Number(e.set_index) === idx && !e.is_canceled && e.event_type !== 'sub');
     if (validScores.length > 0) {
       const last = validScores[validScores.length - 1];
       setCurrentScores({ host: last.host_score, away: last.away_score });
     } else {
       const currentHistory = setHistoryRef.current;
-      if (currentHistory[cIndex]) {
-        const [h, a] = currentHistory[cIndex].split(':').map(Number);
+      if (currentHistory[idx]) {
+        const [h, a] = currentHistory[idx].split(':').map(Number);
         setCurrentScores({ host: h || 0, away: a || 0 });
       } else {
         setCurrentScores({ host: 0, away: 0 });
@@ -365,14 +373,19 @@ export default function ScoreboardScreen() {
     setActionModalVisible(true);
   };
 
-  const handleScoreConfirm = async (player: Member | null) => {
+  const handleScoreConfirm = async (player: Member | null, kind: ScoreKind = 'kill') => {
     setActionModalVisible(false);
     
     if (actionMode === 'edit' && editingEventId) {
-      setEvents(prev => prev.map(e => e.id === editingEventId ? { ...e, player_id: player?.user_id || null, player_name: player?.full_name || null } : e));
+      const eventType = kind === 'fault' ? 'fault' : 'score';
+      const registered = player && !isAnonymousPlayer(player);
+      const savedPlayerId = registered ? player.user_id : null;
+      const savedPlayerName = registered ? player.full_name : ANONYMOUS_PLAYER_NAME;
+      setEvents(prev => prev.map(e => e.id === editingEventId ? { ...e, player_id: savedPlayerId, player_name: savedPlayerName, event_type: eventType } : e));
       await supabase.from('match_events').update({
-        player_id: player?.user_id || null,
-        player_name: player?.full_name || null
+        player_id: savedPlayerId,
+        player_name: savedPlayerName,
+        event_type: eventType,
       }).eq('id', editingEventId);
       return;
     }
@@ -380,6 +393,10 @@ export default function ScoreboardScreen() {
     const isHost = actionTeam === 'host';
     const newHostScore = isHost ? currentScores.host + 1 : currentScores.host;
     const newAwayScore = !isHost ? currentScores.away + 1 : currentScores.away;
+    const eventType = kind === 'fault' ? 'fault' : 'score';
+    const registered = player && !isAnonymousPlayer(player);
+    const savedPlayerId = registered ? player.user_id : null;
+    const savedPlayerName = registered ? player.full_name : ANONYMOUS_PLAYER_NAME;
 
     setCurrentScores({ host: newHostScore, away: newAwayScore });
     
@@ -387,10 +404,10 @@ export default function ScoreboardScreen() {
       id: `temp-${Date.now()}`,
       match_id: matchId,
       set_index: currentSetIndex,
-      event_type: 'score',
+      event_type: eventType,
       team_type: actionTeam,
-      player_id: player?.user_id || null,
-      player_name: player?.full_name || null,
+      player_id: savedPlayerId,
+      player_name: savedPlayerName,
       host_score: newHostScore,
       away_score: newAwayScore,
       is_canceled: false
@@ -400,10 +417,10 @@ export default function ScoreboardScreen() {
     await supabase.from('match_events').insert({
       match_id: matchId,
       set_index: currentSetIndex,
-      event_type: 'score',
+      event_type: eventType,
       team_type: actionTeam,
-      player_id: player?.user_id || null,
-      player_name: player?.full_name || null,
+      player_id: savedPlayerId,
+      player_name: savedPlayerName,
       host_score: newHostScore,
       away_score: newAwayScore
     });
@@ -417,15 +434,21 @@ export default function ScoreboardScreen() {
     const isHost = actionTeam === 'host';
     const targetRosterStr = isHost ? match?.host_roster : match?.away_roster;
 
-    const rosterMap = parseSetRosterMap(targetRosterStr);
-
-    const currentSetList: string[] = rosterMap[currentSetIndex] || rosterMap[0] || [];
-    const updatedSetList = currentSetList
-      .filter(id => id !== outMember.user_id && !safeIncludes(id, outMember.user_id))
+    const formMap = parseSetFormationMap(targetRosterStr);
+    const currentForm = formMap[currentSetIndex] || parseSetFormation(targetRosterStr, currentSetIndex);
+    const courtIds = (currentForm.court.length > 0 ? currentForm.court : (parseSetRosterMap(targetRosterStr)[currentSetIndex] || parseSetRosterMap(targetRosterStr)[0] || []));
+    const updatedCourt = courtIds
+      .filter((id) => id !== outMember.user_id && !safeIncludes(id, outMember.user_id))
       .concat(inMember.user_id);
-
-    rosterMap[currentSetIndex] = updatedSetList;
-    const updatedRosterJson = JSON.stringify(rosterMap);
+    const updatedBench = (currentForm.bench || [])
+      .filter((id) => id !== inMember.user_id && !safeIncludes(id, inMember.user_id))
+      .concat(outMember.user_id);
+    formMap[currentSetIndex] = {
+      court: updatedCourt,
+      bench: updatedBench,
+      late: (currentForm.late || []).filter((id) => id !== inMember.user_id && id !== outMember.user_id),
+    };
+    const updatedRosterJson = JSON.stringify(formMap);
 
     const tempEvent: MatchEvent = {
       id: `temp-${Date.now()}`,
@@ -476,8 +499,11 @@ export default function ScoreboardScreen() {
     history: string[],
     extraLive?: { host: number; away: number } | null,
     rosterOverride?: { host?: ReturnType<typeof parseRosterJson>; away?: ReturnType<typeof parseRosterJson> },
+    formationOverride?: { host?: { [idx: number]: SetFormation }; away?: { [idx: number]: SetFormation } },
   ) => {
     if (!matchId) return;
+    const hostForm = formationOverride?.host || parseSetFormationMap(match?.host_roster);
+    const awayForm = formationOverride?.away || parseSetFormationMap(match?.away_roster);
     const hostRoster = rosterOverride?.host || parseRosterJson(match?.host_roster);
     const awayRoster = rosterOverride?.away || parseRosterJson(match?.away_roster);
     const records: MatchSetRecord[] = history.map((s, idx) => {
@@ -486,8 +512,16 @@ export default function ScoreboardScreen() {
         setNumber: idx + 1,
         hostScore: h || 0,
         awayScore: a || 0,
-        hostLineup: hostRoster[idx] || [],
-        awayLineup: awayRoster[idx] || [],
+        hostLineup: hostForm[idx]?.court || hostRoster[idx] || [],
+        awayLineup: awayForm[idx]?.court || awayRoster[idx] || [],
+        hostBench: hostForm[idx]?.bench || [],
+        hostLate: hostForm[idx]?.late || [],
+        awayBench: awayForm[idx]?.bench || [],
+        awayLate: awayForm[idx]?.late || [],
+        hostFrontCount: hostForm[idx]?.frontCount,
+        hostBackCount: hostForm[idx]?.backCount,
+        awayFrontCount: awayForm[idx]?.frontCount,
+        awayBackCount: awayForm[idx]?.backCount,
         isClosed: true,
       };
     });
@@ -498,8 +532,16 @@ export default function ScoreboardScreen() {
           setNumber: liveIdx + 1,
           hostScore: extraLive.host,
           awayScore: extraLive.away,
-          hostLineup: hostRoster[liveIdx] || hostRoster[0] || [],
-          awayLineup: awayRoster[liveIdx] || awayRoster[0] || [],
+          hostLineup: hostForm[liveIdx]?.court || hostRoster[liveIdx] || hostRoster[0] || [],
+          awayLineup: awayForm[liveIdx]?.court || awayRoster[liveIdx] || awayRoster[0] || [],
+          hostBench: hostForm[liveIdx]?.bench || hostForm[0]?.bench || [],
+          hostLate: hostForm[liveIdx]?.late || hostForm[0]?.late || [],
+          awayBench: awayForm[liveIdx]?.bench || awayForm[0]?.bench || [],
+          awayLate: awayForm[liveIdx]?.late || awayForm[0]?.late || [],
+          hostFrontCount: hostForm[liveIdx]?.frontCount || hostForm[0]?.frontCount,
+          hostBackCount: hostForm[liveIdx]?.backCount || hostForm[0]?.backCount,
+          awayFrontCount: awayForm[liveIdx]?.frontCount || awayForm[0]?.frontCount,
+          awayBackCount: awayForm[liveIdx]?.backCount || awayForm[0]?.backCount,
           isClosed: false,
         });
       }
@@ -518,16 +560,113 @@ export default function ScoreboardScreen() {
   };
 
   const changeCurrentSet = (idx: number) => {
-    if (idx === currentSetIndex) return;
+    if (idx === currentSetIndex) {
+      resetSetUiState();
+      recalcScores(events.filter((e) => Number(e.set_index) === idx), idx);
+      return;
+    }
     setCurrentSetIndex(idx);
     currentSetIndexRef.current = idx;
-    recalcScores(events, idx);
     resetSetUiState();
+    recalcScores(events.filter((e) => Number(e.set_index) === idx), idx);
+  };
+
+  const visibleSetCount = useMemo(() => {
+    const decided = isBestOfFiveDecided(
+      setHistory.map((s) => {
+        const [h, a] = String(s).split(':').map(Number);
+        return { hostScore: h || 0, awayScore: a || 0 };
+      })
+    );
+    return decided
+      ? Math.max(1, setHistory.length)
+      : Math.min(Math.max(setHistory.length + 1, 1), MAX_SETS);
+  }, [setHistory]);
+
+  const handleRequestDeleteSet = (idx: number) => {
+    if (myRole === 'spectator') return;
+    setPendingDeleteSet(idx);
+  };
+
+  const handleConfirmDeleteSet = async () => {
+    const idx = pendingDeleteSet;
+    setPendingDeleteSet(null);
+    if (idx == null || !matchId) return;
+    setActionLoading(true);
+    try {
+      await deleteSetAndReindex(matchId, idx);
+      const nextHistory = setHistory.filter((_, i) => i !== idx);
+      const remainingEvents = events
+        .filter((e) => Number(e.set_index) !== idx)
+        .map((e) => Number(e.set_index) > idx ? { ...e, set_index: Number(e.set_index) - 1 } : e);
+      setEvents(remainingEvents);
+      setSetScoresHistory(nextHistory);
+      setHistoryRef.current = nextHistory;
+
+      const hostForm = parseSetFormationMap(match?.host_roster);
+      const awayForm = parseSetFormationMap(match?.away_roster);
+      const shiftForm = (form: { [k: number]: SetFormation }) => {
+        const next: { [k: number]: SetFormation } = {};
+        Object.keys(form).forEach((key) => {
+          const n = Number(key);
+          if (n === idx) return;
+          next[n > idx ? n - 1 : n] = form[n];
+        });
+        return next;
+      };
+      const nextHostForm = shiftForm(hostForm);
+      const nextAwayForm = shiftForm(awayForm);
+      const liveNeeded = nextHistory.length < MAX_SETS && !isBestOfFiveDecided(
+        nextHistory.map((s) => {
+          const [h, a] = String(s).split(':').map(Number);
+          return { hostScore: h || 0, awayScore: a || 0 };
+        })
+      );
+      await persistSetsFromHistory(nextHistory, liveNeeded ? { host: 0, away: 0 } : null, {
+        host: Object.fromEntries(Object.entries(nextHostForm).map(([k, v]) => [k, v.court])),
+        away: Object.fromEntries(Object.entries(nextAwayForm).map(([k, v]) => [k, v.court])),
+      }, { host: nextHostForm, away: nextAwayForm });
+      setMatch((prev) => prev ? {
+        ...prev,
+        set_scores: nextHistory.join(', ') || null,
+        host_roster: JSON.stringify(nextHostForm),
+        away_roster: JSON.stringify(nextAwayForm),
+      } : prev);
+
+      const nextIdx = Math.max(0, Math.min(idx > 0 ? idx - 1 : 0, Math.max(0, nextHistory.length)));
+      setCurrentSetIndex(nextIdx);
+      currentSetIndexRef.current = nextIdx;
+      recalcScores(remainingEvents, nextIdx);
+      resetSetUiState();
+    } catch (e: any) {
+      Alert.alert('오류', e?.message || '세트 삭제에 실패했습니다.');
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const handlePressTimelineEvent = (event: MatchEvent) => {
+    if (myRole === 'spectator') return;
+    setPendingDeleteEvent(event);
+  };
+
+  const handleConfirmDeleteEvent = async () => {
+    const target = pendingDeleteEvent;
+    setPendingDeleteEvent(null);
+    if (!target || String(target.id).startsWith('temp-')) {
+      if (target) setEvents((prev) => prev.filter((e) => e.id !== target.id));
+      return;
+    }
+    const nextEvents = events.filter((e) => e.id !== target.id);
+    setEvents(nextEvents);
+    recalcScores(nextEvents, currentSetIndex);
+    resetSetUiState();
+    await supabase.from('match_events').delete().eq('id', target.id);
   };
 
   const handleUndoEvent = async () => {
     if (myRole === 'spectator' || actionLoading) return;
-    const validEvents = events.filter(e => e.set_index === currentSetIndex && !e.is_canceled);
+    const validEvents = events.filter(e => Number(e.set_index) === currentSetIndex && !e.is_canceled);
     if (validEvents.length === 0) return;
     const lastEvent = validEvents[validEvents.length - 1];
 
@@ -599,18 +738,14 @@ export default function ScoreboardScreen() {
 
   const handleOpenFinishMatch = () => {
     if (myRole === 'spectator') return;
+    setFinishModalVisible(true);
+  };
 
+  const handleConfirmFinishChoice = async (winner: string) => {
     if (isIntramural) {
-      setFinishModalVisible(true);
+      await handleConfirmIntramuralFinish(winner);
     } else {
-      Alert.alert(
-        '🏆 경기 최종 마감',
-        '현재 세트 점수를 자동 마감하고 경기를 최종 종료합니다.',
-        [
-          { text: '취소', style: 'cancel' },
-          { text: '최종 마감', onPress: () => processOfficialMatchFinish() }
-        ]
-      );
+      await processOfficialMatchFinish(winner);
     }
   };
 
@@ -639,7 +774,7 @@ export default function ScoreboardScreen() {
     }
   };
 
-  const processOfficialMatchFinish = async () => {
+  const processOfficialMatchFinish = async (winnerOverride?: string) => {
     setActionLoading(true);
     try {
       const finalHistory = closeLiveSetIntoHistory(setHistory);
@@ -658,8 +793,13 @@ export default function ScoreboardScreen() {
         if (h > a) hostSetWins++;
         else if (a > h) awaySetWins++;
       });
-      if (hostSetWins > awaySetWins) winningTeam = match?.host_team_name || '';
-      else if (awaySetWins > hostSetWins) winningTeam = match?.away_team_name || '';
+      if (winnerOverride) {
+        winningTeam = winnerOverride;
+      } else if (hostSetWins > awaySetWins) {
+        winningTeam = match?.host_team_name || '';
+      } else if (awaySetWins > hostSetWins) {
+        winningTeam = match?.away_team_name || '';
+      }
 
       const updateData = {
         status: 'completed',
@@ -690,6 +830,7 @@ export default function ScoreboardScreen() {
       Alert.alert('오류', e.message);
     } finally {
       setActionLoading(false);
+      setFinishModalVisible(false);
     }
   };
 
@@ -738,17 +879,62 @@ export default function ScoreboardScreen() {
 
   const getSetRosters = (isHost: boolean) => {
     const rosterRaw = isHost ? match?.host_roster : match?.away_roster;
+    const side = isHost ? 'host' : 'away';
     const baseMembers = isHost || isIntramural ? hostMembers : awayMembers;
-    const rosterMap = parseSetRosterMap(rosterRaw);
-    const setRoster: string[] = rosterMap[currentSetIndex] || rosterMap[0] || [];
+    const formation = parseSetFormation(rosterRaw, currentSetIndex);
+    const frontCount = clampLineCount(formation.frontCount, 3);
+    const backCount = clampLineCount(formation.backCount, 3);
+    const slotTotal = frontCount + backCount;
+    const rawCourt = formation.court.length > 0
+      ? formation.court
+      : (parseSetRosterMap(rosterRaw)[currentSetIndex] || parseSetRosterMap(rosterRaw)[0] || []);
+    const benchIds = formation.bench || [];
+    const lateIds = formation.late || [];
 
-    if (Array.isArray(setRoster) && setRoster.length > 0) {
-      const court = baseMembers.filter(m => safeIncludes(setRoster, m.user_id));
-      const bench = baseMembers.filter(m => !safeIncludes(setRoster, m.user_id));
-      return { court, bench };
+    const hasFormation = rawCourt.length > 0 || benchIds.length > 0 || lateIds.length > 0 || !!formation.frontCount || !!formation.backCount;
+    if (!hasFormation) {
+      return { court: baseMembers, bench: [] as Member[], late: [] as Member[], formation };
     }
 
-    return { court: baseMembers, bench: [] };
+    const slots = [...rawCourt];
+    while (slots.length < slotTotal) slots.push(makeAnonSlotId(slots.length));
+    const court = slots.slice(0, slotTotal).map((id, idx) => {
+      const real = baseMembers.find((m) => m.user_id === id || listHasUser([id], m.user_id) || safeIncludes(id, m.user_id));
+      if (real) return real;
+      return { user_id: `${side}:${isAnonymousSlotId(id) ? id : makeAnonSlotId(idx)}`, full_name: ANONYMOUS_PLAYER_NAME };
+    });
+    const courtRealIds = court.filter((m) => !isAnonymousPlayer(m)).map((m) => m.user_id);
+    const bench = baseMembers.filter((m) => listHasUser(benchIds, m.user_id) || (!listHasUser(courtRealIds, m.user_id) && !listHasUser(lateIds, m.user_id)));
+    return { court, bench, late: baseMembers.filter((m) => listHasUser(lateIds, m.user_id)), formation };
+  };
+
+  const openFormation = (team: 'host' | 'away') => {
+    if (myRole === 'spectator') return;
+    setFormationTeam(team);
+    setFormationVisible(true);
+  };
+
+  const handleSaveFormation = async (formation: SetFormation) => {
+    const isHost = formationTeam === 'host';
+    const formMap = parseSetFormationMap(isHost ? match?.host_roster : match?.away_roster);
+    formMap[currentSetIndex] = formation;
+    const updatedRosterJson = JSON.stringify(formMap);
+    const updatePayload = isHost ? { host_roster: updatedRosterJson } : { away_roster: updatedRosterJson };
+    setMatch((prev) => prev ? { ...prev, ...updatePayload } : prev);
+    setFormationVisible(false);
+    await supabase.from('matches').update(updatePayload).eq('id', matchId);
+    await persistSetsFromHistory(
+      setHistory,
+      currentSetIndex >= setHistory.length ? { host: currentScores.host, away: currentScores.away } : null,
+      {
+        host: parseRosterJson(isHost ? updatedRosterJson : match?.host_roster),
+        away: parseRosterJson(!isHost ? updatedRosterJson : match?.away_roster),
+      },
+      {
+        host: isHost ? formMap : parseSetFormationMap(match?.host_roster),
+        away: !isHost ? formMap : parseSetFormationMap(match?.away_roster),
+      },
+    );
   };
 
   const isHostMaster = match?.recorder_host_id && !match?.recorder_away_id;
@@ -834,28 +1020,30 @@ export default function ScoreboardScreen() {
           </TouchableOpacity>
 
           <View style={styles.setTabNavRow}>
-            {[0, 1, 2, 3, 4].map(idx => {
-              const decided = isBestOfFiveDecided(
-                setHistory.map((s) => {
-                  const [h, a] = String(s).split(':').map(Number);
-                  return { hostScore: h || 0, awayScore: a || 0 };
-                })
-              );
-              const maxTab = decided
-                ? Math.max(0, setHistory.length - 1)
-                : Math.min(setHistory.length, MAX_SETS - 1);
-              if (idx > maxTab) return null;
+            {Array.from({ length: visibleSetCount }).map((_, idx) => {
               const isCurrent = idx === currentSetIndex;
               return (
-                <TouchableOpacity
-                  key={idx}
-                  style={[styles.setNavPill, isCurrent && styles.setNavPillActive]}
-                  onPress={() => changeCurrentSet(idx)}
-                >
-                  <Text style={[styles.setNavPillText, isCurrent && styles.setNavPillTextActive]}>
-                    {idx + 1}세트 {isCurrent ? '(LIVE)' : ''}
-                  </Text>
-                </TouchableOpacity>
+                <View key={idx} style={[styles.setNavPill, isCurrent && styles.setNavPillActive]}>
+                  <TouchableOpacity
+                    onPress={() => changeCurrentSet(idx)}
+                    onLongPress={() => handleRequestDeleteSet(idx)}
+                    delayLongPress={380}
+                    style={styles.setNavPillHit}
+                  >
+                    <Text style={[styles.setNavPillText, isCurrent && styles.setNavPillTextActive]}>
+                      {idx + 1}세트 {isCurrent ? '(LIVE)' : ''}
+                    </Text>
+                  </TouchableOpacity>
+                  {myRole !== 'spectator' ? (
+                    <TouchableOpacity
+                      style={styles.setNavClose}
+                      onPress={() => handleRequestDeleteSet(idx)}
+                      hitSlop={8}
+                    >
+                      <Text style={styles.setNavCloseText}>×</Text>
+                    </TouchableOpacity>
+                  ) : null}
+                </View>
               );
             })}
           </View>
@@ -900,6 +1088,9 @@ export default function ScoreboardScreen() {
                 <TouchableOpacity style={styles.glassBtnCompact} onPress={() => handleOpenEditModal()}>
                   <Text style={styles.glassBtnText}>✏️ 점수 보정</Text>
                 </TouchableOpacity>
+                <TouchableOpacity style={styles.glassBtnCompact} onPress={() => openFormation(leftTeamData.key)}>
+                  <Text style={styles.glassBtnText}>📐 포메이션</Text>
+                </TouchableOpacity>
                 <TouchableOpacity style={styles.glassBtnCompact} onPress={() => openActionModal(leftTeamData.key, 'sub')}>
                   <Text style={styles.glassBtnText}>🔄 선수 교체</Text>
                 </TouchableOpacity>
@@ -931,6 +1122,9 @@ export default function ScoreboardScreen() {
                 <TouchableOpacity style={styles.glassBtnCompact} onPress={() => handleOpenEditModal()}>
                   <Text style={styles.glassBtnText}>✏️ 점수 보정</Text>
                 </TouchableOpacity>
+                <TouchableOpacity style={styles.glassBtnCompact} onPress={() => openFormation(rightTeamData.key)}>
+                  <Text style={styles.glassBtnText}>📐 포메이션</Text>
+                </TouchableOpacity>
                 <TouchableOpacity style={styles.glassBtnCompact} onPress={() => openActionModal(rightTeamData.key, 'sub')}>
                   <Text style={styles.glassBtnText}>🔄 선수 교체</Text>
                 </TouchableOpacity>
@@ -955,27 +1149,28 @@ export default function ScoreboardScreen() {
 
       <View style={styles.bottomControlBar}>
         <View style={styles.timelineArea}>
-          <ScoreTimeline 
-            key={timelineEpoch}
-            events={events} 
-            canControl={myRole !== 'spectator'} 
-            displayHostName={displayHostName} 
+          <ScoreTimeline
+            key={`set-${currentSetIndex}-ep-${timelineEpoch}`}
+            events={events.filter((e) => Number(e.set_index) === Number(currentSetIndex))}
+            canControl={myRole !== 'spectator'}
+            displayHostName={displayHostName}
             displayAwayName={displayAwayName}
             currentSetIndex={currentSetIndex}
-            onEditEvent={handleEditEventTrigger} 
+            onPressEvent={handlePressTimelineEvent}
+            onEditEvent={handleEditEventTrigger}
           />
         </View>
 
         {myRole !== 'spectator' && (
           <View style={styles.actionButtonsArea}>
             <TouchableOpacity style={styles.undoBtn} onPress={handleUndoEvent}>
-              <Text style={styles.undoBtnText} numberOfLines={1}>↺ 취소 (Undo)</Text>
+              <Text style={styles.undoBtnText} numberOfLines={1}>↺ 취소</Text>
             </TouchableOpacity>
             <TouchableOpacity style={styles.finishSetBtn} onPress={handleFinishSet}>
-              <Text style={styles.finishSetBtnText} numberOfLines={1}>🏁 세트 마감</Text>
+              <Text style={styles.finishSetBtnText} numberOfLines={1}>🏁 세트마감</Text>
             </TouchableOpacity>
             <TouchableOpacity style={styles.finishMatchBtn} onPress={handleOpenFinishMatch}>
-              <Text style={styles.finishMatchBtnText} numberOfLines={1}>🏆 경기 최종 종료</Text>
+              <Text style={styles.finishMatchBtnText} numberOfLines={1}>🏆 경기종료</Text>
             </TouchableOpacity>
           </View>
         )}
@@ -985,11 +1180,22 @@ export default function ScoreboardScreen() {
         visible={actionModalVisible}
         mode={actionMode}
         teamName={actionTeam === 'host' ? displayHostName : displayAwayName}
+        opponentTeamName={actionTeam === 'host' ? displayAwayName : displayHostName}
         courtMembers={getSetRosters(actionTeam === 'host').court}
         benchMembers={getSetRosters(actionTeam === 'host').bench}
-        onClose={() => { setActionModalVisible(false); if (actionMode === 'score') handleScoreConfirm(null); }}
+        opponentCourtMembers={getSetRosters(actionTeam !== 'host').court}
+        onClose={() => { setActionModalVisible(false); setEditingEventId(null); }}
         onScoreConfirm={handleScoreConfirm}
         onSubConfirm={handleSubConfirm}
+      />
+
+      <FormationModal
+        visible={formationVisible}
+        teamName={formationTeam === 'host' ? displayHostName : displayAwayName}
+        members={formationTeam === 'host' || isIntramural ? hostMembers : awayMembers}
+        initial={parseSetFormation(formationTeam === 'host' ? match?.host_roster : match?.away_roster, currentSetIndex)}
+        onClose={() => setFormationVisible(false)}
+        onSave={handleSaveFormation}
       />
 
       <Modal visible={editModalVisible} animationType="fade" transparent={true}>
@@ -1027,20 +1233,86 @@ export default function ScoreboardScreen() {
       <Modal visible={finishModalVisible} animationType="fade" transparent={true}>
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>🏆 팀 내전 경기 최종 마감</Text>
-            <Text style={styles.modalSub}>오늘의 팀 내전 연습경기 결과를 선택하여 확정하세요.</Text>
-            <View style={{ gap: 8, marginVertical: 14 }}>
-              <TouchableOpacity style={[styles.modalSaveBtn, { backgroundColor: '#0284C7', paddingVertical: 14 }]} onPress={() => handleConfirmIntramuralFinish(displayHostName)}>
-                <Text style={styles.modalSaveBtnText}>🥇 🔵 [{displayHostName}] 승리</Text>
+            <Text style={styles.modalTitle}>{isIntramural ? '🏆 팀 내전 경기 최종 마감' : '🏆 공식전 경기 최종 마감'}</Text>
+            <Text style={styles.modalSub}>승 / 무 / 패 결과를 선택하여 경기를 확정하세요.</Text>
+            <View style={{ gap: 10, marginVertical: 14, width: '100%' }}>
+              <TouchableOpacity style={[styles.finishChoiceBtn, { backgroundColor: '#0284C7' }]} onPress={() => handleConfirmFinishChoice(isIntramural ? displayHostName : (match?.host_team_name || displayHostName))} activeOpacity={0.85}>
+                <Text style={{ color: '#FFFFFF', fontSize: 15, fontWeight: '900', textAlign: 'center' }}>🥇 🔵 {displayHostName} 승리</Text>
               </TouchableOpacity>
-              <TouchableOpacity style={[styles.modalSaveBtn, { backgroundColor: '#BE123C', paddingVertical: 14 }]} onPress={() => handleConfirmIntramuralFinish(displayAwayName)}>
-                <Text style={styles.modalSaveBtnText}>🥇 🔴 [{displayAwayName}] 승리</Text>
+              <TouchableOpacity style={[styles.finishChoiceBtn, { backgroundColor: '#BE123C' }]} onPress={() => handleConfirmFinishChoice(isIntramural ? displayAwayName : (match?.away_team_name || displayAwayName))} activeOpacity={0.85}>
+                <Text style={{ color: '#FFFFFF', fontSize: 15, fontWeight: '900', textAlign: 'center' }}>🥇 🔴 {displayAwayName} 승리</Text>
               </TouchableOpacity>
-              <TouchableOpacity style={[styles.modalCancelBtn, { paddingVertical: 14, backgroundColor: '#334155' }]} onPress={() => handleConfirmIntramuralFinish('draw')}>
-                <Text style={[styles.modalCancelBtnText, { color: '#FFFFFF' }]}>🤝 무승부 (연습경기 마감)</Text>
+              <TouchableOpacity style={[styles.finishChoiceBtn, { backgroundColor: '#334155' }]} onPress={() => handleConfirmFinishChoice('draw')} activeOpacity={0.85}>
+                <Text style={{ color: '#FFFFFF', fontSize: 15, fontWeight: '900', textAlign: 'center' }}>🤝 무승부</Text>
               </TouchableOpacity>
             </View>
-            <TouchableOpacity style={styles.modalCancelBtn} onPress={() => setFinishModalVisible(false)}><Text style={styles.modalCancelBtnText}>취소</Text></TouchableOpacity>
+            <TouchableOpacity style={styles.modalCancelBtn} onPress={() => setFinishModalVisible(false)}>
+              <Text style={{ color: '#FFFFFF', fontSize: 15, fontWeight: '900', textAlign: 'center' }}>취소</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal visible={pendingDeleteSet !== null} animationType="fade" transparent={true}>
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>세트 삭제</Text>
+            <Text style={styles.modalSub}>
+              {pendingDeleteSet !== null ? `${pendingDeleteSet + 1}세트를 삭제하시겠습니까?` : ''}
+            </Text>
+            <Text style={styles.modalWarn}>해당 세트의 타임라인 기록이 함께 삭제되고, 이후 세트 번호가 당겨집니다.</Text>
+            <View style={styles.modalBtnRow}>
+              <TouchableOpacity style={styles.modalCancelBtn} onPress={() => setPendingDeleteSet(null)}>
+                <Text style={styles.modalCancelBtnText}>닫기</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={[styles.modalSaveBtn, { backgroundColor: '#BE123C' }]} onPress={handleConfirmDeleteSet}>
+                <Text style={styles.modalSaveBtnText}>세트 삭제</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal visible={!!pendingDeleteEvent} animationType="fade" transparent={true}>
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>타임라인 기록 삭제</Text>
+            <Text style={styles.modalSub}>
+              {pendingDeleteEvent
+                ? `${pendingDeleteEvent.is_canceled ? '취소된 항목을 ' : ''}이 기록을 완전히 삭제할까요?`
+                : ''}
+            </Text>
+            <Text style={styles.modalWarn}>
+              {pendingDeleteEvent
+                ? `${pendingDeleteEvent.host_score}:${pendingDeleteEvent.away_score} · ${pendingDeleteEvent.player_name || '무기명'} · ${pendingDeleteEvent.event_type}`
+                : ''}
+            </Text>
+            <View style={styles.modalBtnRow}>
+              {pendingDeleteEvent && !pendingDeleteEvent.is_canceled && pendingDeleteEvent.event_type !== 'sub' ? (
+                <TouchableOpacity
+                  style={styles.modalCancelBtn}
+                  onPress={() => {
+                    const ev = pendingDeleteEvent;
+                    setPendingDeleteEvent(null);
+                    if (ev) handleEditEventTrigger(ev);
+                  }}
+                >
+                  <Text style={styles.modalCancelBtnText}>선수 수정</Text>
+                </TouchableOpacity>
+              ) : (
+                <TouchableOpacity style={styles.modalCancelBtn} onPress={() => setPendingDeleteEvent(null)}>
+                  <Text style={styles.modalCancelBtnText}>닫기</Text>
+                </TouchableOpacity>
+              )}
+              <TouchableOpacity style={[styles.modalSaveBtn, { backgroundColor: '#BE123C' }]} onPress={handleConfirmDeleteEvent}>
+                <Text style={styles.modalSaveBtnText}>완전 삭제</Text>
+              </TouchableOpacity>
+            </View>
+            {pendingDeleteEvent && !pendingDeleteEvent.is_canceled && pendingDeleteEvent.event_type !== 'sub' ? (
+              <TouchableOpacity style={[styles.modalCancelBtn, { marginTop: 8 }]} onPress={() => setPendingDeleteEvent(null)}>
+                <Text style={styles.modalCancelBtnText}>닫기</Text>
+              </TouchableOpacity>
+            ) : null}
           </View>
         </View>
       </Modal>
@@ -1068,11 +1340,14 @@ const styles = StyleSheet.create({
   headerSlimLeft: { flexDirection: 'row', alignItems: 'center', gap: 6, flex: 1.5 },
   backBtnSlim: { width: 24, height: 24, justifyContent: 'center', alignItems: 'center' },
   backTextSlim: { fontSize: 26, color: '#FFFFFF', lineHeight: 26 },
-  setTabNavRow: { flexDirection: 'row', gap: 4 },
-  setNavPill: { paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4, backgroundColor: '#1E293B' },
+  setTabNavRow: { flexDirection: 'row', gap: 4, alignItems: 'center' },
+  setNavPill: { flexDirection: 'row', alignItems: 'center', paddingLeft: 6, paddingRight: 2, paddingVertical: 2, borderRadius: 4, backgroundColor: '#1E293B' },
   setNavPillActive: { backgroundColor: '#2563EB' },
+  setNavPillHit: { paddingVertical: 2, paddingRight: 2 },
   setNavPillText: { fontSize: 10.5, fontWeight: '700', color: '#94A3B8' },
   setNavPillTextActive: { color: '#FFFFFF', fontWeight: '900' },
+  setNavClose: { width: 16, height: 16, borderRadius: 8, alignItems: 'center', justifyContent: 'center', marginLeft: 2 },
+  setNavCloseText: { color: '#FCA5A5', fontSize: 13, fontWeight: '900', lineHeight: 14 },
   setHistoryCompact: { fontSize: 10, color: '#38BDF8', fontWeight: '700', marginLeft: 4 },
   headerSlimCenter: { flex: 2, alignItems: 'center', justifyContent: 'center' },
   recorderInfoTextSlim: { fontSize: 11, color: '#CBD5E1', fontWeight: '800' },
@@ -1097,15 +1372,17 @@ const styles = StyleSheet.create({
   bigScoreNumber: { fontSize: 195, fontWeight: '900', color: '#FFFFFF', letterSpacing: -6, lineHeight: 180 },
   editHintText: { fontSize: 12, color: 'rgba(255, 255, 255, 0.85)', fontWeight: '800', marginTop: -5 },
   spectatorHintText: { fontSize: 11, color: 'rgba(255, 255, 255, 0.5)', fontWeight: '700', marginTop: -5 },
-  bottomControlBar: { flexDirection: 'row', paddingHorizontal: 12, paddingVertical: 6, backgroundColor: '#0F172A', borderTopWidth: 1, borderTopColor: '#1E293B', alignItems: 'center' },
-  timelineArea: { flex: 1, marginRight: 10, minWidth: 0 },
-  actionButtonsArea: { flexDirection: 'row', gap: 6, flexShrink: 0, flexGrow: 0, alignItems: 'center' },
+  bottomControlBar: { flexDirection: 'row', paddingHorizontal: 10, paddingVertical: 8, backgroundColor: '#0F172A', borderTopWidth: 1, borderTopColor: '#1E293B', alignItems: 'stretch', minHeight: 104 },
+  timelineArea: { flex: 1, marginRight: 8, minWidth: 0, overflow: 'hidden', paddingRight: 4 },
+  actionButtonsArea: { flexDirection: 'column', gap: 6, flexShrink: 0, flexGrow: 0, justifyContent: 'center', paddingLeft: 8, borderLeftWidth: 1, borderLeftColor: '#1E293B', backgroundColor: '#0F172A', zIndex: 4 },
   undoBtn: { backgroundColor: '#334155', paddingHorizontal: 12, paddingVertical: 8, borderRadius: 8, alignItems: 'center', borderWidth: 1, borderColor: '#475569', flexShrink: 0 },
   undoBtnText: { color: '#F8FAFC', fontSize: 12, fontWeight: '800' },
-  finishSetBtn: { backgroundColor: '#2563EB', paddingHorizontal: 14, paddingVertical: 8, borderRadius: 8, alignItems: 'center', flexShrink: 0 },
+  finishSetBtn: { backgroundColor: '#2563EB', paddingHorizontal: 12, paddingVertical: 8, borderRadius: 8, alignItems: 'center', flexShrink: 0 },
   finishSetBtnText: { color: '#FFFFFF', fontSize: 12, fontWeight: '900' },
-  finishMatchBtn: { backgroundColor: '#9333EA', paddingHorizontal: 14, paddingVertical: 8, borderRadius: 8, alignItems: 'center', flexShrink: 0 },
+  finishMatchBtn: { backgroundColor: '#9333EA', paddingHorizontal: 12, paddingVertical: 8, borderRadius: 8, alignItems: 'center', flexShrink: 0 },
   finishMatchBtnText: { color: '#FFFFFF', fontSize: 12, fontWeight: '900' },
+  modalWarn: { fontSize: 12, color: '#FCA5A5', fontWeight: '700', marginBottom: 12, lineHeight: 16 },
+  finishChoiceBtn: { width: '100%', paddingVertical: 14, borderRadius: 10, alignItems: 'center', justifyContent: 'center', flexGrow: 0, flexShrink: 0 },
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.7)', justifyContent: 'center', alignItems: 'center', padding: 20 },
   modalContent: { backgroundColor: '#1E293B', borderRadius: 18, padding: 20, width: 400, maxWidth: '100%', borderWidth: 1, borderColor: '#334155' },
   roleModalContent: { backgroundColor: '#0F172A', borderRadius: 20, padding: 20, width: 400, maxWidth: '100%', borderWidth: 1, borderColor: '#334155', alignItems: 'center' },

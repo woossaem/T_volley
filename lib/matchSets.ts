@@ -1,5 +1,5 @@
 import { supabase } from './supabase';
-import { parseSetRosterMap, type SetRosterMap } from './roster';
+import { parseSetFormationMap, parseSetRosterMap, type SetFormation, type SetRosterMap } from './roster';
 
 export type { SetRosterMap };
 
@@ -9,6 +9,14 @@ export interface MatchSetRecord {
   awayScore: number;
   hostLineup: string[];
   awayLineup: string[];
+  hostBench?: string[];
+  hostLate?: string[];
+  awayBench?: string[];
+  awayLate?: string[];
+  hostFrontCount?: number;
+  hostBackCount?: number;
+  awayFrontCount?: number;
+  awayBackCount?: number;
   isClosed: boolean;
 }
 
@@ -65,6 +73,16 @@ export function rosterMapFromSets(sets: MatchSetRecord[], side: 'host' | 'away')
   const map: SetRosterMap = {};
   sets.forEach((set, idx) => {
     map[idx] = side === 'host' ? set.hostLineup : set.awayLineup;
+  });
+  return map;
+}
+
+export function formationMapFromSets(sets: MatchSetRecord[], side: 'host' | 'away'): { [idx: number]: SetFormation } {
+  const map: { [idx: number]: SetFormation } = {};
+  sets.forEach((set, idx) => {
+    map[idx] = side === 'host'
+      ? { court: set.hostLineup || [], bench: set.hostBench || [], late: set.hostLate || [], frontCount: set.hostFrontCount, backCount: set.hostBackCount }
+      : { court: set.awayLineup || [], bench: set.awayBench || [], late: set.awayLate || [], frontCount: set.awayFrontCount, backCount: set.awayBackCount };
   });
   return map;
 }
@@ -168,6 +186,8 @@ function snapshotFromLegacy(match: any, events: MatchEventLike[]): MatchSetsSnap
   const parsed = parseSetScoresString(match?.set_scores);
   const hostRoster = parseRosterJson(match?.host_roster);
   const awayRoster = parseRosterJson(match?.away_roster);
+  const hostForm = parseSetFormationMap(match?.host_roster);
+  const awayForm = parseSetFormationMap(match?.away_roster);
   const finished = isMatchRecordingFinished(match);
 
   const sets: MatchSetRecord[] = parsed.map((s, idx) => ({
@@ -176,6 +196,14 @@ function snapshotFromLegacy(match: any, events: MatchEventLike[]): MatchSetsSnap
     awayScore: s.away,
     hostLineup: hostRoster[idx] || hostRoster[0] || [],
     awayLineup: awayRoster[idx] || awayRoster[0] || [],
+    hostBench: hostForm[idx]?.bench || hostForm[0]?.bench || [],
+    hostLate: hostForm[idx]?.late || hostForm[0]?.late || [],
+    awayBench: awayForm[idx]?.bench || awayForm[0]?.bench || [],
+    awayLate: awayForm[idx]?.late || awayForm[0]?.late || [],
+    hostFrontCount: hostForm[idx]?.frontCount || hostForm[0]?.frontCount,
+    hostBackCount: hostForm[idx]?.backCount || hostForm[0]?.backCount,
+    awayFrontCount: awayForm[idx]?.frontCount || awayForm[0]?.frontCount,
+    awayBackCount: awayForm[idx]?.backCount || awayForm[0]?.backCount,
     isClosed: true,
   }));
 
@@ -211,6 +239,8 @@ export async function fetchMatchSets(matchId: string): Promise<MatchSetsSnapshot
     } else if (setRows && setRows.length > 0) {
       const hostRoster = parseRosterJson(match?.host_roster);
       const awayRoster = parseRosterJson(match?.away_roster);
+      const hostForm = parseSetFormationMap(match?.host_roster);
+      const awayForm = parseSetFormationMap(match?.away_roster);
       const sets: MatchSetRecord[] = setRows.map((row: any) => {
         const idx = Math.max(0, (row.set_number || 1) - 1);
         return {
@@ -219,6 +249,14 @@ export async function fetchMatchSets(matchId: string): Promise<MatchSetsSnapshot
           awayScore: row.away_score || 0,
           hostLineup: asStringArray(row.host_lineup).length > 0 ? asStringArray(row.host_lineup) : (hostRoster[idx] || []),
           awayLineup: asStringArray(row.away_lineup).length > 0 ? asStringArray(row.away_lineup) : (awayRoster[idx] || []),
+          hostBench: hostForm[idx]?.bench || hostForm[0]?.bench || [],
+          hostLate: hostForm[idx]?.late || hostForm[0]?.late || [],
+          awayBench: awayForm[idx]?.bench || awayForm[0]?.bench || [],
+          awayLate: awayForm[idx]?.late || awayForm[0]?.late || [],
+          hostFrontCount: hostForm[idx]?.frontCount || hostForm[0]?.frontCount,
+          hostBackCount: hostForm[idx]?.backCount || hostForm[0]?.backCount,
+          awayFrontCount: awayForm[idx]?.frontCount || awayForm[0]?.frontCount,
+          awayBackCount: awayForm[idx]?.backCount || awayForm[0]?.backCount,
           isClosed: !!row.is_closed,
         };
       });
@@ -241,8 +279,8 @@ export async function upsertMatchSets(matchId: string, sets: MatchSetRecord[]): 
   const scored = sets.filter((s) => s.isClosed || s.hostScore > 0 || s.awayScore > 0);
   const payload = {
     set_scores: formatSetScoresString(closed.length > 0 ? closed : scored),
-    host_roster: JSON.stringify(rosterMapFromSets(sets, 'host')),
-    away_roster: JSON.stringify(rosterMapFromSets(sets, 'away')),
+    host_roster: JSON.stringify(formationMapFromSets(sets, 'host')),
+    away_roster: JSON.stringify(formationMapFromSets(sets, 'away')),
   };
 
   await supabase.from('matches').update(payload).eq('id', matchId);
@@ -291,6 +329,26 @@ export function recordsFromDynamicScores(
     awayLineup: awayRosters[idx] || [],
     isClosed: allClosed || idx < scores.length - 1,
   }));
+}
+
+export async function deleteSetAndReindex(matchId: string, setIndex: number): Promise<void> {
+  const { data: eventRows } = await supabase
+    .from('match_events')
+    .select('id, set_index')
+    .eq('match_id', matchId);
+
+  const events = eventRows || [];
+  const toDelete = events.filter((e) => Number(e.set_index) === setIndex).map((e) => e.id);
+  const toShift = events.filter((e) => Number(e.set_index) > setIndex);
+
+  if (toDelete.length > 0) {
+    await supabase.from('match_events').delete().in('id', toDelete);
+  }
+  await Promise.all(
+    toShift.map((e) =>
+      supabase.from('match_events').update({ set_index: Number(e.set_index) - 1 }).eq('id', e.id)
+    )
+  );
 }
 
 export function dynamicScoresFromSets(sets: MatchSetRecord[]): Array<{ hostScore: number; awayScore: number }> {

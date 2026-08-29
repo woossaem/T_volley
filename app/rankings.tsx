@@ -16,7 +16,8 @@ import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
 import { Colors } from '../constants/Colors';
 import { formatTeamDisplayName } from '../lib/teamStatus';
-import { parseRosterUserIds, safeIncludes, safeNameText } from '../lib/roster';
+import { safeNameText } from '../lib/roster';
+import { addMatchPlayerStats, emptyPlayerCareerStats } from '../lib/playerStats';
 import UserProfileModal from '../components/UserProfileModal';
 import TeamReportModal from '../components/TeamReportModal';
 import StickyAdBanner from '../components/StickyAdBanner';
@@ -59,6 +60,10 @@ interface PersonalRankingData {
   draws: number;
   winRate: number;
   mannerTemp: number;
+  points: number;
+  faults: number;
+  setsPlayed: number;
+  setWinRate: number;
 }
 
 const getMatchSeasonCode = (dateStr: string) => {
@@ -297,19 +302,26 @@ export default function RankingScreen() {
       setQualifiedTeamRanks(qualified);
       setPendingTeamRanks(pending);
 
+      const eventsByMatch = new Map<string, any[]>();
+      const targetMatchIds = targetMatches.map((m: any) => m.id).filter(Boolean);
+      for (let i = 0; i < targetMatchIds.length; i += 80) {
+        const chunk = targetMatchIds.slice(i, i + 80);
+        const { data: evRows } = await supabase
+          .from('match_events')
+          .select('match_id, player_id, event_type, is_canceled')
+          .in('match_id', chunk)
+          .eq('is_canceled', false);
+        (evRows || []).forEach((e: any) => {
+          const list = eventsByMatch.get(e.match_id) || [];
+          list.push(e);
+          eventsByMatch.set(e.match_id, list);
+        });
+      }
+
       const pRanks: PersonalRankingData[] = (allProfiles || []).map((p: any) => {
-        let wins = 0, losses = 0, draws = 0;
-
+        const career = emptyPlayerCareerStats();
         targetMatches.forEach((m: any) => {
-          const inHost = safeIncludes(m.host_roster, p.id) || parseRosterUserIds(m.host_roster).includes(p.id);
-          const inAway = safeIncludes(m.away_roster, p.id) || parseRosterUserIds(m.away_roster).includes(p.id);
-
-          if (inHost || inAway) {
-            const myTeamInMatch = inHost ? m.host_team_name : m.away_team_name;
-            if (m.winner_team === myTeamInMatch) wins++;
-            else if (m.winner_team === 'draw' || m.winner_team === '무승부') draws++;
-            else losses++;
-          }
+          addMatchPlayerStats(career, p.id, m, eventsByMatch.get(m.id) || []);
         });
 
         let userRegion = userSchoolRegionMap.get(p.id);
@@ -319,7 +331,6 @@ export default function RankingScreen() {
         }
         if (!userRegion) userRegion = '지역 미설정';
 
-        const total = wins + losses + draws;
         return {
           userId: p.id,
           fullName: p.full_name || '선생님',
@@ -329,12 +340,16 @@ export default function RankingScreen() {
           gender: p.gender || '남성',
           avatarIcon: p.avatar_icon || '🏐',
           avatarUrl: p.avatar_url,
-          totalMatches: total,
-          wins,
-          losses,
-          draws,
-          winRate: total > 0 ? Math.round((wins / total) * 100) : 0,
+          totalMatches: career.matchesPlayed,
+          wins: career.matchWins,
+          losses: career.matchLosses,
+          draws: career.matchDraws,
+          winRate: career.matchWinRate,
           mannerTemp: p.manner_temp || 36.5,
+          points: career.points,
+          faults: career.faults,
+          setsPlayed: career.setsPlayed,
+          setWinRate: career.setWinRate,
         };
       });
 
@@ -770,7 +785,9 @@ export default function RankingScreen() {
 
                     <View style={{ alignItems: 'flex-end' }}>
                       <Text style={[styles.winRateNum, { color: '#0284C7' }]}>{item.wins}승</Text>
-                      <Text style={styles.winRateLabel}>{item.totalMatches}전 (승률 {item.winRate}%)</Text>
+                      <Text style={styles.winRateLabel}>{item.totalMatches}전 · 승률 {item.winRate}%</Text>
+                      <Text style={styles.personalStatLine}>득점 {item.points} · 범실 {item.faults}</Text>
+                      <Text style={styles.personalStatLine}>{item.setsPlayed}세트 출전 · 세트승률 {item.setWinRate}%</Text>
                       <Text style={styles.mannerTempTag}>🌡️ {item.mannerTemp.toFixed(1)}°C</Text>
                     </View>
                   </TouchableOpacity>
@@ -921,6 +938,7 @@ const styles = StyleSheet.create({
   winRateBox: { alignItems: 'flex-end', minWidth: 80 },
   winRateNum: { fontSize: 17, fontWeight: '900', color: Colors.primary },
   winRateLabel: { fontSize: 11, color: Colors.textMuted, marginTop: 2 },
+  personalStatLine: { fontSize: 10, fontWeight: '700', color: '#0369A1', marginTop: 2 },
 
   mannerTempTag: { fontSize: 10, fontWeight: '800', color: '#D97706', marginTop: 2 },
 

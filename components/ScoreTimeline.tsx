@@ -5,7 +5,7 @@ export interface MatchEvent {
   id: string;
   match_id?: string;
   set_index: number;
-  event_type: 'score' | 'sub' | 'manual';
+  event_type: 'score' | 'sub' | 'manual' | 'fault';
   team_type: 'host' | 'away';
   player_id?: string | null;
   player_name?: string | null;
@@ -22,46 +22,61 @@ interface Props {
   displayHostName: string;
   displayAwayName: string;
   currentSetIndex: number;
-  onEditEvent: (event: MatchEvent) => void;
+  onPressEvent?: (event: MatchEvent) => void;
+  onEditEvent?: (event: MatchEvent) => void;
 }
 
-export default function ScoreTimeline({ events, canControl, displayHostName, displayAwayName, currentSetIndex, onEditEvent }: Props) {
+export default function ScoreTimeline({
+  events,
+  canControl,
+  displayHostName,
+  displayAwayName,
+  currentSetIndex,
+  onPressEvent,
+  onEditEvent,
+}: Props) {
   const scrollViewRef = useRef<ScrollView>(null);
+  const setKey = Number(currentSetIndex);
 
-  // 💡 [수정 1] 현재 선택된 세트(currentSetIndex)의 이벤트만 정밀 필터링
   const currentSetEvents = useMemo(() => {
-    return events.filter(e => e.set_index === currentSetIndex);
-  }, [events, currentSetIndex]);
+    return events.filter((e) => Number(e.set_index) === setKey);
+  }, [events, setKey]);
 
-  // 💡 [수정 2] 신규 득점 발생 또는 세트 변경 시 최신 위치(우측 끝)로 자동 포커싱 스크롤
   useEffect(() => {
     const timer = setTimeout(() => {
       scrollViewRef.current?.scrollToEnd({ animated: true });
-    }, 100);
+    }, 80);
     return () => clearTimeout(timer);
-  }, [currentSetEvents.length, currentSetIndex]);
+  }, [currentSetEvents.length, setKey, currentSetEvents.map((e) => e.id).join('|')]);
 
   return (
-    <ScrollView 
+    <ScrollView
       ref={scrollViewRef}
-      horizontal 
-      showsHorizontalScrollIndicator={false} 
+      horizontal
+      showsHorizontalScrollIndicator={false}
+      style={styles.scroller}
       contentContainerStyle={styles.scroll}
     >
-      {currentSetEvents.length === 0 && <Text style={styles.emptyText}>⏱️ 실시간 득점 흐름 (기록 없음)</Text>}
-      
+      {currentSetEvents.length === 0 && (
+        <Text style={styles.emptyText}>{displayHostName} vs {displayAwayName} · {setKey + 1}세트 기록 없음</Text>
+      )}
+
       {currentSetEvents.length > 0 && (
         <View style={styles.trackContainer}>
           <View style={styles.horizontalLine} />
-          
+
           {currentSetEvents.map((ev, index) => {
             const isHost = ev.team_type === 'host';
             const isCanceled = ev.is_canceled;
-            
+            const name = ev.player_name
+              ? (ev.player_name.length > 3 ? ev.player_name.substring(0, 3) : ev.player_name)
+              : '무기명';
+
             let content = '';
             if (ev.event_type === 'score') {
-              const name = ev.player_name ? (ev.player_name.length > 3 ? ev.player_name.substring(0, 3) : ev.player_name) : '무기명';
               content = `${isHost ? ev.host_score : ev.away_score} (${name})`;
+            } else if (ev.event_type === 'fault') {
+              content = `${isHost ? ev.host_score : ev.away_score} ⚠${name}`;
             } else if (ev.event_type === 'sub') {
               content = `🔄 교체`;
             } else {
@@ -69,14 +84,14 @@ export default function ScoreTimeline({ events, canControl, displayHostName, dis
             }
 
             const chip = (
-              <TouchableOpacity 
+              <TouchableOpacity
                 style={[styles.chip, isHost ? styles.hostBg : styles.awayBg, isCanceled && styles.canceledBg]}
                 onPress={() => {
-                  if (canControl && !isCanceled && ev.event_type === 'score' && ev.set_index === currentSetIndex) {
-                    onEditEvent(ev);
-                  }
+                  if (!canControl) return;
+                  if (onPressEvent) onPressEvent(ev);
+                  else if (onEditEvent && !isCanceled && ev.event_type === 'score') onEditEvent(ev);
                 }}
-                disabled={!canControl || isCanceled || ev.event_type !== 'score' || ev.set_index !== currentSetIndex}
+                disabled={!canControl}
                 activeOpacity={0.7}
               >
                 <Text style={[styles.text, isHost ? styles.hostText : styles.awayText, isCanceled && styles.canceledText]}>
@@ -86,13 +101,11 @@ export default function ScoreTimeline({ events, canControl, displayHostName, dis
             );
 
             return (
-              <View key={ev.id || index} style={styles.eventColumn}>
+              <View key={`${ev.id}-${setKey}-${index}`} style={styles.eventColumn}>
                 <View style={styles.topCell}>
                   {isHost && chip}
                 </View>
-                
                 <View style={[styles.node, isHost ? styles.nodeHost : styles.nodeAway, isCanceled && styles.nodeCanceled]} />
-                
                 <View style={styles.bottomCell}>
                   {!isHost && chip}
                 </View>
@@ -106,22 +119,23 @@ export default function ScoreTimeline({ events, canControl, displayHostName, dis
 }
 
 const styles = StyleSheet.create({
-  scroll: { paddingRight: 20, alignItems: 'center' },
-  emptyText: { color: '#475569', fontSize: 13, fontWeight: '700' },
-  trackContainer: { flexDirection: 'row', alignItems: 'center', position: 'relative', height: 90 },
+  scroller: { flex: 1, overflow: 'hidden' },
+  scroll: { paddingLeft: 4, paddingRight: 28, paddingVertical: 4, alignItems: 'center', minHeight: 88 },
+  emptyText: { color: '#475569', fontSize: 12, fontWeight: '700' },
+  trackContainer: { flexDirection: 'row', alignItems: 'center', position: 'relative', height: 84 },
   horizontalLine: { position: 'absolute', top: '50%', marginTop: -1, left: 0, right: 0, height: 2, backgroundColor: '#334155' },
-  eventColumn: { width: 85, alignItems: 'center', height: '100%', justifyContent: 'center' },
+  eventColumn: { width: 82, alignItems: 'center', height: '100%', justifyContent: 'center' },
   topCell: { flex: 1, justifyContent: 'flex-end', paddingBottom: 6, width: '100%', alignItems: 'center' },
   bottomCell: { flex: 1, justifyContent: 'flex-start', paddingTop: 6, width: '100%', alignItems: 'center' },
   node: { width: 10, height: 10, borderRadius: 5, zIndex: 2 },
   nodeHost: { backgroundColor: '#38BDF8', borderWidth: 2, borderColor: '#0C4A6E' },
   nodeAway: { backgroundColor: '#FB7185', borderWidth: 2, borderColor: '#4C0519' },
   nodeCanceled: { backgroundColor: '#64748B', borderColor: '#1E293B' },
-  chip: { paddingHorizontal: 6, paddingVertical: 4, borderRadius: 6, borderWidth: 1, minWidth: 70, alignItems: 'center', elevation: 2 },
+  chip: { paddingHorizontal: 6, paddingVertical: 4, borderRadius: 6, borderWidth: 1, minWidth: 68, alignItems: 'center', elevation: 2 },
   hostBg: { backgroundColor: '#0C4A6E', borderColor: '#0284C7' },
   awayBg: { backgroundColor: '#4C0519', borderColor: '#BE123C' },
   canceledBg: { backgroundColor: '#1E293B', borderColor: '#334155' },
-  text: { fontSize: 12, fontWeight: '800' },
+  text: { fontSize: 11, fontWeight: '800' },
   hostText: { color: '#BAE6FD' },
   awayText: { color: '#FECDD3' },
   canceledText: { color: '#64748B', textDecorationLine: 'line-through' },

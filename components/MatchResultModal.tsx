@@ -399,32 +399,32 @@ export default function MatchResultModal({
             {!isRosterOnlyMode && (
               <>
                 <Text style={[styles.inputLabel, { marginTop: 10 }]}>🥇 최종 승리 팀 선택</Text>
-                <View style={{ gap: 6, marginBottom: 10 }}>
+                <View style={{ gap: 8, marginBottom: 10 }}>
                   <TouchableOpacity 
-                    style={[styles.winnerSelectBtn, selectedWinner === match.host_team_name && styles.winnerSelectBtnActive]} 
+                    style={[styles.winnerSelectBtn, { backgroundColor: '#0284C7' }, selectedWinner === match.host_team_name && styles.winnerSelectBtnActive]} 
                     onPress={() => onSelectWinner(match.host_team_name)}
                   >
-                    <Text style={[styles.winnerSelectText, selectedWinner === match.host_team_name && styles.winnerSelectTextActive]}>
+                    <Text style={{ color: '#FFFFFF', fontSize: 15, fontWeight: '900', textAlign: 'center' }}>
                       🥇 {safeNameText(match.host_team_name)} 승리
                     </Text>
                   </TouchableOpacity>
 
                   {match.away_team_name ? (
                     <TouchableOpacity 
-                      style={[styles.winnerSelectBtn, selectedWinner === match.away_team_name && styles.winnerSelectBtnActive]} 
+                      style={[styles.winnerSelectBtn, { backgroundColor: '#BE123C' }, selectedWinner === match.away_team_name && styles.winnerSelectBtnActive]} 
                       onPress={() => onSelectWinner(match.away_team_name)}
                     >
-                      <Text style={[styles.winnerSelectText, selectedWinner === match.away_team_name && styles.winnerSelectTextActive]}>
+                      <Text style={{ color: '#FFFFFF', fontSize: 15, fontWeight: '900', textAlign: 'center' }}>
                         🥇 {safeNameText(match.away_team_name)} 승리
                       </Text>
                     </TouchableOpacity>
                   ) : null}
 
                   <TouchableOpacity 
-                    style={[styles.winnerSelectBtn, { backgroundColor: '#F1F5F9' }, selectedWinner === 'draw' && { backgroundColor: '#475569' }]} 
+                    style={[styles.winnerSelectBtn, { backgroundColor: '#334155' }, selectedWinner === 'draw' && { backgroundColor: '#0F172A' }]} 
                     onPress={() => onSelectWinner('draw')}
                   >
-                    <Text style={[styles.winnerSelectText, { color: '#475569' }, selectedWinner === 'draw' && { color: '#FFFFFF' }]}>
+                    <Text style={{ color: '#FFFFFF', fontSize: 15, fontWeight: '900', textAlign: 'center' }}>
                       🤝 무승부
                     </Text>
                   </TouchableOpacity>

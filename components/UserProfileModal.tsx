@@ -15,7 +15,7 @@ import StickyAdBanner from './StickyAdBanner';
 import BadgeCollectionModal from './BadgeCollectionModal';
 import { getAllBadgesWithStatus } from '../lib/badgeUtils';
 import { formatTeamDisplayName } from '../lib/teamStatus';
-import { parseRosterUserIds, safeIncludes } from '../lib/roster';
+import { addMatchPlayerStats, emptyPlayerCareerStats } from '../lib/playerStats';
 
 interface UserProfileModalProps {
   visible: boolean;
@@ -63,6 +63,10 @@ export default function UserProfileModal({
     draws: 0,
     losses: 0,
     winRate: 0,
+    points: 0,
+    faults: 0,
+    setsPlayed: 0,
+    setWinRate: 0,
   });
   const [userTeams, setUserTeams] = useState<{ id: string; name: string; status?: string }[]>([]);
 
@@ -117,33 +121,40 @@ export default function UserProfileModal({
       const { data: allMatches } = await supabase
         .from('matches')
         .select('*')
-        .eq('status', 'completed');
+        .in('status', ['completed', 'friendly', 'intramural']);
 
-      let total = 0, wins = 0, draws = 0, losses = 0;
+      const matchIds = (allMatches || []).map((m: any) => m.id).filter(Boolean);
+      const eventByMatch = new Map<string, any[]>();
+      for (let i = 0; i < matchIds.length; i += 80) {
+        const chunk = matchIds.slice(i, i + 80);
+        const { data: evRows } = await supabase
+          .from('match_events')
+          .select('match_id, player_id, event_type, is_canceled')
+          .in('match_id', chunk)
+          .eq('player_id', userId);
+        (evRows || []).forEach((e: any) => {
+          const list = eventByMatch.get(e.match_id) || [];
+          list.push(e);
+          eventByMatch.set(e.match_id, list);
+        });
+      }
 
+      const career = emptyPlayerCareerStats();
       (allMatches || []).forEach((m: any) => {
-        const hostList = parseRosterUserIds(m.host_roster);
-        const awayList = parseRosterUserIds(m.away_roster);
-        const hostMercList = parseRosterUserIds(m.host_mercenary_roster);
-        const awayMercList = parseRosterUserIds(m.away_mercenary_roster);
-
-        const inHost = hostList.includes(userId) || safeIncludes(m.host_roster, userId);
-        const inAway = awayList.includes(userId) || safeIncludes(m.away_roster, userId);
-        const inHostMerc = hostMercList.includes(userId) || safeIncludes(m.host_mercenary_roster, userId);
-        const inAwayMerc = awayMercList.includes(userId) || safeIncludes(m.away_mercenary_roster, userId);
-
-        if (inHost || inAway || inHostMerc || inAwayMerc) {
-          total++;
-          const myTeam = (inHost || inHostMerc) ? m.host_team_name : m.away_team_name;
-
-          if (m.winner_team === myTeam) wins++;
-          else if (m.winner_team === 'draw' || m.winner_team === '무승부') draws++;
-          else losses++;
-        }
+        addMatchPlayerStats(career, userId, m, eventByMatch.get(m.id) || []);
       });
 
-      const winRate = total > 0 ? Math.round((wins / total) * 100) : 0;
-      setStats({ total, wins, draws, losses, winRate });
+      setStats({
+        total: career.matchesPlayed,
+        wins: career.matchWins,
+        draws: career.matchDraws,
+        losses: career.matchLosses,
+        winRate: career.matchWinRate,
+        points: career.points,
+        faults: career.faults,
+        setsPlayed: career.setsPlayed,
+        setWinRate: career.setWinRate,
+      });
 
     } catch (err) {
       console.error('상대 프로필 조회 오류:', err);
@@ -295,6 +306,24 @@ export default function UserProfileModal({
                     <Text style={styles.statsSubText}>총 {stats.total}경기 출전</Text>
                     <Text style={styles.statsWinRateText}>승률 {stats.winRate}%</Text>
                   </View>
+                  <View style={styles.detailStatGrid}>
+                    <View style={styles.detailStatChip}>
+                      <Text style={styles.detailStatLabel}>득점</Text>
+                      <Text style={styles.detailStatValue}>{stats.points}</Text>
+                    </View>
+                    <View style={styles.detailStatChip}>
+                      <Text style={styles.detailStatLabel}>범실</Text>
+                      <Text style={[styles.detailStatValue, { color: '#BE123C' }]}>{stats.faults}</Text>
+                    </View>
+                    <View style={styles.detailStatChip}>
+                      <Text style={styles.detailStatLabel}>출전 세트</Text>
+                      <Text style={styles.detailStatValue}>{stats.setsPlayed}</Text>
+                    </View>
+                    <View style={styles.detailStatChip}>
+                      <Text style={styles.detailStatLabel}>세트 승률</Text>
+                      <Text style={styles.detailStatValue}>{stats.setWinRate}%</Text>
+                    </View>
+                  </View>
                 </View>
               </ScrollView>
 
@@ -432,6 +461,10 @@ const styles = StyleSheet.create({
   statsRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   statsSubText: { fontSize: 12, color: '#3B82F6', fontWeight: '600' },
   statsWinRateText: { fontSize: 13, fontWeight: '800', color: '#1E40AF' },
+  detailStatGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 10 },
+  detailStatChip: { width: '48%', backgroundColor: '#FFFFFF', borderRadius: 10, paddingVertical: 8, paddingHorizontal: 10, borderWidth: 1, borderColor: '#BFDBFE' },
+  detailStatLabel: { fontSize: 10, fontWeight: '800', color: '#3B82F6', marginBottom: 2 },
+  detailStatValue: { fontSize: 16, fontWeight: '900', color: '#1E3A8A' },
 
   scrollArea: { flexShrink: 1, flexGrow: 0 },
   adWrapper: { marginTop: 6, marginBottom: 0, borderRadius: 10, overflow: 'hidden' },
