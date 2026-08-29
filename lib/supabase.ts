@@ -16,6 +16,11 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
     storage: AsyncStorage,
     autoRefreshToken: true,
     persistSession: true,
+    // 네이티브 앱에는 브라우저 주소창이 없으므로 URL 자동 감지를 끄고,
+    // 딥링크 처리는 AuthProvider가 단독으로 담당한다.
     detectSessionInUrl: false,
+    // PKCE는 code_verifier를 AsyncStorage에 저장하므로, 카카오/구글 인증 중
+    // 앱 프로세스가 종료되어도 재실행 후 code 교환을 이어서 완료할 수 있다.
+    flowType: 'pkce',
   },
 });

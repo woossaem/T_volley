@@ -3,13 +3,10 @@ import { View, Text, StyleSheet, Animated, Alert, Image } from 'react-native';
 import { Stack } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Updates from 'expo-updates';
-import Constants from 'expo-constants';
 import { AuthProvider, useAuth } from '../contexts/AuthContext';
 import { registerForPushNotificationsAsync } from '../lib/notificationService';
 import { getCurrentSeasonInfo } from '../lib/season';
-
-// 💡 app.json의 version 정보를 자동으로 동기화
-const APP_VERSION = `v${Constants.expoConfig?.version || '2.0.1'}`;
+import { APP_VERSION } from '../constants/Version'; // 💡 공통 버전 변수 Import
 
 function RootLayoutContent() {
   const { session } = useAuth();

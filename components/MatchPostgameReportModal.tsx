@@ -16,30 +16,31 @@ import ScoreTimeline, { MatchEvent } from './ScoreTimeline';
 interface MatchPostgameReportModalProps {
   visible: boolean;
   onClose: () => void;
-  match: any; // MatchData
-  initialEvents?: MatchEvent[]; // 스코어보드에서 바로 열 때 전달받음
+  match: any;
+  initialEvents?: MatchEvent[];
 }
 
 export default function MatchPostgameReportModal({
   visible,
   onClose,
   match,
-  initialEvents = [],
+  initialEvents,
 }: MatchPostgameReportModalProps) {
   const [loading, setLoading] = useState(false);
-  const [events, setEvents] = useState<MatchEvent[]>(initialEvents);
+  const [events, setEvents] = useState<MatchEvent[]>(initialEvents || []);
   const [activeTab, setActiveTab] = useState<'highlight' | 'timeline'>('highlight');
   const [activeSetIndex, setActiveSetIndex] = useState(0);
 
+  // 💡 [핵심 버그 수정] 의존성 배열에서 initialEvents 제거하여 무한 루프 차단
   useEffect(() => {
     if (visible && match?.id) {
-      if (initialEvents.length === 0) {
-        fetchEvents();
-      } else {
+      if (initialEvents && initialEvents.length > 0) {
         setEvents(initialEvents);
+      } else {
+        fetchEvents();
       }
     }
-  }, [visible, match?.id, initialEvents]);
+  }, [visible, match?.id]);
 
   const fetchEvents = async () => {
     setLoading(true);
@@ -224,7 +225,6 @@ export default function MatchPostgameReportModal({
             </ScrollView>
           )}
 
-          {/* 💡 [핵심 안전 레이아웃] 광고판 높이가 변해도 ScrollView가 유연하게 수축하여 닫기 버튼을 절대 가리지 않음 */}
           <View style={styles.adWrapper}>
             <StickyAdBanner isModal={true} />
           </View>

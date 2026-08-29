@@ -1,34 +1,25 @@
-import React, { useState, useEffect } from 'react';
+import React, { useEffect } from 'react';
 import {
   View,
   Text,
   StyleSheet,
   TouchableOpacity,
   ActivityIndicator,
-  Alert,
   Image,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
-import * as WebBrowser from 'expo-web-browser';
-import * as Linking from 'expo-linking';
-import Constants from 'expo-constants';
 import { useAuth } from '../contexts/AuthContext';
-import { supabase } from '../lib/supabase';
 import { getCurrentSeasonInfo } from '../lib/season';
-
-WebBrowser.maybeCompleteAuthSession();
-
-// 💡 app.json의 version 정보를 자동으로 동기화
-const APP_VERSION = `v${Constants.expoConfig?.version || '2.0.1'}`;
+import { APP_VERSION } from '../constants/Version';
 
 export default function LoginScreen() {
   const router = useRouter();
-  const { session } = useAuth();
-  const [loading, setLoading] = useState(false);
+  // OAuth 실행, 딥링크 콜백, 세션 교환은 모두 AuthProvider가 단독으로 담당한다.
+  const { session, signingIn, signIn } = useAuth();
+  const loading = signingIn !== null;
 
   const currentSeason = getCurrentSeasonInfo();
-  const incomingUrl = Linking.useURL();
 
   useEffect(() => {
     if (session) {
@@ -36,99 +27,8 @@ export default function LoginScreen() {
     }
   }, [session]);
 
-  useEffect(() => {
-    if (incomingUrl) {
-      handleUrl(incomingUrl);
-    }
-  }, [incomingUrl]);
-
-  const handleUrl = async (url: string) => {
-    try {
-      if (!url) return;
-
-      const sanitizedUrl = url.replace('#', '?');
-      const query = sanitizedUrl.split('?')[1];
-      if (!query) return;
-
-      const params = new URLSearchParams(query);
-      const accessToken = params.get('access_token');
-      const refreshToken = params.get('refresh_token');
-      const code = params.get('code');
-
-      if (accessToken && refreshToken) {
-        const { error } = await supabase.auth.setSession({
-          access_token: accessToken,
-          refresh_token: refreshToken,
-        });
-        if (!error) {
-          router.replace('/home');
-        }
-      } else if (code) {
-        const { error } = await supabase.auth.exchangeCodeForSession(code);
-        if (!error) {
-          router.replace('/home');
-        }
-      }
-    } catch (e) {
-      console.log('인증 연결 에러:', e);
-    }
-  };
-
-  const handleKakaoLogin = async () => {
-    try {
-      setLoading(true);
-      const redirectUrl = Linking.createURL('login');
-
-      const { data, error } = await supabase.auth.signInWithOAuth({
-        provider: 'kakao',
-        options: {
-          redirectTo: redirectUrl,
-          skipBrowserRedirect: true,
-        },
-      });
-
-      if (error) throw error;
-
-      if (data?.url) {
-        const result = await WebBrowser.openAuthSessionAsync(data.url, redirectUrl);
-        if (result.type === 'success' && result.url) {
-          await handleUrl(result.url);
-        }
-      }
-    } catch (err: any) {
-      Alert.alert('로그인 안내', '일시적인 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleGoogleLogin = async () => {
-    try {
-      setLoading(true);
-      const redirectUrl = Linking.createURL('login');
-
-      const { data, error } = await supabase.auth.signInWithOAuth({
-        provider: 'google',
-        options: {
-          redirectTo: redirectUrl,
-          skipBrowserRedirect: true,
-        },
-      });
-
-      if (error) throw error;
-
-      if (data?.url) {
-        const result = await WebBrowser.openAuthSessionAsync(data.url, redirectUrl);
-        if (result.type === 'success' && result.url) {
-          await handleUrl(result.url);
-        }
-      }
-    } catch (err: any) {
-      Alert.alert('로그인 안내', '일시적인 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.');
-    } finally {
-      setLoading(false);
-    }
-  };
+  const handleKakaoLogin = () => signIn('kakao');
+  const handleGoogleLogin = () => signIn('google');
 
   return (
     <SafeAreaView style={styles.container} edges={['top', 'bottom', 'left', 'right']}>
@@ -223,10 +123,7 @@ const styles = StyleSheet.create({
     shadowRadius: 10,
     elevation: 6,
   },
-  logoImage: {
-    width: '100%',
-    height: '100%',
-  },
+  logoImage: { width: '100%', height: '100%' },
   titleRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 8 },
   appTitle: { fontSize: 32, fontWeight: '900', color: '#FFFFFF', letterSpacing: 1 },
   seasonBadge: { backgroundColor: '#FDE047', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 8 },

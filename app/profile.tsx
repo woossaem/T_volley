@@ -90,7 +90,7 @@ interface TeamMyStat {
 
 export default function ProfileScreen() {
   const router = useRouter();
-  const { session } = useAuth();
+  const { session, signOut } = useAuth();
   const currentUserId = session?.user?.id || '';
 
   const [profile, setProfile] = useState<ProfileData | null>(null);
@@ -261,9 +261,8 @@ export default function ProfileScreen() {
       {
         text: '로그아웃',
         style: 'destructive',
-        onPress: async () => {
-          await supabase.auth.signOut();
-          router.replace('/login');
+        onPress: () => {
+          void signOut();
         },
       },
     ]);
@@ -284,9 +283,8 @@ export default function ProfileScreen() {
               const { error } = await supabase.from('profiles').delete().eq('id', currentUserId);
               if (error) throw error;
 
-              await supabase.auth.signOut();
               Alert.alert('탈퇴 완료', '회원 탈퇴가 성공적으로 완료되었습니다.');
-              router.replace('/login');
+              await signOut();
             } catch (err: any) {
               Alert.alert('탈퇴 오류', err.message || '처리 중 오류가 발생했습니다.');
             } finally {

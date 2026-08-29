@@ -22,11 +22,13 @@ interface MyTeam {
   id: string;
   name: string;
   region: string;
-  pin_code: string | null; // 💡 비밀번호가 없을 수도 있음 (null)
+  pin_code: string | null;
   team_type?: 'school' | 'club';
   youtube_channel_url?: string | null;
   is_primary?: boolean;
   leader_id?: string | null;
+  status?: string;
+  deleted_at?: string | null;
 }
 
 interface TeamMember {
@@ -77,7 +79,6 @@ export default function MyTeamDetailScreen() {
   const [totalStats, setTotalStats] = useState<TeamStats>({ totalMatches: 0, wins: 0, draws: 0, losses: 0, points: 0, winRate: 0 });
   const [memberIntraRankings, setMemberIntraRankings] = useState<MemberIntraStat[]>([]);
 
-  // 회장 통합 관리 모달 State
   const [leaderModalVisible, setLeaderModalVisible] = useState(false);
   const [leaderActionTab, setLeaderActionTab] = useState<'claim' | 'transfer' | 'recommend'>('claim');
   const [selectedTargetMember, setSelectedTargetMember] = useState<TeamMember | null>(null);
@@ -114,11 +115,6 @@ export default function MyTeamDetailScreen() {
       if (candidate && candidate !== rawName) {
         const parsedCand = parseTeamName(candidate);
         if (parsedCand && parsedCand !== '동호회 팀') return parsedCand;
-      }
-      for (const key of Object.keys(rawName)) {
-        if (typeof rawName[key] === 'string' && rawName[key].trim().length > 0 && !['id', 'team_id', 'user_id', 'team_type', 'region'].includes(key)) {
-          return rawName[key].trim();
-        }
       }
     }
     return '동호회 팀';
@@ -183,20 +179,24 @@ export default function MyTeamDetailScreen() {
 
       if (tError) throw tError;
 
-      const teamsList: MyTeam[] = (teamsData || []).map((t: any) => {
-        const tm = tmData.find(x => x.team_id === t.id);
-        const nameCandidate = parseTeamName(t.name) !== '동호회 팀' ? parseTeamName(t.name) : parseTeamName(t);
-        return {
-          id: t.id,
-          name: nameCandidate,
-          region: t.region || '천안',
-          pin_code: t.pin_code || null,
-          team_type: t.team_type || 'club',
-          youtube_channel_url: t.youtube_channel_url || null,
-          is_primary: tm?.is_primary || false,
-          leader_id: t.leader_id || null,
-        };
-      });
+      const teamsList: MyTeam[] = (teamsData || [])
+        .filter((t: any) => t.status !== 'deleted')
+        .map((t: any) => {
+          const tm = tmData.find(x => x.team_id === t.id);
+          const nameCandidate = parseTeamName(t.name) !== '동호회 팀' ? parseTeamName(t.name) : parseTeamName(t);
+          return {
+            id: t.id,
+            name: nameCandidate,
+            region: t.region || '천안',
+            pin_code: t.pin_code || null,
+            team_type: t.team_type || 'club',
+            youtube_channel_url: t.youtube_channel_url || null,
+            is_primary: tm?.is_primary || false,
+            leader_id: t.leader_id || null,
+            status: t.status || 'active',
+            deleted_at: t.deleted_at || null,
+          };
+        });
 
       teamsList.sort((a, b) => (b.is_primary ? 1 : 0) - (a.is_primary ? 1 : 0));
       setMyTeams(teamsList);
@@ -211,6 +211,8 @@ export default function MyTeamDetailScreen() {
           const updated = teamsList.find((t) => t.id === selectedTeam.id);
           if (updated) setSelectedTeam(updated);
         }
+      } else {
+        setSelectedTeam(null);
       }
     } catch (err) {
       console.error('팀 목록 조회 오류:', err);
@@ -335,6 +337,88 @@ export default function MyTeamDetailScreen() {
     }
   };
 
+  const handleDeleteTeam = () => {
+    if (!selectedTeam || !userId) return;
+
+    if (selectedTeam.leader_id !== userId) {
+      return Alert.alert('권한 없음', '팀 해체 및 삭제는 팀 회장만 수행할 수 있습니다.');
+    }
+
+    if (members.length > 1) {
+      return Alert.alert(
+        '팀 해체 불가 ⚠️',
+        `현재 팀원이 본인 외에 ${members.length - 1}명 더 남아있습니다.\n\n팀을 해체하려면 팀원 명단에서 팀원들을 먼저 모두 '방출'하신 뒤 시도해 주세요.`
+      );
+    }
+
+    const hasMatches = totalStats.totalMatches > 0;
+
+    Alert.alert(
+      '🚨 팀 해체 및 삭제',
+      hasMatches
+        ? `'${selectedTeam.name}' 팀을 정말로 해체하시겠습니까?\n\n공식 전적이 존재하는 팀이므로 30일간 휴면 상태로 보존되며, 기존 팀원 및 상대 팀의 전적 기록은 '(휴면) ${selectedTeam.name}' 이름으로 유지됩니다.`
+        : `'${selectedTeam.name}' 팀을 정말로 삭제하시겠습니까?\n\n공식 전적이 없으므로 데이터베이스에서 완전히 삭제됩니다.`,
+      [
+        { text: '취소', style: 'cancel' },
+        {
+          text: '해체/삭제 실행',
+          style: 'destructive',
+          onPress: async () => {
+            setActionLoading(true);
+            try {
+              if (hasMatches) {
+                const newDormantName = selectedTeam.name.startsWith('(휴면)')
+                  ? selectedTeam.name
+                  : `(휴면) ${selectedTeam.name}`;
+
+                await supabase.from('teams').update({
+                  status: 'dormant',
+                  deleted_at: new Date().toISOString(),
+                  name: newDormantName,
+                }).eq('id', selectedTeam.id);
+
+                Alert.alert('팀 해체 완료 💤', `'${selectedTeam.name}' 팀이 30일 휴면 상태로 전환되었습니다.`);
+              } else {
+                await supabase.from('team_members').delete().eq('team_id', selectedTeam.id);
+                await supabase.from('teams').delete().eq('id', selectedTeam.id);
+
+                Alert.alert('삭제 완료 🗑️', `'${selectedTeam.name}' 팀이 완전히 삭제되었습니다.`);
+              }
+
+              await fetchMyTeams();
+            } catch (err: any) {
+              Alert.alert('오류', err.message);
+            } finally {
+              setActionLoading(false);
+            }
+          }
+        }
+      ]
+    );
+  };
+
+  const handleRestoreTeam = async () => {
+    if (!selectedTeam) return;
+
+    setActionLoading(true);
+    try {
+      const restoredName = selectedTeam.name.replace(/^\(휴면\)\s*/, '');
+
+      await supabase.from('teams').update({
+        status: 'active',
+        deleted_at: null,
+        name: restoredName,
+      }).eq('id', selectedTeam.id);
+
+      Alert.alert('복원 완료 ✨', `'${restoredName}' 팀이 다시 정상 팀으로 복원되었습니다!`);
+      await fetchMyTeams();
+    } catch (err: any) {
+      Alert.alert('오류', err.message);
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
   const openLeaderManagementModal = () => {
     if (!selectedTeam) return;
     const isLeader = selectedTeam.leader_id === userId;
@@ -359,7 +443,7 @@ export default function MyTeamDetailScreen() {
           const notis = otherMems.map((m: any) => ({
             user_id: m.user_id,
             title: `🚩 [${selectedTeam.name}] 팀 대표/회장 변경 알림`,
-            message: `🚩 '${currentUserName}' 선생님이 [${selectedTeam.name}] 팀의 새로운 회장으로 등록되었습니다.\n⚠️ 48시간 후 팀원 방출 권한이 활성화됩니다. 잘못된 변경이거나 본인이 아닐 경우, 앱에서 즉시 회장직을 재설정(회수)하세요!`,
+            message: `🚩 '${currentUserName}' 선생님이 [${selectedTeam.name}] 팀의 새로운 회장으로 등록되었습니다.`,
             is_read: false,
           }));
           await supabase.from('notifications').insert(notis);
@@ -442,7 +526,7 @@ export default function MyTeamDetailScreen() {
 
     Alert.alert(
       '⚠️ 팀원 방출 확인',
-      `'${targetMember.full_name}' 선생님을 '${selectedTeam.name}' 팀에서 정말로 방출하시겠습니까?\n\n* 방출된 팀원에게 제외 안내 알림이 발송됩니다.`,
+      `'${targetMember.full_name}' 선생님을 '${selectedTeam.name}' 팀에서 정말로 방출하시겠습니까?`,
       [
         { text: '취소', style: 'cancel' },
         {
@@ -489,7 +573,6 @@ export default function MyTeamDetailScreen() {
     }
   };
 
-  // 💡 PIN 설정/변경 저장 함수
   const handleChangePinCode = async () => {
     if (!selectedTeam) return;
     if (!newPinCode || newPinCode.trim().length < 4) {
@@ -510,7 +593,6 @@ export default function MyTeamDetailScreen() {
     }
   };
 
-  // 💡 PIN 해제(보호 끄기 -> 공개 전환) 함수
   const disablePinCode = async () => {
     if (!selectedTeam) return;
     try {
@@ -573,6 +655,15 @@ export default function MyTeamDetailScreen() {
   };
 
   const isCurrentLeader = selectedTeam?.leader_id === userId;
+  const isDormant = selectedTeam?.status === 'dormant';
+
+  const getRemainingDays = () => {
+    if (!selectedTeam?.deleted_at) return 30;
+    const deletedDate = new Date(selectedTeam.deleted_at).getTime();
+    const now = new Date().getTime();
+    const diffDays = Math.floor((now - deletedDate) / (1000 * 60 * 60 * 24));
+    return Math.max(0, 30 - diffDays);
+  };
 
   return (
     <SafeAreaView style={styles.container}>
@@ -596,22 +687,23 @@ export default function MyTeamDetailScreen() {
               const isSelected = selectedTeam?.id === team.id;
               const icon = getTeamIcon(team.team_type);
               const displayName = team.name || '동호회 팀';
-              
+              const teamIsDormant = team.status === 'dormant';
+
               return (
                 <TouchableOpacity
                   key={team.id}
                   style={[
                     styles.teamTabBase,
                     {
-                      backgroundColor: isSelected ? '#2563EB' : '#F1F5F9',
-                      borderColor: team.is_primary ? '#F59E0B' : isSelected ? '#1D4ED8' : '#CBD5E1',
-                      borderWidth: team.is_primary ? 2 : 1.5,
+                      backgroundColor: teamIsDormant ? '#FEF2F2' : isSelected ? '#2563EB' : '#F1F5F9',
+                      borderColor: teamIsDormant ? '#EF4444' : team.is_primary ? '#F59E0B' : isSelected ? '#1D4ED8' : '#CBD5E1',
+                      borderWidth: team.is_primary || teamIsDormant ? 2 : 1.5,
                     }
                   ]}
                   onPress={() => setSelectedTeam(team)}
                 >
-                  <Text style={{ fontSize: 13, fontWeight: '800', color: isSelected ? '#FFFFFF' : '#0F172A' }}>
-                    {team.is_primary ? '⭐ ' : ''}{icon} {displayName}
+                  <Text style={{ fontSize: 13, fontWeight: '800', color: teamIsDormant ? '#DC2626' : isSelected ? '#FFFFFF' : '#0F172A' }}>
+                    {teamIsDormant ? '💤 ' : team.is_primary ? '⭐ ' : ''}{icon} {displayName}
                   </Text>
                 </TouchableOpacity>
               );
@@ -622,8 +714,25 @@ export default function MyTeamDetailScreen() {
           </ScrollView>
         </View>
 
-        {selectedTeam && (
+        {myTeams.length === 0 ? (
+          <View style={styles.emptyBox}>
+            <Text style={styles.emptyText}>현재 가입되어 활동 중인 소속 팀이 없습니다.</Text>
+          </View>
+        ) : selectedTeam && (
           <>
+            {isDormant && (
+              <View style={styles.dormantBanner}>
+                <Text style={styles.dormantTitle}>💤 해체 유예 (휴면) 중인 팀입니다.</Text>
+                <Text style={styles.dormantSub}>
+                  이 팀은 전체 팀 목록에서 숨김 처리되어 있습니다.{'\n'}
+                  <Text style={{ fontWeight: '800', color: '#DC2626' }}>{getRemainingDays()}일 내에</Text> 복원하지 않으면 데이터가 최종 정제됩니다.
+                </Text>
+                <TouchableOpacity style={styles.restoreBtn} onPress={handleRestoreTeam} disabled={actionLoading}>
+                  {actionLoading ? <ActivityIndicator color="#FFF" /> : <Text style={styles.restoreBtnText}>✨ 지금 즉시 팀 복원하기</Text>}
+                </TouchableOpacity>
+              </View>
+            )}
+
             <View style={styles.teamHeaderCard}>
               <View style={styles.teamHeaderTop}>
                 <View style={{ flex: 1 }}>
@@ -634,7 +743,7 @@ export default function MyTeamDetailScreen() {
                       <Text style={styles.editRegionBtnText}>📍 지역 변경</Text>
                     </TouchableOpacity>
 
-                    {!selectedTeam.is_primary && (
+                    {!selectedTeam.is_primary && !isDormant && (
                       <TouchableOpacity style={styles.setPrimaryBtn} onPress={() => handleSetPrimaryTeam(selectedTeam.id)}>
                         <Text style={styles.setPrimaryBtnText}>⭐ 1순위 대표팀 설정</Text>
                       </TouchableOpacity>
@@ -651,7 +760,6 @@ export default function MyTeamDetailScreen() {
                 )}
               </View>
 
-              {/* 🚩 회장/대표 변경 및 관리 배너 */}
               <View style={styles.leaderBarContainer}>
                 <View style={styles.leaderBarInfo}>
                   <Text style={styles.leaderBarTitle}>
@@ -673,7 +781,6 @@ export default function MyTeamDetailScreen() {
               ) : null}
 
               <View style={{ gap: 8, marginTop: 10 }}>
-                {/* 🔑 팀 가입 비밀번호 (ON/OFF 선택 기능 반영) */}
                 <View style={[styles.pinBox, !selectedTeam.pin_code && { borderColor: '#CBD5E1', backgroundColor: '#F1F5F9' }]}>
                   <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', width: '100%' }}>
                     <View style={{ flex: 1 }}>
@@ -784,7 +891,6 @@ export default function MyTeamDetailScreen() {
               </View>
             </View>
 
-            {/* 👥 팀원 명단 */}
             <View style={styles.rosterSection}>
               <Text style={styles.sectionTitle}>👥 팀원 명단 ({members.length}명)</Text>
               <View style={{ gap: 8, marginTop: 10 }}>
@@ -826,11 +932,27 @@ export default function MyTeamDetailScreen() {
                 })}
               </View>
             </View>
+
+            {isCurrentLeader && (
+              <View style={styles.dangerZoneBox}>
+                <Text style={styles.dangerZoneTitle}>🚨 위험 구역 (Danger Zone)</Text>
+                <Text style={styles.dangerZoneDesc}>
+                  팀을 해체하거나 완전 삭제합니다. 다른 팀원이 남아있는 경우 방출 후 1인 상태에서만 해체할 수 있습니다.
+                </Text>
+                <TouchableOpacity
+                  style={styles.deleteTeamBtn}
+                  onPress={handleDeleteTeam}
+                  disabled={actionLoading}
+                >
+                  <Text style={styles.deleteTeamBtnText}>🚨 팀 해체 및 삭제하기</Text>
+                </TouchableOpacity>
+              </View>
+            )}
           </>
         )}
       </ScrollView>
 
-      {/* 🚩 팀 대표/회장 통합 관리 모달 */}
+      {/* 회장/대표 모달 */}
       <Modal visible={leaderModalVisible} animationType="slide" transparent={true}>
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
@@ -866,9 +988,7 @@ export default function MyTeamDetailScreen() {
               <View style={styles.policyNoticeBox}>
                 <Text style={styles.policyNoticeTitle}>📜 회장 등록 시 정책 안내</Text>
                 <Text style={styles.policyNoticeText}>
-                  • 등록 즉시 팀원 전체에게 <Text style={{ fontWeight: '800', color: '#6B21A8' }}>"대표 변경 및 48시간 뒤 방출 권한 활성화"</Text> 경고 알림이 발송됩니다.{'\n'}
-                  • 본인은 <Text style={{ fontWeight: '800' }}>24시간 동안 재변경이 제한(쿨다운)</Text>되지만, 타 팀원은 언제든 즉시 권한을 재설정(원복)할 수 있습니다.{'\n'}
-                  • 회장 변경 후 <Text style={{ fontWeight: '800' }}>48시간 동안은 팀원 방출 기능이 잠금 처리</Text>됩니다.
+                  • 등록 즉시 팀원 전체에게 알림이 발송됩니다.
                 </Text>
 
                 <TouchableOpacity style={[styles.confirmBtn, { marginTop: 14 }]} onPress={confirmClaimLeadership} disabled={actionLoading}>
@@ -920,7 +1040,7 @@ export default function MyTeamDetailScreen() {
         </View>
       </Modal>
 
-      {/* PIN 비밀번호 설정/변경 모달 */}
+      {/* PIN 비밀번호 모달 */}
       <Modal visible={pinModalVisible} animationType="fade" transparent={true}>
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
@@ -947,7 +1067,7 @@ export default function MyTeamDetailScreen() {
         </View>
       </Modal>
 
-      {/* 팀 유튜브 채널 URL 변경 모달 */}
+      {/* 유튜브 URL 모달 */}
       <Modal visible={youtubeModalVisible} animationType="slide" transparent={true}>
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
@@ -976,7 +1096,7 @@ export default function MyTeamDetailScreen() {
         </View>
       </Modal>
 
-      {/* 팀 활동 지역 수정 모달 */}
+      {/* 지역 모달 */}
       <Modal visible={regionModalVisible} animationType="slide" transparent={true}>
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
@@ -1043,6 +1163,13 @@ const styles = StyleSheet.create({
   teamTabBase: { paddingHorizontal: 14, paddingVertical: 8, borderRadius: 16, marginRight: 8 },
   addTeamChip: { paddingHorizontal: 12, paddingVertical: 8, borderRadius: 16, backgroundColor: '#EFF6FF', borderWidth: 1, borderColor: '#BFDBFE', borderStyle: 'dashed' },
   addTeamChipText: { fontSize: 12, fontWeight: '700', color: '#2563EB' },
+  
+  dormantBanner: { backgroundColor: '#FEF2F2', padding: 14, borderRadius: 14, borderWidth: 1.5, borderColor: '#FCA5A5', marginBottom: 16 },
+  dormantTitle: { fontSize: 15, fontWeight: '900', color: '#DC2626', marginBottom: 4 },
+  dormantSub: { fontSize: 12, color: '#991B1B', lineHeight: 18, marginBottom: 10 },
+  restoreBtn: { backgroundColor: '#DC2626', paddingVertical: 10, borderRadius: 8, alignItems: 'center' },
+  restoreBtnText: { color: '#FFFFFF', fontSize: 13, fontWeight: '800' },
+
   teamHeaderCard: { backgroundColor: '#FFFFFF', borderRadius: 18, padding: 18, borderWidth: 1, borderColor: '#E2E8F0', marginBottom: 16 },
   teamHeaderTop: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' },
   regionBadge: { fontSize: 12, fontWeight: '700', color: '#0284C7' },
@@ -1103,7 +1230,16 @@ const styles = StyleSheet.create({
 
   kickBtn: { backgroundColor: '#FEF2F2', borderWidth: 1, borderColor: '#FECACA', paddingHorizontal: 7, paddingVertical: 3, borderRadius: 6 },
   kickBtnText: { color: '#DC2626', fontSize: 10.5, fontWeight: '800' },
-  
+
+  dangerZoneBox: { backgroundColor: '#FEF2F2', borderRadius: 16, padding: 16, borderWidth: 1.5, borderColor: '#FECACA', marginTop: 20 },
+  dangerZoneTitle: { fontSize: 14, fontWeight: '800', color: '#DC2626', marginBottom: 4 },
+  dangerZoneDesc: { fontSize: 11.5, color: '#991B1B', lineHeight: 16, marginBottom: 12 },
+  deleteTeamBtn: { backgroundColor: '#DC2626', borderRadius: 10, paddingVertical: 12, alignItems: 'center' },
+  deleteTeamBtnText: { color: '#FFFFFF', fontSize: 13, fontWeight: '800' },
+
+  emptyBox: { backgroundColor: Colors.surface, borderRadius: 14, padding: 24, alignItems: 'center', borderWidth: 1, borderColor: Colors.border, marginBottom: 16 },
+  emptyText: { fontSize: 13, fontWeight: '700', color: Colors.textMuted, textAlign: 'center' },
+
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center', padding: 20 },
   modalContent: { backgroundColor: Colors.surface, borderRadius: 20, padding: 20, width: '100%' },
   modalTitle: { fontSize: 17, fontWeight: '800', color: Colors.text, marginBottom: 4 },

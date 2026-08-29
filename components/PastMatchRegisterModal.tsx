@@ -10,6 +10,7 @@ import {
   ActivityIndicator,
 } from 'react-native';
 import { Colors } from '../constants/Colors';
+import StickyAdBanner from './StickyAdBanner'; // 💡 스티커 광고 배너 Import
 
 const parseTeamName = (rawName: any): string => {
   if (!rawName) return '';
@@ -183,7 +184,7 @@ export default function PastMatchRegisterModal({
             </Text>
           </View>
 
-          <ScrollView style={{ maxHeight: 360, marginVertical: 6 }} showsVerticalScrollIndicator={false} nestedScrollEnabled={true}>
+          <ScrollView style={{ maxHeight: 320, marginVertical: 6 }} showsVerticalScrollIndicator={false} nestedScrollEnabled={true}>
             <Text style={styles.inputLabel}>1. 내 출전 팀 선택</Text>
             <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 4, marginBottom: 10 }}>
               {myTeams.map((t) => {
@@ -232,7 +233,6 @@ export default function PastMatchRegisterModal({
                 <View key={idx} style={[styles.setRow, idx > 0 && { marginTop: 8 }]}>
                   <Text style={styles.setLabel}>{idx + 1}세트</Text>
                   <View style={styles.teamScoreCol}>
-                    {/* 💡 [수정] <div> 대신 <View> 태그로 100% 교체 완료 */}
                     <View style={{ flex: 1 }}>
                       <View style={styles.stepperRow}>
                         <TouchableOpacity style={styles.stepBtn} onPress={() => onUpdatePastScore(idx, true, -1)}><Text style={styles.stepBtnText}>-1</Text></TouchableOpacity>
@@ -273,6 +273,11 @@ export default function PastMatchRegisterModal({
               </>
             ) : null}
           </ScrollView>
+
+          {/* 💡 [신규] 모달 내 스티커 광고 배너 추가 */}
+          <View style={{ marginVertical: 6, borderRadius: 10, overflow: 'hidden' }}>
+            <StickyAdBanner isModal={true} />
+          </View>
 
           <View style={{ flexDirection: 'row', gap: 8, marginTop: 6 }}>
             <TouchableOpacity style={[styles.closeBtn, { flex: 1 }]} onPress={onClose}><Text style={styles.closeBtnText}>취소</Text></TouchableOpacity>

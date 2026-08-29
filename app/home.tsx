@@ -20,6 +20,7 @@ import { Colors } from '../constants/Colors';
 import StickyAdBanner from '../components/StickyAdBanner';
 import BadgeCollectionModal from '../components/BadgeCollectionModal';
 import { getAllBadgesWithStatus } from '../lib/badgeUtils';
+import { APP_VERSION } from '../constants/Version'; // 💡 공통 버전 변수 Import
 
 const MENU_ITEMS = [
   { id: 'matches', emoji: '📅', label: '경기 목록', route: '/matches' },
@@ -172,7 +173,6 @@ export default function HomeScreen() {
       const teamNames = teamList.map(t => t.name);
       const teamIds = teamList.map(t => t.id);
 
-      // LIVE 공식 경기 로드
       const { data: activeOfficialMatches } = await supabase
         .from('matches')
         .select('*')
@@ -194,7 +194,6 @@ export default function HomeScreen() {
 
       setLiveOfficialMatch(currentOfficialLive || null);
 
-      // 💡 [핵심 수정] 팀 내전 LIVE 로드: 마감되지 않고 '진행 중(!m.winner_team)'인 당일 내전만 필터링!
       const { data: activeIntraMatches } = await supabase
         .from('matches')
         .select('*')
@@ -207,7 +206,6 @@ export default function HomeScreen() {
       );
       setLiveIntraMatch(currentIntraLive || null);
 
-      // 진행 중인 핫 픽(Hot Poll) 투표 로드
       const { data: activePolls } = await supabase
         .from('polls')
         .select('id, title, scope, team_id')
@@ -240,7 +238,6 @@ export default function HomeScreen() {
         setHotPoll(null);
       }
 
-      // 통산 매치 통계
       const { data: matchesData } = await supabase.from('matches')
         .select('host_team_name, away_team_name, host_roster, away_roster, host_mercenary_roster, away_mercenary_roster, status, winner_team, host_user_id')
         .eq('status', 'completed')
@@ -324,7 +321,7 @@ export default function HomeScreen() {
   const handleSignOut = () => {
     Alert.alert('로그아웃', '정말 로그아웃 하시겠습니까?', [
       { text: '취소', style: 'cancel' },
-      { text: '로그아웃', style: 'destructive', onPress: async () => { await signOut(); router.replace('/login'); } },
+      { text: '로그아웃', style: 'destructive', onPress: () => { void signOut(); } },
     ]);
   };
 
@@ -440,7 +437,7 @@ export default function HomeScreen() {
           </TouchableOpacity>
         )}
 
-        {/* 💜 팀 내전 LIVE 바 (승패 미정이고 진행 중인 경우에만 노출) */}
+        {/* 💜 팀 내전 LIVE 바 */}
         {liveIntraMatch && (
           <TouchableOpacity 
             style={styles.liveIntraBarSlim}
@@ -669,6 +666,11 @@ export default function HomeScreen() {
           <TouchableOpacity style={styles.subInfoBtn} onPress={() => router.push('/feedback')}>
             <Text style={styles.subInfoBtnText}>🚨 오류/건의</Text>
           </TouchableOpacity>
+        </View>
+
+        {/* 💡 앱 공통 버전 표시 */}
+        <View style={styles.versionContainer}>
+          <Text style={styles.versionText}>{APP_VERSION}</Text>
         </View>
       </ScrollView>
 
@@ -900,6 +902,9 @@ const styles = StyleSheet.create({
   subInfoBtn: { paddingHorizontal: 8 },
   subInfoBtnText: { fontSize: 11, fontWeight: '700', color: '#475569' },
   subDivider: { width: 1, height: 12, backgroundColor: '#CBD5E1' },
+
+  versionContainer: { alignItems: 'center', marginVertical: 8 },
+  versionText: { fontSize: 11, fontWeight: '700', color: '#94A3B8' },
 
   modalOverlayCenter: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center', padding: 20 },
   teamsModalContent: { backgroundColor: '#FFFFFF', borderRadius: 18, padding: 18, width: '100%', elevation: 5 },

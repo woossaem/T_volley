@@ -67,7 +67,7 @@ const normalizeRegionName = (rawInput: string): string => {
 
 export default function ProfileSetupScreen() {
   const router = useRouter();
-  const { session } = useAuth();
+  const { session, signOut } = useAuth();
   const userId = session?.user?.id;
 
   const [loading, setLoading] = useState(true);
@@ -189,7 +189,7 @@ export default function ProfileSetupScreen() {
   const handleSignOutAlert = () => {
     Alert.alert('가입 진행 취소', '프로필 설정을 중단하고 처음 화면으로 돌아가시겠습니까?', [
       { text: '계속 작성하기', style: 'cancel' },
-      { text: '돌아가기 (로그아웃)', style: 'destructive', onPress: async () => { await supabase.auth.signOut(); router.replace('/login'); } },
+      { text: '돌아가기 (로그아웃)', style: 'destructive', onPress: () => { void signOut(); } },
     ]);
   };
 

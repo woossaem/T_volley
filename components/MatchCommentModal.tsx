@@ -11,6 +11,7 @@ import {
   Alert,
 } from 'react-native';
 import { Colors } from '../constants/Colors';
+import StickyAdBanner from './StickyAdBanner'; // 💡 스티커 광고 배너 Import
 
 export interface CommentData {
   id: string;
@@ -196,6 +197,11 @@ export default function MatchCommentModal({
             </View>
           )}
 
+          {/* 💡 [신규] 모달 내 스티커 광고 배너 추가 */}
+          <View style={{ marginTop: 8, borderRadius: 10, overflow: 'hidden' }}>
+            <StickyAdBanner isModal={true} />
+          </View>
+
           <TouchableOpacity style={styles.closeBtn} onPress={onClose}>
             <Text style={styles.closeBtnText}>닫기</Text>
           </TouchableOpacity>
@@ -210,7 +216,7 @@ const styles = StyleSheet.create({
   modalContent: { backgroundColor: Colors.surface, borderRadius: 20, padding: 16, width: '100%', maxHeight: '85%', elevation: 5 },
   modalTitle: { fontSize: 16, fontWeight: '800', color: Colors.text, marginBottom: 2 },
   modalSub: { fontSize: 12, color: Colors.textMuted, marginBottom: 8 },
-  commentListScroll: { maxHeight: 260, marginVertical: 6 },
+  commentListScroll: { maxHeight: 220, marginVertical: 6 },
   emptyCommentBox: { padding: 24, alignItems: 'center' },
   emptyCommentText: { color: '#94A3B8', fontSize: 12, fontWeight: '600', textAlign: 'center', lineHeight: 18 },
   commentItem: { backgroundColor: '#F8FAFC', borderRadius: 10, padding: 10, marginBottom: 6, borderWidth: 1, borderColor: '#E2E8F0' },
@@ -234,6 +240,6 @@ const styles = StyleSheet.create({
   commentSendBtnText: { color: '#FFFFFF', fontWeight: '800', fontSize: 13 },
   disabledBanner: { backgroundColor: '#F1F5F9', paddingVertical: 12, borderRadius: 10, alignItems: 'center', borderWidth: 1, borderColor: '#CBD5E1', marginTop: 4 },
   disabledBannerText: { color: '#64748B', fontSize: 11.5, fontWeight: '800' },
-  closeBtn: { backgroundColor: '#F1F5F9', borderRadius: 10, paddingVertical: 12, alignItems: 'center', marginTop: 10 },
+  closeBtn: { backgroundColor: '#F1F5F9', borderRadius: 10, paddingVertical: 12, alignItems: 'center', marginTop: 8 },
   closeBtnText: { color: Colors.text, fontSize: 14, fontWeight: '800' },
 });
