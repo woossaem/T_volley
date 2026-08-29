@@ -4,6 +4,7 @@ import { useRouter } from 'expo-router';
 import { Colors } from '../constants/Colors';
 import { formatTeamDisplayName } from '../lib/teamStatus';
 import { teamsInclude } from '../lib/roster';
+import { resolveTeamName, getTeamIcon } from '../lib/nameUtils';
 
 export interface MatchData {
   id: string;
@@ -65,6 +66,7 @@ interface MatchCardProps {
   onApplyMatch: (match: MatchData) => void;
   onOpenReportModal?: (match: MatchData) => void; // 💡 에러 해결: Props 타입 추가
   teamStatusByName?: Record<string, string>;
+  teamTypeByName?: Record<string, string>;
 }
 
 export default function MatchCard({
@@ -88,11 +90,19 @@ export default function MatchCard({
   onApplyMatch,
   onOpenReportModal,
   teamStatusByName,
+  teamTypeByName,
 }: MatchCardProps) {
   const router = useRouter();
 
-  const displayTeamName = (name?: string | null) =>
-    formatTeamDisplayName(name, name ? teamStatusByName?.[name] : undefined);
+  const displayTeamName = (name?: string | null) => {
+    const resolved = resolveTeamName(name);
+    return formatTeamDisplayName(resolved, resolved ? teamStatusByName?.[resolved] : undefined);
+  };
+
+  const hostName = resolveTeamName(match.host_team_name);
+  const awayName = match.away_team_name ? resolveTeamName(match.away_team_name) : '';
+  const hostIcon = getTeamIcon(teamTypeByName?.[hostName]);
+  const awayIcon = getTeamIcon(teamTypeByName?.[awayName]);
 
   const isHost = teamsInclude(myTeams, match.host_team_name);
   const isAway = match.away_team_name ? teamsInclude(myTeams, match.away_team_name) : false;
@@ -183,7 +193,7 @@ export default function MatchCard({
       <View style={styles.scoreboardRow}>
         <View style={styles.teamColLeft}>
           <Text style={styles.hostTeamText} numberOfLines={1}>
-            {displayTeamName(match.host_team_name)}
+            {hostIcon} {displayTeamName(match.host_team_name)}
           </Text>
           <Text style={styles.teamRoleLabel}>주최팀</Text>
         </View>
@@ -194,7 +204,7 @@ export default function MatchCard({
 
         <View style={styles.teamColRight}>
           <Text style={[styles.awayTeamText, !match.away_team_name && styles.textMuted]} numberOfLines={1}>
-            {match.away_team_name ? displayTeamName(match.away_team_name) : '상대 모집중'}
+            {match.away_team_name ? `${awayIcon} ${displayTeamName(match.away_team_name)}` : '상대 모집중'}
           </Text>
           <Text style={styles.teamRoleLabel}>상대팀</Text>
         </View>

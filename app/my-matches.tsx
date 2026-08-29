@@ -29,6 +29,8 @@ import MatchCommentModal from '../components/MatchCommentModal';
 import MatchCard, { MatchData, ApplicationData } from '../components/MatchCard';
 import { buildTeamStatusByName, isActiveTeamStatus } from '../lib/teamStatus';
 import { parseSetRosterMap, safeIncludes, safeNameText, teamsInclude, nameIncludesQuery } from '../lib/roster';
+import { resolveTeamName, resolveTeamNameOrNull } from '../lib/nameUtils';
+import { insertMatchIgnoringUnknownColumns, updateMatchIgnoringUnknownColumns } from '../lib/matchWrite';
 import {
   dynamicScoresFromSets,
   fetchMatchSets,
@@ -81,6 +83,7 @@ export default function MyMatchesScreen() {
   const [myTeams, setMyTeams] = useState<string[]>([]);
   const [allTeams, setAllTeams] = useState<string[]>([]);
   const [teamStatusByName, setTeamStatusByName] = useState<Record<string, string>>({});
+  const [teamTypeByName, setTeamTypeByName] = useState<Record<string, string>>({});
   
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -154,14 +157,6 @@ export default function MyMatchesScreen() {
     );
   };
 
-  const parseTeamName = (rawName: any): string => {
-    if (!rawName) return '';
-    if (typeof rawName === 'string') return rawName.trim();
-    if (Array.isArray(rawName) && rawName.length > 0) return parseTeamName(rawName[0]);
-    if (typeof rawName === 'object' && rawName.name) return parseTeamName(rawName.name);
-    return '';
-  };
-
   const parseMatchDate = (dateStr: string | undefined | null) => {
     if (!dateStr) return { year: 0, month: 0 };
     const numbers = dateStr.match(/\d+/g);
@@ -180,8 +175,8 @@ export default function MyMatchesScreen() {
         
         let teamNames: string[] = [];
         if (teamIds.length > 0) {
-          const { data: tData } = await supabase.from('teams').select('name').in('id', teamIds);
-          teamNames = (tData || []).map(t => parseTeamName(t.name)).filter(Boolean);
+          const { data: tData } = await supabase.from('teams').select('*').in('id', teamIds);
+          teamNames = (tData || []).map(t => resolveTeamNameOrNull(t)).filter(Boolean) as string[];
         }
 
         setMyTeams(teamNames);
@@ -191,14 +186,20 @@ export default function MyMatchesScreen() {
         if (apps) setMyApplications(apps);
       }
 
-      const { data: teamsData } = await supabase.from('teams').select('id, name, status');
+      const { data: teamsData } = await supabase.from('teams').select('*');
       if (teamsData) {
         const parsed = teamsData.map((t: any) => ({
-          name: parseTeamName(t.name),
+          name: resolveTeamNameOrNull(t),
           status: t.status || 'active',
+          type: t.team_type || '',
         })).filter((t: any) => t.name);
         setTeamStatusByName(buildTeamStatusByName(parsed));
-        setAllTeams(parsed.filter((t: any) => isActiveTeamStatus(t.status)).map((t: any) => t.name));
+        setAllTeams(parsed.filter((t: any) => isActiveTeamStatus(t.status)).map((t: any) => t.name as string));
+        const typeMap: Record<string, string> = {};
+        parsed.forEach((t: any) => {
+          if (t.name) typeMap[t.name] = t.type;
+        });
+        setTeamTypeByName(typeMap);
       }
 
       const { data: matchData, error } = await supabase.from('matches').select('*').order('created_at', { ascending: false });
@@ -702,7 +703,8 @@ export default function MyMatchesScreen() {
         away_youtube_url: awayYoutube.trim() || null,
       };
 
-      await supabase.from('matches').update(updateData).eq('id', selectedMatchForResult.id);
+      const { error: updateError } = await updateMatchIgnoringUnknownColumns(selectedMatchForResult.id, updateData);
+      if (updateError) throw updateError;
       await upsertMatchSets(
         selectedMatchForResult.id,
         recordsFromDynamicScores(dynamicScores, hostSetRosters, awaySetRosters, true),
@@ -862,56 +864,63 @@ export default function MyMatchesScreen() {
     if (!pastHostTeam || !pastAwayTeam || !pastMatchDate || !pastWinner) {
       return Alert.alert('알림', '모든 항목을 입력/선택해 주세요.');
     }
-    if (pastHostTeam === pastAwayTeam) return Alert.alert('알림', '주최 팀과 상대 팀은 달라야 합니다.');
+    if (resolveTeamName(pastHostTeam, '') === resolveTeamName(pastAwayTeam, '')) return Alert.alert('알림', '주최 팀과 상대 팀은 달라야 합니다.');
 
     const formattedScores = convertScoresToString(pastDynamicScores);
 
     setActionLoading(true);
     try {
-      const isRegisteredTeam = allTeams.includes(pastAwayTeam);
+      const hostName = resolveTeamName(pastHostTeam, '');
+      const awayName = resolveTeamName(pastAwayTeam, '');
+      const isRegisteredTeam = allTeams.includes(awayName);
       const matchStatus = isRegisteredTeam ? 'pending_result' : 'friendly';
       
-      const { data: newMatch, error } = await supabase
-        .from('matches')
-        .insert({
-          host_user_id: currentUserId,
-          host_team_name: pastHostTeam,
-          away_team_name: pastAwayTeam,
-          match_date: pastMatchDate,
-          match_time: '이전 경기 수동 입력',
-          location: isRegisteredTeam ? '공식 수동 기록' : '비공식 친선 경기',
-          format: isRegisteredTeam ? '공식전' : '친선전',
-          description: isRegisteredTeam ? '상대팀의 승인을 기다리고 있습니다.' : '미등록 팀과의 비공식 친선 경기입니다. (랭킹 제외)',
-          status: matchStatus,
-          winner_team: pastWinner,
-          result_submitter_team: pastHostTeam,
-          submitted_by_name: currentUserName,
-          set_scores: formattedScores,
-          host_roster: currentUserId ? JSON.stringify({ 0: [currentUserId] }) : null,
-          host_youtube_url: pastHostYoutube.trim() || null,
-          away_youtube_url: pastAwayYoutube.trim() || null,
-        })
-        .select().single();
+      const { data: newMatch, error } = await insertMatchIgnoringUnknownColumns({
+        host_user_id: currentUserId,
+        host_team_name: hostName,
+        away_team_name: awayName,
+        match_date: pastMatchDate,
+        match_time: '이전 경기 수동 입력',
+        location: isRegisteredTeam ? '공식 수동 기록' : '비공식 친선 경기',
+        format: isRegisteredTeam ? '공식전' : '친선전',
+        description: isRegisteredTeam ? '상대팀의 승인을 기다리고 있습니다.' : '미등록 팀과의 비공식 친선 경기입니다. (랭킹 제외)',
+        status: matchStatus,
+        winner_team: pastWinner === 'draw' ? 'draw' : resolveTeamName(pastWinner, hostName),
+        result_submitter_team: hostName,
+        set_scores: formattedScores,
+        host_roster: currentUserId ? JSON.stringify({ 0: [currentUserId] }) : null,
+        host_youtube_url: pastHostYoutube.trim() || null,
+        away_youtube_url: pastAwayYoutube.trim() || null,
+      });
 
-      if (error) throw error;
-
-      const resultMsg = pastWinner === 'draw' ? '무승부' : `'${pastWinner}' 승리`;
-
-      if (isRegisteredTeam) {
-        await sendNotificationToTeam(pastAwayTeam, '⚠️ [과거 기록 승인 요청]', `'${pastHostTeam}'팀이 과거 경기 결과를 [${resultMsg}]로 등록했습니다. 앱에서 승인해주세요.`);
-        Alert.alert('요청 완료', '상대 팀(등록팀)에게 결과 승인 요청을 보냈습니다.');
-      } else {
-        Alert.alert('친선 경기 기록 완료', '미등록 팀과의 경기이므로 랭킹 승점에는 포함되지 않는 친선 기록으로 저장되었습니다.');
+      if (error) {
+        console.error('지난 기록 등록 오류:', error);
+        Alert.alert('알림', '기록을 저장하지 못했습니다. 잠시 후 다시 시도해 주세요.');
+        return;
       }
 
       if (newMatch) setMatches(prev => [newMatch, ...prev]);
-
       setPastMatchModalVisible(false);
       setPastHostTeam(''); setPastAwayTeam(''); setPastMatchDate(''); setPastWinner(''); setPastDynamicScores([]);
       setPastHostYoutube(''); setPastAwayYoutube('');
-      
-      if (!isRegisteredTeam) setMainTab('completed'); 
-    } catch (err: any) { Alert.alert('오류', err.message); } 
+      if (!isRegisteredTeam) setMainTab('completed');
+
+      const resultMsg = pastWinner === 'draw' ? '무승부' : `'${pastWinner}' 승리`;
+      try {
+        if (isRegisteredTeam) {
+          await sendNotificationToTeam(awayName, '⚠️ [과거 기록 승인 요청]', `'${hostName}'팀이 과거 경기 결과를 [${resultMsg}]로 등록했습니다. 앱에서 승인해주세요.`);
+          Alert.alert('요청 완료', '상대 팀(등록팀)에게 결과 승인 요청을 보냈습니다.');
+        } else {
+          Alert.alert('친선 경기 기록 완료', '미등록 팀과의 경기이므로 랭킹 승점에는 포함되지 않는 친선 기록으로 저장되었습니다.');
+        }
+      } catch (notifyErr) {
+        console.error('지난 기록 알림 오류:', notifyErr);
+        Alert.alert('등록 완료', '기록이 저장되었습니다.');
+      }
+    } catch (err: any) {
+      console.error('지난 기록 등록 오류:', err);
+      Alert.alert('알림', '기록을 저장하지 못했습니다. 잠시 후 다시 시도해 주세요.');
+    } 
     finally { setActionLoading(false); }
   };
 
@@ -1044,6 +1053,7 @@ export default function MyMatchesScreen() {
               onOpenMercenaryModal={handleOpenMercenaryModal}
               onApplyMatch={handleApplyMatch}
               teamStatusByName={teamStatusByName}
+              teamTypeByName={teamTypeByName}
             />
           ))
         )}

@@ -16,8 +16,8 @@ import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
 import { Colors } from '../constants/Colors';
 import { formatTeamDisplayName } from '../lib/teamStatus';
-import { safeNameText } from '../lib/roster';
 import { addMatchPlayerStats, emptyPlayerCareerStats } from '../lib/playerStats';
+import { resolveTeamName, resolveTeamNameOrNull, cleanRegionName, getTeamIcon, isSameName, UNSET_REGION } from '../lib/nameUtils';
 import UserProfileModal from '../components/UserProfileModal';
 import TeamReportModal from '../components/TeamReportModal';
 import StickyAdBanner from '../components/StickyAdBanner';
@@ -124,7 +124,7 @@ export default function RankingScreen() {
         if (data) {
           if (data.gender) setGenderFilter(data.gender === '여성' ? '여성' : '남성');
           if (data.region) {
-            const regs = data.region.split(',').map((r: string) => r.trim()).filter(Boolean);
+            const regs = data.region.split(',').map((r: string) => cleanRegionName(r)).filter(Boolean);
             if (regs.length > 0) {
               setUserPrioritizedRegions(regs);
               setSelectedRegion(regs[0]);
@@ -173,6 +173,7 @@ export default function RankingScreen() {
         setMyTeammatesSet(teammateIds);
       }
 
+      const memberCountByTeamIdMap = new Map<string, number>();
       const memberCountByTeamNameMap = new Map<string, number>();
       const userSchoolRegionMap = new Map<string, string>();
       const regionsSet = new Set<string>();
@@ -182,11 +183,11 @@ export default function RankingScreen() {
       const teamIdToTypeMap = new Map<string, string>();
 
       (allTeams || []).forEach((t: any) => {
-        if (t.id && t.name) {
-          teamIdToNameMap.set(t.id, t.name.trim());
-          teamIdToRegionMap.set(t.id, t.region?.trim() || '지역 미설정');
-          teamIdToTypeMap.set(t.id, t.team_type || 'school');
-        }
+        if (!t.id) return;
+        const tName = resolveTeamNameOrNull(t);
+        if (tName) teamIdToNameMap.set(t.id, tName);
+        teamIdToRegionMap.set(t.id, cleanRegionName(t.region, UNSET_REGION));
+        teamIdToTypeMap.set(t.id, t.team_type || '');
       });
 
       tmData?.forEach((item: any) => {
@@ -194,6 +195,7 @@ export default function RankingScreen() {
         const tId = item.team_id;
         
         if (tId) {
+          memberCountByTeamIdMap.set(tId, (memberCountByTeamIdMap.get(tId) || 0) + 1);
           const tName = teamIdToNameMap.get(tId);
           if (tName) {
             memberCountByTeamNameMap.set(tName, (memberCountByTeamNameMap.get(tName) || 0) + 1);
@@ -201,7 +203,7 @@ export default function RankingScreen() {
           const tRegion = teamIdToRegionMap.get(tId);
           const tType = teamIdToTypeMap.get(tId);
 
-          if (tRegion && tRegion !== '지역 미설정') {
+          if (tRegion && tRegion !== UNSET_REGION) {
             regionsSet.add(tRegion);
           }
           if (uId) {
@@ -214,14 +216,15 @@ export default function RankingScreen() {
       });
 
       (allTeams || []).forEach((t: any) => {
-        if (t.region) regionsSet.add(t.region.trim());
+        const cleaned = cleanRegionName(t.region, '');
+        if (cleaned) regionsSet.add(cleaned);
       });
 
       setDbActiveRegions(Array.from(regionsSet));
 
       const careerWinsMap = new Map<string, number>();
       (allMatches || []).forEach((m: any) => {
-        const wName = m.winner_team;
+        const wName = resolveTeamNameOrNull(m.winner_team);
         if (wName && wName !== 'draw' && wName !== '무승부') {
           careerWinsMap.set(wName, (careerWinsMap.get(wName) || 0) + 1);
         }
@@ -234,24 +237,24 @@ export default function RankingScreen() {
       });
 
       const processedTeams: TeamRankingData[] = (allTeams || []).map((t: any) => {
-        let pureName = t.name?.trim();
+        const pureName = resolveTeamNameOrNull(t);
         if (!pureName) return null;
 
         const matches = targetMatches.filter((m: any) => {
-          return safeNameText(m.host_team_name) === t.name || safeNameText(m.away_team_name) === t.name;
+          return isSameName(m.host_team_name, pureName) || isSameName(m.away_team_name, pureName);
         });
 
         let wins = 0, draws = 0, losses = 0;
         matches.forEach((m: any) => {
-          if (m.winner_team === t.name) wins++;
+          if (isSameName(m.winner_team, pureName)) wins++;
           else if (m.winner_team === 'draw' || m.winner_team === '무승부') draws++;
           else losses++;
         });
 
         const total = wins + draws + losses;
-        const count = memberCountByTeamNameMap.get(t.name) || 0;
+        const count = memberCountByTeamIdMap.get(t.id) || memberCountByTeamNameMap.get(pureName) || 0;
         const points = wins * 3 + draws * 1;
-        const careerWins = careerWinsMap.get(t.name) || 0;
+        const careerWins = careerWinsMap.get(pureName) || 0;
 
         return {
           team_id: t.id,
@@ -265,8 +268,8 @@ export default function RankingScreen() {
           memberCount: count,
           isOfficial: count >= 3,
           isQualified: total >= (selectedPeriod === 'hall_of_fame' ? 3 : 2),
-          region: t.region?.trim() || '지역 미설정',
-          type: t.team_type || 'school',
+          region: cleanRegionName(t.region, UNSET_REGION),
+          type: t.team_type || '',
           careerWins,
           mannerTemp: t.manner_temp || 36.5,
           status: t.status || 'active',
@@ -276,7 +279,7 @@ export default function RankingScreen() {
 
       const filteredTeams = processedTeams.filter((t) => {
         if (selectedRegion === '전체') return true;
-        return t.region === selectedRegion;
+        return cleanRegionName(t.region) === selectedRegion || t.region === selectedRegion;
       });
 
       const qualified = filteredTeams.filter((t) => t.isOfficial && t.isQualified);
@@ -400,7 +403,7 @@ export default function RankingScreen() {
     });
 
     const teamMatches = targetMatches.filter((m: any) => {
-      return safeNameText(m.host_team_name) === teamName || safeNameText(m.away_team_name) === teamName;
+      return isSameName(m.host_team_name, teamName) || isSameName(m.away_team_name, teamName);
     });
 
     let setsWon = 0, setsLost = 0, shutoutWins = 0, fullsetWins = 0;
@@ -408,12 +411,12 @@ export default function RankingScreen() {
     const oppMap: { [oppName: string]: { wins: number; losses: number; draws: number; total: number } } = {};
 
     teamMatches.forEach((m: any) => {
-      const hName = m.host_team_name;
-      const aName = m.away_team_name;
-      const wName = m.winner_team;
-      const isHost = hName === teamName;
+      const hName = resolveTeamName(m.host_team_name);
+      const aName = resolveTeamName(m.away_team_name);
+      const wName = resolveTeamName(m.winner_team);
+      const isHost = isSameName(hName, teamName);
       const oppName = isHost ? aName : hName;
-      const isWin = wName === teamName;
+      const isWin = isSameName(wName, teamName);
       const isDraw = wName === 'draw' || wName === '무승부';
 
       if (isWin) totalWins++;
@@ -467,9 +470,8 @@ export default function RankingScreen() {
     });
 
     const teamRecent5 = teamMatches.slice(0, 5).map((m: any) => {
-      const wName = m.winner_team;
-      const isWin = wName === teamName;
-      const isDraw = wName === 'draw' || wName === '무승부';
+      const isWin = isSameName(m.winner_team, teamName);
+      const isDraw = m.winner_team === 'draw' || m.winner_team === '무승부';
       return isWin ? 'WIN' : isDraw ? 'DRAW' : 'LOSS';
     });
 
@@ -478,8 +480,8 @@ export default function RankingScreen() {
 
     return {
       teamName,
-      region: teamData?.region || '지역 미설정',
-      teamType: (teamData?.type as 'school' | 'club') || 'school',
+      region: teamData?.region || UNSET_REGION,
+      teamType: (teamData?.type as 'school' | 'club') || undefined,
       mannerTemp: teamData?.mannerTemp || 36.5,
       isOfficial: teamData?.isOfficial || false,
       memberCount: teamData?.memberCount || 0,
@@ -616,7 +618,7 @@ export default function RankingScreen() {
                   
                   <View style={styles.teamInfo}>
                     <View style={styles.teamNameRow}>
-                      <Text style={styles.teamName}>{item.type === 'club' ? '🛡️' : '🏫'} {formatTeamDisplayName(item.team_name, item.status)}</Text>
+                      <Text style={styles.teamName}>{getTeamIcon(item.type)} {formatTeamDisplayName(resolveTeamName(item), item.status)}</Text>
                       <View style={styles.blueRibbonMini}><Text style={{ fontSize: 12 }}>🟦</Text></View>
                     </View>
                     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 2 }}>
@@ -680,7 +682,7 @@ export default function RankingScreen() {
                       <View style={{ flex: 1, paddingRight: 8 }}>
                         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
                           <Text style={styles.pendingTeamName}>
-                            {item.type === 'club' ? '🛡️' : '🏫'} {formatTeamDisplayName(item.team_name, item.status)}
+                            {getTeamIcon(item.type)} {formatTeamDisplayName(resolveTeamName(item), item.status)}
                           </Text>
                           {item.isOfficial && (
                             <View style={{ paddingHorizontal: 2 }}>

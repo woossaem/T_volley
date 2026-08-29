@@ -18,7 +18,8 @@ import { Colors } from '../constants/Colors';
 import StickyAdBanner from '../components/StickyAdBanner';
 import MatchPostgameReportModal from '../components/MatchPostgameReportModal';
 import { buildTeamStatusByName, formatTeamDisplayName } from '../lib/teamStatus';
-import { parseRosterUserIds, safeIncludes, teamsInclude, nameIncludesQuery, safeNameText } from '../lib/roster';
+import { parseRosterUserIds, safeIncludes, teamsInclude, nameIncludesQuery } from '../lib/roster';
+import { resolveTeamName, resolveTeamNameOrNull, getTeamIcon, isSameName, cleanRegionName } from '../lib/nameUtils';
 
 interface MatchHistoryItem {
   id: string;
@@ -52,6 +53,7 @@ export default function MyMatchHistoryScreen() {
   const [rawMatches, setRawMatches] = useState<MatchHistoryItem[]>([]);
   const [myTeams, setMyTeams] = useState<string[]>([]);
   const [teamStatusByName, setTeamStatusByName] = useState<Record<string, string>>({});
+  const [teamTypeByName, setTeamTypeByName] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
@@ -64,14 +66,6 @@ export default function MyMatchHistoryScreen() {
 
   const [reportModalVisible, setReportModalVisible] = useState(false);
   const [reportTargetMatch, setReportTargetMatch] = useState<MatchHistoryItem | null>(null);
-
-  const parseTeamName = (rawName: any): string => {
-    if (!rawName) return '';
-    if (typeof rawName === 'string') return rawName.trim();
-    if (Array.isArray(rawName) && rawName.length > 0) return parseTeamName(rawName[0]);
-    if (typeof rawName === 'object' && rawName.name) return parseTeamName(rawName.name);
-    return '';
-  };
 
   const parseMatchDate = (dateStr: string | undefined | null) => {
     if (!dateStr) return { year: 0, month: 0 };
@@ -109,18 +103,24 @@ export default function MyMatchHistoryScreen() {
       const teamIds = tmData?.map((tm: any) => tm.team_id) || [];
       let teamNames: string[] = [];
       if (teamIds.length > 0) {
-        const { data: tData } = await supabase.from('teams').select('name').in('id', teamIds);
-        teamNames = (tData || []).map((t: any) => parseTeamName(t.name)).filter(Boolean);
+        const { data: tData } = await supabase.from('teams').select('*').in('id', teamIds);
+        teamNames = (tData || []).map((t: any) => resolveTeamNameOrNull(t)).filter(Boolean) as string[];
       }
       setMyTeams(teamNames);
 
-      const { data: teamsData } = await supabase.from('teams').select('id, name, status');
+      const { data: teamsData } = await supabase.from('teams').select('*');
       if (teamsData) {
         const parsed = teamsData.map((t: any) => ({
-          name: parseTeamName(t.name),
+          name: resolveTeamNameOrNull(t),
           status: t.status || 'active',
+          type: t.team_type || '',
         })).filter((t: any) => t.name);
         setTeamStatusByName(buildTeamStatusByName(parsed));
+        const typeMap: Record<string, string> = {};
+        parsed.forEach((t: any) => {
+          if (t.name) typeMap[t.name] = t.type;
+        });
+        setTeamTypeByName(typeMap);
       }
 
       const { data: matchesData, error } = await supabase
@@ -202,12 +202,12 @@ export default function MyMatchHistoryScreen() {
         }
       } else {
         const myPlayedTeam = (inHost || isHostMerc || isMyTeamHost)
-          ? match.host_team_name
-          : match.away_team_name;
+          ? resolveTeamName(match.host_team_name)
+          : resolveTeamName(match.away_team_name);
 
         if (match.winner_team === 'draw' || match.winner_team === '무승부') {
           result = 'draw';
-        } else if (match.winner_team === myPlayedTeam) {
+        } else if (isSameName(match.winner_team, myPlayedTeam)) {
           result = 'win';
         } else {
           result = 'loss';
@@ -243,8 +243,8 @@ export default function MyMatchHistoryScreen() {
 
       const query = searchQuery.toLowerCase().trim();
       if (query) {
-        const hostDisplay = formatTeamDisplayName(item.host_team_name, teamStatusByName[item.host_team_name]).toLowerCase();
-        const awayDisplay = formatTeamDisplayName(item.away_team_name, teamStatusByName[item.away_team_name || '']).toLowerCase();
+        const hostDisplay = formatTeamDisplayName(resolveTeamName(item.host_team_name), teamStatusByName[resolveTeamName(item.host_team_name)]).toLowerCase();
+        const awayDisplay = formatTeamDisplayName(resolveTeamName(item.away_team_name), teamStatusByName[resolveTeamName(item.away_team_name || '')]).toLowerCase();
         const passHost = nameIncludesQuery(item.host_team_name, query) || hostDisplay.includes(query);
         const passAway = nameIncludesQuery(item.away_team_name, query) || awayDisplay.includes(query);
         const passLocation = nameIncludesQuery(item.location, query);
@@ -375,9 +375,9 @@ export default function MyMatchHistoryScreen() {
               <View key={match.id} style={styles.historyCard}>
                 <View style={styles.cardHeader}>
                   <View style={styles.teamInfo}>
-                    <Text style={styles.hostTeamText}>{formatTeamDisplayName(match.host_team_name, teamStatusByName[match.host_team_name])}</Text>
+                    <Text style={styles.hostTeamText}>{getTeamIcon(teamTypeByName[resolveTeamName(match.host_team_name)])} {formatTeamDisplayName(resolveTeamName(match.host_team_name), teamStatusByName[resolveTeamName(match.host_team_name)])}</Text>
                     <Text style={styles.vsText}>VS</Text>
-                    <Text style={styles.awayTeamText}>{match.away_team_name ? formatTeamDisplayName(match.away_team_name, teamStatusByName[match.away_team_name]) : '자체 내전'}</Text>
+                    <Text style={styles.awayTeamText}>{match.away_team_name ? `${getTeamIcon(teamTypeByName[resolveTeamName(match.away_team_name)])} ${formatTeamDisplayName(resolveTeamName(match.away_team_name), teamStatusByName[resolveTeamName(match.away_team_name)])}` : '자체 내전'}</Text>
                   </View>
 
                   <View
@@ -424,7 +424,7 @@ export default function MyMatchHistoryScreen() {
                   </View>
                   <View style={styles.detailRow}>
                     <Text style={styles.detailIcon}>📍</Text>
-                    <Text style={styles.detailText}>[{match.region || '천안'}] {match.location}</Text>
+                    <Text style={styles.detailText}>[{cleanRegionName(match.region)}] {match.location}</Text>
                   </View>
                   {match.set_scores ? (
                     <View style={styles.detailRow}>

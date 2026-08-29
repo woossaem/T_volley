@@ -22,6 +22,16 @@ import TeamReportModal, { TeamReportAnalytics } from '../components/TeamReportMo
 import StickyAdBanner from '../components/StickyAdBanner';
 import BatchProposalModal from '../components/BatchProposalModal';
 import { isActiveTeamStatus } from '../lib/teamStatus';
+import {
+  resolveTeamName,
+  resolveTeamNameOrNull,
+  resolveUserName,
+  extractRow,
+  cleanRegionName,
+  getTeamIcon,
+  snapshotTeamForState,
+  isSameName,
+} from '../lib/nameUtils';
 
 interface TeamMemberObj {
   userId: string;
@@ -41,7 +51,7 @@ interface TeamData {
   team_id: string;
   team_name: string;
   region: string;
-  team_type: 'school' | 'club';
+  team_type: 'school' | 'club' | string;
   youtube_channel_url?: string | null;
   manner_temp?: number;
   leader_id?: string | null;
@@ -50,49 +60,6 @@ interface TeamData {
   memberCount: number;
   isOfficial: boolean;
 }
-
-const getTeamIcon = (type?: 'school' | 'club') => {
-  return type === 'school' ? '🏫' : '🛡️';
-};
-
-const parseTeamName = (rawName: any): string => {
-  if (!rawName) return '';
-  if (typeof rawName === 'string') {
-    const trimmed = rawName.trim();
-    if (!trimmed || trimmed === 'null' || trimmed === 'undefined') return '';
-    if ((trimmed.startsWith('{') && trimmed.endsWith('}')) || (trimmed.startsWith('[') && trimmed.endsWith(']'))) {
-      try { return parseTeamName(JSON.parse(trimmed)); } catch (e) {}
-    }
-    return trimmed;
-  }
-  if (Array.isArray(rawName)) {
-    for (const item of rawName) {
-      const parsed = parseTeamName(item);
-      if (parsed) return parsed;
-    }
-    return '';
-  }
-  if (typeof rawName === 'object') {
-    const candidate = rawName.name || rawName.team_name || rawName.title || rawName.formatted;
-    if (candidate && candidate !== rawName) {
-      const parsedCand = parseTeamName(candidate);
-      if (parsedCand) return parsedCand;
-    }
-  }
-  return '';
-};
-
-const cleanRegionName = (rawInput?: any): string => {
-  if (!rawInput) return '천안';
-  let str = typeof rawInput === 'string' ? rawInput.trim() : String(rawInput).trim();
-  if (!str || str === 'undefined' || str === 'null') return '천안';
-
-  let clean = str.replace(/^(충남|충북|충청남도|충청북도|전남|전북|경남|경북|경기|경기도|강원|강원도|제주|제주도|서울|서울특별시|인천|인천광역시|대전|대전광역시|대구|대구광역시|광주|광주광역시|부산|부산광역시|울산|울산광역시|세종|세종특별자치시)\s*/, '');
-  if (clean.length >= 2 && (clean.endsWith('시') || clean.endsWith('군'))) {
-    clean = clean.slice(0, -1);
-  }
-  return clean.trim() || str || '천안';
-};
 
 const getMatchSeasonYear = (dateStr: string) => {
   if (!dateStr) return String(new Date().getFullYear());
@@ -180,19 +147,19 @@ export default function AllTeamsListScreen() {
     try {
       let activeMyTeams: string[] = [];
       if (currentUserId) {
-        const { data: myMems } = await supabase.from('team_members').select('team_id, is_active, teams(name, status)').eq('user_id', currentUserId);
+        const { data: myMems } = await supabase.from('team_members').select('team_id, is_active, teams(*)').eq('user_id', currentUserId);
         if (myMems) {
           activeMyTeams = (myMems || []).filter((m: any) => m.is_active).map((m: any) => m.team_id as string);
           setMyTeamIds(activeMyTeams);
           
           const names = (myMems || []).filter((m: any) => {
             if (!m.is_active) return false;
-            const teamObj = Array.isArray(m.teams) ? m.teams[0] : m.teams;
+            const teamObj = extractRow<any>(m.teams);
             return isActiveTeamStatus(teamObj?.status);
           }).map((m: any) => {
-            const teamObj = Array.isArray(m.teams) ? m.teams[0] : m.teams;
-            return parseTeamName(teamObj?.name);
-          }).filter(Boolean);
+            const teamObj = extractRow<any>(m.teams);
+            return resolveTeamNameOrNull(teamObj);
+          }).filter((n): n is string => !!n);
           setMyTeamsNames(names);
 
           setPendingTeamIds((myMems || []).filter((m: any) => !m.is_active).map((m: any) => m.team_id as string));
@@ -202,20 +169,20 @@ export default function AllTeamsListScreen() {
       if (activeMyTeams.length > 0) {
         const { data: pendData } = await supabase
           .from('team_members')
-          .select(`id, team_id, user_id, teams(name), profiles(full_name)`)
+          .select(`id, team_id, user_id, teams(*), profiles(*)`)
           .in('team_id', activeMyTeams)
           .eq('is_active', false);
 
         if (pendData) {
           const formattedPendings: PendingMemberReq[] = pendData.map((p: any) => {
-            const teamObj = Array.isArray(p.teams) ? p.teams[0] : p.teams;
-            const profileObj = Array.isArray(p.profiles) ? p.profiles[0] : p.profiles;
+            const teamObj = extractRow<any>(p.teams);
+            const profileObj = extractRow<any>(p.profiles);
             return {
               id: p.id,
               team_id: p.team_id,
               user_id: p.user_id,
-              full_name: profileObj?.full_name || '선생님',
-              team_name: parseTeamName(teamObj?.name) || '소속팀',
+              full_name: resolveUserName(profileObj, undefined, '선생님'),
+              team_name: resolveTeamName(teamObj, '소속팀'),
             };
           });
           setPendingRequestsForMyTeams(formattedPendings);
@@ -242,22 +209,20 @@ export default function AllTeamsListScreen() {
       const regionsSet = new Set<string>();
 
       data?.forEach((item: any) => {
-        const teamObj = Array.isArray(item.teams) ? item.teams[0] : item.teams;
-        const profileObj = Array.isArray(item.profiles) ? item.profiles[0] : item.profiles;
+        const teamObj = extractRow<any>(item.teams);
+        const profileObj = extractRow<any>(item.profiles);
         const uId = item.user_id;
         if (!teamObj) return;
         if (!isActiveTeamStatus(teamObj.status)) return;
 
-        const cleanName = parseTeamName(teamObj.name);
-        if (!cleanName) return;
-
+        const cleanName = resolveTeamName(teamObj);
         const stdRegion = cleanRegionName(teamObj.region);
         if (stdRegion) regionsSet.add(stdRegion);
 
         const existing = teamMap.get(teamObj.id) || {
           name: cleanName,
           region: stdRegion || '천안',
-          team_type: (teamObj.team_type as 'school' | 'club') || 'school',
+          team_type: teamObj.team_type || '',
           youtube_channel_url: teamObj.youtube_channel_url || null,
           manner_temp: teamObj.manner_temp || 36.5,
           leader_id: teamObj.leader_id || null,
@@ -265,7 +230,7 @@ export default function AllTeamsListScreen() {
           memberObjs: [] as TeamMemberObj[],
         };
 
-        const realName: string = profileObj?.full_name || '팀원';
+        const realName: string = resolveUserName(profileObj, undefined, '팀원');
         if (!existing.memberObjs.some(m => m.userId === uId)) {
           existing.memberObjs.push({
             userId: uId,
@@ -278,12 +243,11 @@ export default function AllTeamsListScreen() {
 
       const { data: allTeamsDB } = await supabase
         .from('teams')
-        .select('*')
-        .eq('status', 'active');
+        .select('*');
       if (allTeamsDB) {
         allTeamsDB.forEach((t: any) => {
-          const cleanName = parseTeamName(t.name) || parseTeamName(t.team_name);
-          if (!cleanName) return;
+          if (!isActiveTeamStatus(t.status)) return;
+          const cleanName = resolveTeamName(t);
 
           const stdRegion = cleanRegionName(t.region);
           if (stdRegion) regionsSet.add(stdRegion);
@@ -291,7 +255,7 @@ export default function AllTeamsListScreen() {
             teamMap.set(t.id, {
               name: cleanName,
               region: stdRegion || '천안',
-              team_type: (t.team_type as 'school' | 'club') || 'school',
+              team_type: t.team_type || '',
               youtube_channel_url: t.youtube_channel_url || null,
               manner_temp: t.manner_temp || 36.5,
               leader_id: t.leader_id || null,
@@ -402,7 +366,7 @@ export default function AllTeamsListScreen() {
   const similarTeams = useMemo(() => {
     const query = newTeamName.trim().replace(/\s+/g, '').toLowerCase();
     if (!query) return [];
-    return teams.filter(t => t.team_name.replace(/\s+/g, '').toLowerCase().includes(query));
+    return teams.filter(t => resolveTeamName(t).replace(/\s+/g, '').toLowerCase().includes(query));
   }, [teams, newTeamName]);
 
   const handleSelectSimilarTeam = (team: TeamData) => {
@@ -423,7 +387,7 @@ export default function AllTeamsListScreen() {
     if (!trimmedName) return Alert.alert('알림', '팀 이름을 입력해 주세요.');
 
     const cleanInput = trimmedName.replace(/\s+/g, '').toLowerCase();
-    const exactDuplicate = teams.find(t => t.team_name.replace(/\s+/g, '').toLowerCase() === cleanInput);
+    const exactDuplicate = teams.find(t => resolveTeamName(t).replace(/\s+/g, '').toLowerCase() === cleanInput);
 
     if (exactDuplicate) {
       return Alert.alert('이미 존재함', `'${exactDuplicate.team_name}' 팀이 이미 존재합니다.`);
@@ -552,12 +516,12 @@ export default function AllTeamsListScreen() {
     const oppMap: { [oppName: string]: { wins: number; losses: number; draws: number; total: number } } = {};
 
     matchesList.forEach((m: any) => {
-      const hName = parseTeamName(m.host_team_name);
-      const aName = parseTeamName(m.away_team_name);
-      const wName = parseTeamName(m.winner_team);
-      const isHost = hName === teamName;
+      const hName = resolveTeamName(m.host_team_name);
+      const aName = resolveTeamName(m.away_team_name);
+      const wName = resolveTeamName(m.winner_team);
+      const isHost = isSameName(hName, teamName);
       const oppName = isHost ? aName : hName;
-      const isWin = wName === teamName;
+      const isWin = isSameName(wName, teamName);
       const isDraw = wName === 'draw' || wName === '무승부';
 
       if (isWin) wins++;
@@ -611,7 +575,7 @@ export default function AllTeamsListScreen() {
     });
 
     const teamRecent5 = matchesList.slice(0, 5).map((m: any) => {
-      const isWin = parseTeamName(m.winner_team) === teamName;
+      const isWin = isSameName(m.winner_team, teamName);
       const isDraw = m.winner_team === 'draw' || m.winner_team === '무승부';
       return isWin ? 'WIN' : isDraw ? 'DRAW' : 'LOSS';
     });
@@ -639,9 +603,9 @@ export default function AllTeamsListScreen() {
 
   const selectedTeamAnalytics = useMemo<TeamReportAnalytics | null>(() => {
     if (!selectedTeamForReport) return null;
-    const teamName = parseTeamName(selectedTeamForReport.team_name);
+    const teamName = resolveTeamName(selectedTeamForReport);
 
-    const teamMatches = allMatches.filter((m: any) => parseTeamName(m.host_team_name) === teamName || parseTeamName(m.away_team_name) === teamName);
+    const teamMatches = allMatches.filter((m: any) => isSameName(m.host_team_name, teamName) || isSameName(m.away_team_name, teamName));
 
     const careerStats = calcStatsForMatches(teamMatches, teamName);
 
@@ -660,7 +624,11 @@ export default function AllTeamsListScreen() {
     return {
       teamName,
       region: cleanRegionName(selectedTeamForReport.region),
-      teamType: selectedTeamForReport.team_type,
+      teamType: selectedTeamForReport.team_type === 'school' || selectedTeamForReport.team_type === '학교'
+        ? 'school'
+        : selectedTeamForReport.team_type === 'club' || selectedTeamForReport.team_type === '동호회'
+        ? 'club'
+        : undefined,
       mannerTemp: selectedTeamForReport.manner_temp,
       isOfficial: selectedTeamForReport.isOfficial,
       memberCount: selectedTeamForReport.memberCount,
@@ -683,7 +651,7 @@ export default function AllTeamsListScreen() {
   }, [selectedTeamForReport, allMatches]);
 
   const openTeamReport = (team: TeamData) => {
-    setSelectedTeamForReport(team);
+    setSelectedTeamForReport(snapshotTeamForState(team));
     setTeamReportModalVisible(true);
   };
 
@@ -749,7 +717,8 @@ export default function AllTeamsListScreen() {
             </View>
           ) : (
             filteredAndSortedTeams.map((team) => {
-              const isSchool = team.team_type === 'school';
+              const isSchool = team.team_type === 'school' || team.team_type === '학교';
+              const isClub = team.team_type === 'club' || team.team_type === '동호회';
               const isExpanded = expandedTeamId === team.team_id;
               const MAX_DISPLAY = 3;
               const extraCount = team.memberCount - MAX_DISPLAY;
@@ -779,7 +748,7 @@ export default function AllTeamsListScreen() {
                       </TouchableOpacity>
 
                       <Text style={styles.teamName} numberOfLines={1}>
-                        {getTeamIcon(team.team_type)} {team.team_name}
+                        {getTeamIcon(team.team_type)} {resolveTeamName(team)}
                       </Text>
 
                       <View style={styles.rightBadgeContainer}>
@@ -797,9 +766,9 @@ export default function AllTeamsListScreen() {
                         <Text style={styles.regionTagChipText}>📍 {cleanRegionName(team.region)}</Text>
                       </View>
 
-                      <View style={[styles.typeBadge, isSchool ? styles.schoolTypeBadge : styles.clubTypeBadge]}>
-                        <Text style={[styles.typeBadgeText, isSchool ? styles.schoolTypeBadgeText : styles.clubTypeBadgeText]}>
-                          {isSchool ? '학교' : '동호회'}
+                      <View style={[styles.typeBadge, isSchool ? styles.schoolTypeBadge : isClub ? styles.clubTypeBadge : styles.regionTagChip]}>
+                        <Text style={[styles.typeBadgeText, isSchool ? styles.schoolTypeBadgeText : isClub ? styles.clubTypeBadgeText : styles.regionTagChipText]}>
+                          {isSchool ? '학교' : isClub ? '동호회' : '팀'}
                         </Text>
                       </View>
 
@@ -983,7 +952,7 @@ export default function AllTeamsListScreen() {
                           onPress={() => handleSelectSimilarTeam(t)}
                         >
                           <Text style={styles.dropdownItemText}>
-                            {getTeamIcon(t.team_type)} {t.team_name} [{cleanRegionName(t.region)}] (터치 시 가입)
+                            {getTeamIcon(t.team_type)} {resolveTeamName(t)} [{cleanRegionName(t.region)}] (터치 시 가입)
                           </Text>
                         </TouchableOpacity>
                       ))}

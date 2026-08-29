@@ -11,6 +11,7 @@ import { Colors } from '../constants/Colors';
 import StickyAdBanner from './StickyAdBanner';
 import { supabase } from '../lib/supabase';
 import { buildTeamStatusByName, formatTeamDisplayName } from '../lib/teamStatus';
+import { resolveTeamNameOrNull, cleanRegionName, getTeamIcon } from '../lib/nameUtils';
 
 export interface TeamReportStat {
   totalMatches: number;
@@ -33,7 +34,7 @@ export interface TeamReportStat {
 export interface TeamReportAnalytics {
   teamName: string;
   region?: string;
-  teamType?: 'school' | 'club';
+  teamType?: 'school' | 'club' | string;
   mannerTemp?: number;
   isOfficial?: boolean;
   memberCount?: number;
@@ -69,58 +70,6 @@ interface TeamReportModalProps {
   selectedSeason?: string;
 }
 
-const getTeamIcon = (type?: 'school' | 'club') => {
-  return type === 'school' ? '🏫' : '🛡️';
-};
-
-const safeExtractTeamName = (raw: any): string => {
-  if (!raw) return '';
-  if (typeof raw === 'string') {
-    const trimmed = raw.trim();
-    if (!trimmed || trimmed === 'null' || trimmed === 'undefined' || trimmed === '{}' || trimmed === '[]' || trimmed === '[object Object]') return '';
-    if ((trimmed.startsWith('{') && trimmed.endsWith('}')) || (trimmed.startsWith('[') && trimmed.endsWith(']'))) {
-      try { return safeExtractTeamName(JSON.parse(trimmed)); } catch (e) {}
-    }
-    return trimmed;
-  }
-  if (Array.isArray(raw)) {
-    for (const item of raw) {
-      const res = safeExtractTeamName(item);
-      if (res) return res;
-    }
-    return '';
-  }
-  if (typeof raw === 'object' && raw !== null) {
-    const keysToTry = ['name', 'team_name', 'formatted', 'title', 'label'];
-    for (const key of keysToTry) {
-      if (raw[key] && typeof raw[key] === 'string' && raw[key].trim().length > 0) {
-        const res = safeExtractTeamName(raw[key]);
-        if (res) return res;
-      }
-    }
-    for (const k of Object.keys(raw)) {
-      if (['id', 'team_id', 'user_id', 'created_at', 'updated_at'].includes(k)) continue;
-      if (typeof raw[k] === 'string' && raw[k].trim().length > 0) {
-        const res = safeExtractTeamName(raw[k]);
-        if (res) return res;
-      }
-    }
-  }
-  return '';
-};
-
-const cleanRegionName = (rawInput?: any): string => {
-  const parsed = safeExtractTeamName(rawInput) || (typeof rawInput === 'string' ? rawInput.trim() : '');
-  if (!parsed) return '천안';
-
-  let clean = parsed.replace(/^(충남|충북|충청남도|충청북도|전남|전북|경남|경북|경기|경기도|강원|강원도|제주|제주도|서울|서울특별시|인천|인천광역시|대전|대전광역시|대구|대구광역시|광주|광주광역시|부산|부산광역시|울산|울산광역시|세종|세종특별자치시)\s*/, '');
-  if (clean.length >= 2 && (clean.endsWith('시') || clean.endsWith('군'))) {
-    clean = clean.slice(0, -1);
-  }
-  clean = clean.trim();
-  return clean.length > 0 ? clean : parsed || '천안';
-};
-
 export default function TeamReportModal({
   visible,
   onClose,
@@ -134,9 +83,12 @@ export default function TeamReportModal({
     if (!visible) return;
     let cancelled = false;
     (async () => {
-      const { data } = await supabase.from('teams').select('id, name, status');
+      const { data } = await supabase.from('teams').select('*');
       if (cancelled || !data) return;
-      setStatusByName(buildTeamStatusByName(data));
+      setStatusByName(buildTeamStatusByName(data.map((t: any) => ({
+        name: resolveTeamNameOrNull(t),
+        status: t.status || 'active',
+      }))));
     })();
     return () => {
       cancelled = true;
@@ -181,13 +133,13 @@ export default function TeamReportModal({
   if (!analytics) return null;
 
   const formatNamedTeam = (rawInput: any) => {
-    const raw = safeExtractTeamName(rawInput) || (typeof rawInput === 'string' ? rawInput : '');
+    const raw = resolveTeamNameOrNull(rawInput) || (typeof rawInput === 'string' ? rawInput : '');
     if (!raw || raw === '없음') return raw || '없음';
     return formatTeamDisplayName(raw, statusByName[raw]);
   };
 
   const teamIcon = getTeamIcon(analytics.teamType);
-  const rawTeamName = safeExtractTeamName(analytics.teamName) || analytics.teamName || '소속팀';
+  const rawTeamName = resolveTeamNameOrNull(analytics.teamName) || resolveTeamNameOrNull(analytics) || '소속팀';
   const displayTeamName = formatTeamDisplayName(
     rawTeamName,
     analytics.status || statusByName[rawTeamName]
@@ -221,7 +173,11 @@ export default function TeamReportModal({
               <Text style={styles.metaRegionTag}>📍 {regionName}</Text>
               <Text style={styles.metaDivider}>•</Text>
               <Text style={styles.metaSubText}>
-                {analytics.teamType === 'school' ? '학교 팀' : '동호회 팀'}
+                {analytics.teamType === 'school' || analytics.teamType === '학교'
+                  ? '학교 팀'
+                  : analytics.teamType === 'club' || analytics.teamType === '동호회'
+                  ? '동호회 팀'
+                  : '팀'}
               </Text>
               <Text style={styles.metaDivider}>•</Text>
               <Text style={styles.metaSubText}>소속 {analytics.memberCount || 0}명</Text>

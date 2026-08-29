@@ -11,42 +11,7 @@ import {
 } from 'react-native';
 import { Colors } from '../constants/Colors';
 import StickyAdBanner from './StickyAdBanner'; // 💡 스티커 광고 배너 Import
-
-const parseTeamName = (rawName: any): string => {
-  if (!rawName) return '';
-  if (typeof rawName === 'string') {
-    const trimmed = rawName.trim();
-    if (!trimmed || trimmed === 'null' || trimmed === 'undefined' || trimmed === '{}' || trimmed === '[]') return '';
-    if ((trimmed.startsWith('{') && trimmed.endsWith('}')) || (trimmed.startsWith('[') && trimmed.endsWith(']'))) {
-      try { return parseTeamName(JSON.parse(trimmed)); } catch (e) {}
-    }
-    return trimmed;
-  }
-  if (Array.isArray(rawName)) {
-    for (const item of rawName) {
-      const parsed = parseTeamName(item);
-      if (parsed) return parsed;
-    }
-    return '';
-  }
-  if (typeof rawName === 'object') {
-    const candidate = rawName.name || rawName.team_name || rawName.title || rawName.formatted || rawName.label;
-    if (candidate && candidate !== rawName) {
-      const parsedCand = parseTeamName(candidate);
-      if (parsedCand) return parsedCand;
-    }
-    for (const key of Object.keys(rawName)) {
-      if (['id', 'team_id', 'user_id', 'team_type', 'region', 'created_at', 'updated_at', 'manner_temp', 'password', 'leader_id'].includes(key)) continue;
-      const val = rawName[key];
-      if (val && typeof val === 'string' && val.trim().length > 0) return val.trim();
-      if (val && typeof val === 'object') {
-        const parsedVal = parseTeamName(val);
-        if (parsedVal) return parsedVal;
-      }
-    }
-  }
-  return '';
-};
+import { resolveTeamName } from '../lib/nameUtils';
 
 interface DynamicSetScore {
   hostScore: number;
@@ -167,8 +132,8 @@ export default function PastMatchRegisterModal({
     );
   };
 
-  const cleanHostTeam = parseTeamName(pastHostTeam);
-  const cleanAwayTeam = parseTeamName(pastAwayTeam);
+  const cleanHostTeam = resolveTeamName(pastHostTeam, '');
+  const cleanAwayTeam = resolveTeamName(pastAwayTeam, '');
 
   return (
     <Modal visible={visible} animationType="slide" transparent={true} onRequestClose={onClose}>
@@ -188,7 +153,7 @@ export default function PastMatchRegisterModal({
             <Text style={styles.inputLabel}>1. 내 출전 팀 선택</Text>
             <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 4, marginBottom: 10 }}>
               {myTeams.map((t) => {
-                const cleanT = parseTeamName(t);
+                const cleanT = resolveTeamName(t, '');
                 const isSelected = cleanHostTeam === cleanT;
                 return (
                   <TouchableOpacity key={cleanT} style={[styles.teamSelectChip, isSelected && styles.teamSelectChipActive]} onPress={() => onSelectPastHostTeam(cleanT)}>
@@ -205,7 +170,7 @@ export default function PastMatchRegisterModal({
                 <View style={styles.dropdownBox}>
                   <ScrollView style={{ maxHeight: 100 }} nestedScrollEnabled={true}>
                     {filteredAwayTeams.map((t) => {
-                      const cleanItem = parseTeamName(t);
+                      const cleanItem = resolveTeamName(t, '');
                       return (
                         <TouchableOpacity key={cleanItem} style={styles.dropdownItem} onPress={() => { onChangePastAwayTeam(cleanItem); onShowAwayDropdown(false); }}>
                           <Text style={styles.dropdownItemText}>🏐 {cleanItem} (공식 등록팀)</Text>
