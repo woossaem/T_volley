@@ -16,6 +16,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
 import { Colors } from '../constants/Colors';
 import { formatTeamDisplayName } from '../lib/teamStatus';
+import { parseRosterUserIds } from '../lib/roster';
 import UserProfileModal from '../components/UserProfileModal';
 import TeamReportModal from '../components/TeamReportModal';
 import StickyAdBanner from '../components/StickyAdBanner';
@@ -300,8 +301,8 @@ export default function RankingScreen() {
         let wins = 0, losses = 0, draws = 0;
 
         targetMatches.forEach((m: any) => {
-          const inHost = m.host_roster?.split(',').includes(p.id);
-          const inAway = m.away_roster?.split(',').includes(p.id);
+          const inHost = parseRosterUserIds(m.host_roster).includes(p.id);
+          const inAway = parseRosterUserIds(m.away_roster).includes(p.id);
 
           if (inHost || inAway) {
             const myTeamInMatch = inHost ? m.host_team_name : m.away_team_name;

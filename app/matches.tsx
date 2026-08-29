@@ -28,6 +28,7 @@ import MatchCommentModal from '../components/MatchCommentModal';
 import MatchPostgameReportModal from '../components/MatchPostgameReportModal'; // 💡 경기 결과 분석 리포트 모달 추가
 import MatchCard, { MatchData, ApplicationData } from '../components/MatchCard';
 import { buildTeamStatusByName, isActiveTeamStatus } from '../lib/teamStatus';
+import { parseSetRosterMap } from '../lib/roster';
 
 interface MemberInfo {
   user_id: string;
@@ -401,15 +402,7 @@ export default function MatchesScreen() {
     return scoresArray.map(s => `${s.hostScore}:${s.awayScore}`).join(', ');
   };
 
-  const parseRoster = (rosterStr: string | null | undefined): SetRosterMap => {
-    if (!rosterStr) return {};
-    try {
-      const parsed = JSON.parse(rosterStr);
-      if (typeof parsed === 'object' && !Array.isArray(parsed)) return parsed;
-    } catch (e) {}
-    const arr = rosterStr.split(',').filter(Boolean);
-    return arr.length > 0 ? { 0: arr } : {};
-  };
+  const parseRoster = (rosterStr: string | null | undefined): SetRosterMap => parseSetRosterMap(rosterStr);
 
   const fetchMatchTeamMembers = async (
     hostTeamName: string,

@@ -21,6 +21,7 @@ import StickyAdBanner from '../components/StickyAdBanner';
 import MatchCommentModal from '../components/MatchCommentModal';
 import UserProfileModal from '../components/UserProfileModal';
 import MatchPostgameReportModal from '../components/MatchPostgameReportModal'; // 💡 신규 임포트
+import { parseSetRosterMap } from '../lib/roster';
 
 interface MatchData {
   id: string;
@@ -335,15 +336,7 @@ export default function IntramuralScreen() {
     }
   };
 
-  const parseRoster = (rosterStr: string | null | undefined): SetRosterMap => {
-    if (!rosterStr) return {};
-    try {
-      const parsed = JSON.parse(rosterStr);
-      if (typeof parsed === 'object' && !Array.isArray(parsed)) return parsed;
-    } catch (e) {}
-    const arr = rosterStr.split(',').filter(Boolean);
-    return arr.length > 0 ? { 0: arr } : {};
-  };
+  const parseRoster = (rosterStr: string | null | undefined): SetRosterMap => parseSetRosterMap(rosterStr);
 
   const toggleIntraSetRoster = (userId: string) => {
     const mapA = { ...intraRostersA };

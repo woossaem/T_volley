@@ -18,6 +18,7 @@ import { Colors } from '../constants/Colors';
 import StickyAdBanner from '../components/StickyAdBanner';
 import MatchPostgameReportModal from '../components/MatchPostgameReportModal';
 import { buildTeamStatusByName, formatTeamDisplayName } from '../lib/teamStatus';
+import { parseRosterUserIds } from '../lib/roster';
 
 interface MatchHistoryItem {
   id: string;
@@ -80,23 +81,6 @@ export default function MyMatchHistoryScreen() {
       year: parseInt(numbers[0], 10) || 0,
       month: parseInt(numbers[1], 10) || 0,
     };
-  };
-
-  const parseRosterUserIds = (rosterStr: string | null | undefined): string[] => {
-    if (!rosterStr) return [];
-    try {
-      const parsed = JSON.parse(rosterStr);
-      if (typeof parsed === 'object' && !Array.isArray(parsed) && parsed !== null) {
-        const userIds = new Set<string>();
-        Object.values(parsed).forEach((arr: any) => {
-          if (Array.isArray(arr)) {
-            arr.forEach((id: string) => userIds.add(id));
-          }
-        });
-        return Array.from(userIds);
-      }
-    } catch (e) {}
-    return rosterStr.split(',').filter(Boolean);
   };
 
   const availableYears = useMemo(() => {

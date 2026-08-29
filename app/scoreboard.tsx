@@ -20,6 +20,7 @@ import * as ScreenOrientation from 'expo-screen-orientation';
 import ScoreTimeline, { MatchEvent } from '../components/ScoreTimeline';
 import PlayerActionModal, { Member } from '../components/PlayerActionModal';
 import MatchPostgameReportModal from '../components/MatchPostgameReportModal';
+import { parseSetRosterMap } from '../lib/roster';
 
 interface MatchRecord {
   id: string;
@@ -382,10 +383,7 @@ export default function ScoreboardScreen() {
     const isHost = actionTeam === 'host';
     const targetRosterStr = isHost ? match?.host_roster : match?.away_roster;
 
-    let rosterMap: any = {};
-    try {
-      if (targetRosterStr) rosterMap = JSON.parse(targetRosterStr);
-    } catch (e) {}
+    const rosterMap = parseSetRosterMap(targetRosterStr);
 
     const currentSetList: string[] = rosterMap[currentSetIndex] || rosterMap[0] || [];
     const updatedSetList = currentSetList
@@ -618,23 +616,16 @@ export default function ScoreboardScreen() {
   const isMyAwayTeam = match?.away_team_name && myTeams.includes(match.away_team_name);
 
   const getSetRosters = (isHost: boolean) => {
-    const rosterStr = isHost ? match?.host_roster : match?.away_roster;
+    const rosterRaw = isHost ? match?.host_roster : match?.away_roster;
     const baseMembers = isHost || isIntramural ? hostMembers : awayMembers;
-    
-    if (!rosterStr) {
-      return { court: baseMembers, bench: [] };
-    }
+    const rosterMap = parseSetRosterMap(rosterRaw);
+    const setRoster: string[] = rosterMap[currentSetIndex] || rosterMap[0] || [];
 
-    try {
-      const parsed = JSON.parse(rosterStr);
-      const setRoster: string[] = parsed[currentSetIndex] || parsed[0] || [];
-      
-      if (Array.isArray(setRoster) && setRoster.length > 0) {
-        const court = baseMembers.filter(m => setRoster.includes(m.user_id));
-        const bench = baseMembers.filter(m => !setRoster.includes(m.user_id));
-        return { court, bench };
-      }
-    } catch (e) {}
+    if (Array.isArray(setRoster) && setRoster.length > 0) {
+      const court = baseMembers.filter(m => setRoster.includes(m.user_id));
+      const bench = baseMembers.filter(m => !setRoster.includes(m.user_id));
+      return { court, bench };
+    }
 
     return { court: baseMembers, bench: [] };
   };

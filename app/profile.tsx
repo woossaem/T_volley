@@ -16,6 +16,7 @@ import { useRouter, useFocusEffect } from 'expo-router';
 import * as Clipboard from 'expo-clipboard';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
+import { parseRosterUserIds } from '../lib/roster';
 import { Colors } from '../constants/Colors';
 import StickyAdBanner from '../components/StickyAdBanner';
 
@@ -353,13 +354,13 @@ export default function ProfileScreen() {
     });
 
     targetMatches.forEach((m: any) => {
-      const hostList = m.host_roster ? m.host_roster.split(',') : [];
-      const awayList = m.away_roster ? m.away_roster.split(',') : [];
+      const hostList = parseRosterUserIds(m.host_roster);
+      const awayList = parseRosterUserIds(m.away_roster);
       const inHost = currentUserId ? hostList.includes(currentUserId) : false;
       const inAway = currentUserId ? awayList.includes(currentUserId) : false;
 
-      const hostMercList = m.host_mercenary_roster ? m.host_mercenary_roster.split(',') : [];
-      const awayMercList = m.away_mercenary_roster ? m.away_mercenary_roster.split(',') : [];
+      const hostMercList = parseRosterUserIds(m.host_mercenary_roster);
+      const awayMercList = parseRosterUserIds(m.away_mercenary_roster);
       const isHostMerc = currentUserId ? hostMercList.includes(currentUserId) : false;
       const isAwayMerc = currentUserId ? awayMercList.includes(currentUserId) : false;
 
@@ -629,8 +630,8 @@ export default function ProfileScreen() {
     const totalTeamGames = teamAllMatches.length;
 
     const myPlayedForTeam = teamAllMatches.filter(m => {
-      const hostList = m.host_roster ? m.host_roster.split(',') : [];
-      const awayList = m.away_roster ? m.away_roster.split(',') : [];
+      const hostList = parseRosterUserIds(m.host_roster);
+      const awayList = parseRosterUserIds(m.away_roster);
       const inHost = currentUserId ? (m.host_team_name === teamName && hostList.includes(currentUserId)) : false;
       const inAway = currentUserId ? (m.away_team_name === teamName && awayList.includes(currentUserId)) : false;
       return inHost || inAway;
@@ -650,8 +651,7 @@ export default function ProfileScreen() {
 
     myPlayedForTeam.forEach(m => {
       const isHost = m.host_team_name === teamName;
-      const myRosterStr = isHost ? m.host_roster : m.away_roster;
-      const myRoster = myRosterStr ? myRosterStr.split(',') : [];
+      const myRoster = parseRosterUserIds(isHost ? m.host_roster : m.away_roster);
       const isWin = m.winner_team === teamName;
 
       if (m.set_scores) {
@@ -697,8 +697,8 @@ export default function ProfileScreen() {
     });
 
     const myMercMatches = targetMatches.filter(m => {
-      const hList = m.host_mercenary_roster ? m.host_mercenary_roster.split(',') : [];
-      const aList = m.away_mercenary_roster ? m.away_mercenary_roster.split(',') : [];
+      const hList = parseRosterUserIds(m.host_mercenary_roster);
+      const aList = parseRosterUserIds(m.away_mercenary_roster);
       return hList.includes(currentUserId) || aList.includes(currentUserId);
     });
 
@@ -707,7 +707,7 @@ export default function ProfileScreen() {
     const hiredCountMap: { [team: string]: number } = {};
 
     myMercMatches.forEach(m => {
-      const isHostMerc = m.host_mercenary_roster?.split(',').includes(currentUserId);
+      const isHostMerc = parseRosterUserIds(m.host_mercenary_roster).includes(currentUserId!);
       const hiredTeam = isHostMerc ? m.host_team_name : m.away_team_name;
       const isWin = m.winner_team === hiredTeam;
       const isDraw = m.winner_team === 'draw' || m.winner_team === '무승부';
@@ -732,7 +732,7 @@ export default function ProfileScreen() {
     });
 
     const recent5 = myMercMatches.slice(0, 5).map(m => {
-      const isHostMerc = m.host_mercenary_roster?.split(',').includes(currentUserId);
+      const isHostMerc = parseRosterUserIds(m.host_mercenary_roster).includes(currentUserId!);
       const hiredTeam = isHostMerc ? m.host_team_name : m.away_team_name;
       if (m.winner_team === hiredTeam) return 'WIN';
       if (m.winner_team === 'draw' || m.winner_team === '무승부') return 'DRAW';
