@@ -16,7 +16,7 @@ import { useRouter, useFocusEffect } from 'expo-router';
 import * as Clipboard from 'expo-clipboard';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
-import { parseRosterUserIds } from '../lib/roster';
+import { parseRosterUserIds, safeIncludes, safeNameText } from '../lib/roster';
 import { Colors } from '../constants/Colors';
 import StickyAdBanner from '../components/StickyAdBanner';
 
@@ -356,8 +356,8 @@ export default function ProfileScreen() {
     targetMatches.forEach((m: any) => {
       const hostList = parseRosterUserIds(m.host_roster);
       const awayList = parseRosterUserIds(m.away_roster);
-      const inHost = currentUserId ? hostList.includes(currentUserId) : false;
-      const inAway = currentUserId ? awayList.includes(currentUserId) : false;
+      const inHost = currentUserId ? (hostList.includes(currentUserId) || safeIncludes(m.host_roster, currentUserId)) : false;
+      const inAway = currentUserId ? (awayList.includes(currentUserId) || safeIncludes(m.away_roster, currentUserId)) : false;
 
       const hostMercList = parseRosterUserIds(m.host_mercenary_roster);
       const awayMercList = parseRosterUserIds(m.away_mercenary_roster);
@@ -519,7 +519,7 @@ export default function ProfileScreen() {
     });
 
     const teamMatches = targetMatches.filter(m => {
-      return m.host_team_name === teamName || m.away_team_name === teamName;
+      return safeNameText(m.host_team_name) === teamName || safeNameText(m.away_team_name) === teamName;
     });
 
     let setsWon = 0, setsLost = 0, shutoutWins = 0, fullsetWins = 0;
@@ -625,15 +625,15 @@ export default function ProfileScreen() {
     });
 
     const teamAllMatches = targetMatches.filter(m => {
-      return m.host_team_name === teamName || m.away_team_name === teamName;
+      return safeNameText(m.host_team_name) === teamName || safeNameText(m.away_team_name) === teamName;
     });
     const totalTeamGames = teamAllMatches.length;
 
     const myPlayedForTeam = teamAllMatches.filter(m => {
       const hostList = parseRosterUserIds(m.host_roster);
       const awayList = parseRosterUserIds(m.away_roster);
-      const inHost = currentUserId ? (m.host_team_name === teamName && hostList.includes(currentUserId)) : false;
-      const inAway = currentUserId ? (m.away_team_name === teamName && awayList.includes(currentUserId)) : false;
+      const inHost = currentUserId ? (safeNameText(m.host_team_name) === teamName && (hostList.includes(currentUserId) || safeIncludes(m.host_roster, currentUserId))) : false;
+      const inAway = currentUserId ? (safeNameText(m.away_team_name) === teamName && (awayList.includes(currentUserId) || safeIncludes(m.away_roster, currentUserId))) : false;
       return inHost || inAway;
     });
 
@@ -650,7 +650,7 @@ export default function ProfileScreen() {
     const partnerWinsMap: { [userId: string]: number } = {};
 
     myPlayedForTeam.forEach(m => {
-      const isHost = m.host_team_name === teamName;
+      const isHost = safeNameText(m.host_team_name) === teamName;
       const myRoster = parseRosterUserIds(isHost ? m.host_roster : m.away_roster);
       const isWin = m.winner_team === teamName;
 

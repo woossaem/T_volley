@@ -17,7 +17,7 @@ import { useRouter, useLocalSearchParams } from 'expo-router';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
 import { Colors } from '../constants/Colors';
-import { parseRosterUserIds } from '../lib/roster';
+import { parseRosterUserIds, safeIncludes } from '../lib/roster';
 
 interface MyTeam {
   id: string;
@@ -258,8 +258,8 @@ export default function MyTeamDetailScreen() {
         const awayList = parseRosterUserIds(m.away_roster);
 
         memList.forEach(mUser => {
-          const inA = hostList.includes(mUser.id);
-          const inB = awayList.includes(mUser.id);
+          const inA = hostList.includes(mUser.id) || safeIncludes(m.host_roster, mUser.id);
+          const inB = awayList.includes(mUser.id) || safeIncludes(m.away_roster, mUser.id);
 
           if (inA || inB) {
             rankMap[mUser.id].total++;

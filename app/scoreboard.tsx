@@ -20,7 +20,15 @@ import * as ScreenOrientation from 'expo-screen-orientation';
 import ScoreTimeline, { MatchEvent } from '../components/ScoreTimeline';
 import PlayerActionModal, { Member } from '../components/PlayerActionModal';
 import MatchPostgameReportModal from '../components/MatchPostgameReportModal';
-import { parseSetRosterMap } from '../lib/roster';
+import { parseSetRosterMap, safeIncludes, safeNameText, teamsInclude } from '../lib/roster';
+import {
+  MAX_SETS,
+  fetchMatchSets,
+  isBestOfFiveDecided,
+  parseRosterJson,
+  upsertMatchSets,
+  type MatchSetRecord,
+} from '../lib/matchSets';
 
 interface MatchRecord {
   id: string;
@@ -76,8 +84,10 @@ export default function ScoreboardScreen() {
 
   const [finishModalVisible, setFinishModalVisible] = useState(false);
   const [reportModalVisible, setReportModalVisible] = useState(false);
+  const [timelineEpoch, setTimelineEpoch] = useState(0);
 
   const isInitialLoadRef = useRef(true);
+  const matchClosedRef = useRef(false);
   const currentSetIndexRef = useRef(currentSetIndex);
   currentSetIndexRef.current = currentSetIndex;
 
@@ -99,12 +109,29 @@ export default function ScoreboardScreen() {
 
   useFocusEffect(
     useCallback(() => {
-      ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE);
+      if (!matchClosedRef.current) {
+        ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE);
+      }
       return () => {
-        ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP);
+        ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT);
       };
     }, [])
   );
+
+  const resetSetUiState = useCallback(() => {
+    setTimelineEpoch((n) => n + 1);
+    setActionModalVisible(false);
+    setEditingEventId(null);
+  }, []);
+
+  const openPostMatchReport = useCallback(async () => {
+    matchClosedRef.current = true;
+    setFinishModalVisible(false);
+    setActionModalVisible(false);
+    setEditModalVisible(false);
+    await ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT);
+    setReportModalVisible(true);
+  }, []);
 
   useEffect(() => {
     const releaseRole = async (role: string | null) => {
@@ -137,8 +164,8 @@ export default function ScoreboardScreen() {
     return { teamA: 'A팀', teamB: 'B팀' };
   }, [match?.description]);
 
-  const displayHostName = isIntramural ? parsedIntraNames.teamA : match?.host_team_name || '홈팀';
-  const displayAwayName = isIntramural ? parsedIntraNames.teamB : match?.away_team_name || '어웨이팀';
+  const displayHostName = isIntramural ? parsedIntraNames.teamA : safeNameText(match?.host_team_name) || '홈팀';
+  const displayAwayName = isIntramural ? parsedIntraNames.teamB : safeNameText(match?.away_team_name) || '어웨이팀';
 
   const fetchMembers = async (tName: string) => {
     try {
@@ -184,11 +211,11 @@ export default function ScoreboardScreen() {
         setMatch(data);
         setRoleModalVisible(true);
 
-        const hMems = await fetchMembers(data.host_team_name);
+        const hMems = await fetchMembers(safeNameText(data.host_team_name));
         setHostMembers(hMems);
         if (data.status === 'intramural') setAwayMembers(hMems);
         else if (data.away_team_name) {
-          const aMems = await fetchMembers(data.away_team_name);
+          const aMems = await fetchMembers(safeNameText(data.away_team_name));
           setAwayMembers(aMems);
         }
 
@@ -202,15 +229,19 @@ export default function ScoreboardScreen() {
           if (pData?.full_name) setAwayRecorderName(pData.full_name);
         } else setAwayRecorderName('공석');
 
-        if (data.set_scores) {
-          const sets = data.set_scores.split(', ').filter(Boolean);
-          setSetScoresHistory(sets);
-          setHistoryRef.current = sets;
-          if (isInitialLoadRef.current) {
-            setCurrentSetIndex(sets.length);
-            currentSetIndexRef.current = sets.length;
-            isInitialLoadRef.current = false;
-          }
+        const snapshot = await fetchMatchSets(matchId);
+        const closed = snapshot.sets.filter((s) => s.isClosed);
+        const closedStrs = closed.map((s) => `${s.hostScore}:${s.awayScore}`);
+        setSetScoresHistory(closedStrs);
+        setHistoryRef.current = closedStrs;
+
+        if (isInitialLoadRef.current) {
+          const liveIdx = snapshot.liveSetIndex;
+          setCurrentSetIndex(liveIdx);
+          currentSetIndexRef.current = liveIdx;
+          const liveSet = snapshot.sets[liveIdx];
+          if (liveSet) setCurrentScores({ host: liveSet.hostScore, away: liveSet.awayScore });
+          isInitialLoadRef.current = false;
         }
 
         const { data: evData } = await supabase.from('match_events').select('*').eq('match_id', matchId).order('created_at', { ascending: true });
@@ -235,7 +266,7 @@ export default function ScoreboardScreen() {
         setMatch(updated);
         
         if (updated.set_scores) {
-          const sets = updated.set_scores.split(', ').filter(Boolean);
+          const sets = String(updated.set_scores).split(', ').filter(Boolean);
           setSetScoresHistory(sets);
           setHistoryRef.current = sets;
         }
@@ -376,6 +407,9 @@ export default function ScoreboardScreen() {
       host_score: newHostScore,
       away_score: newAwayScore
     });
+    if (currentSetIndex >= setHistory.length) {
+      await persistSetsFromHistory(setHistory, { host: newHostScore, away: newAwayScore });
+    }
   };
 
   const handleSubConfirm = async (outMember: Member, inMember: Member) => {
@@ -387,7 +421,7 @@ export default function ScoreboardScreen() {
 
     const currentSetList: string[] = rosterMap[currentSetIndex] || rosterMap[0] || [];
     const updatedSetList = currentSetList
-      .filter(id => id !== outMember.user_id)
+      .filter(id => id !== outMember.user_id && !safeIncludes(id, outMember.user_id))
       .concat(inMember.user_id);
 
     rosterMap[currentSetIndex] = updatedSetList;
@@ -416,6 +450,14 @@ export default function ScoreboardScreen() {
     setMatch(prev => prev ? { ...prev, ...updatePayload } : prev);
 
     await supabase.from('matches').update(updatePayload).eq('id', matchId);
+    await persistSetsFromHistory(
+      setHistory,
+      { host: currentScores.host, away: currentScores.away },
+      {
+        host: parseRosterJson(isHost ? updatedRosterJson : match?.host_roster),
+        away: parseRosterJson(!isHost ? updatedRosterJson : match?.away_roster),
+      },
+    );
     await supabase.from('match_events').insert({
       match_id: matchId,
       set_index: currentSetIndex,
@@ -428,6 +470,59 @@ export default function ScoreboardScreen() {
       host_score: currentScores.host,
       away_score: currentScores.away
     });
+  };
+
+  const persistSetsFromHistory = async (
+    history: string[],
+    extraLive?: { host: number; away: number } | null,
+    rosterOverride?: { host?: ReturnType<typeof parseRosterJson>; away?: ReturnType<typeof parseRosterJson> },
+  ) => {
+    if (!matchId) return;
+    const hostRoster = rosterOverride?.host || parseRosterJson(match?.host_roster);
+    const awayRoster = rosterOverride?.away || parseRosterJson(match?.away_roster);
+    const records: MatchSetRecord[] = history.map((s, idx) => {
+      const [h, a] = String(s).split(':').map(Number);
+      return {
+        setNumber: idx + 1,
+        hostScore: h || 0,
+        awayScore: a || 0,
+        hostLineup: hostRoster[idx] || [],
+        awayLineup: awayRoster[idx] || [],
+        isClosed: true,
+      };
+    });
+    if (extraLive) {
+      const liveIdx = records.length;
+      if (liveIdx < MAX_SETS) {
+        records.push({
+          setNumber: liveIdx + 1,
+          hostScore: extraLive.host,
+          awayScore: extraLive.away,
+          hostLineup: hostRoster[liveIdx] || hostRoster[0] || [],
+          awayLineup: awayRoster[liveIdx] || awayRoster[0] || [],
+          isClosed: false,
+        });
+      }
+    }
+    await upsertMatchSets(matchId, records);
+  };
+
+  const closeLiveSetIntoHistory = (history: string[]) => {
+    const scoreStr = `${currentScores.host}:${currentScores.away}`;
+    if (currentSetIndex < history.length) {
+      const next = [...history];
+      next[currentSetIndex] = scoreStr;
+      return next;
+    }
+    return [...history, scoreStr];
+  };
+
+  const changeCurrentSet = (idx: number) => {
+    if (idx === currentSetIndex) return;
+    setCurrentSetIndex(idx);
+    currentSetIndexRef.current = idx;
+    recalcScores(events, idx);
+    resetSetUiState();
   };
 
   const handleUndoEvent = async () => {
@@ -462,15 +557,39 @@ export default function ScoreboardScreen() {
           text: '세트 마감', onPress: async () => {
             setActionLoading(true);
             try {
-              const newSetScoreStr = `${currentScores.host}:${currentScores.away}`;
-              const updatedHistory = [...setHistory, newSetScoreStr];
-              const formattedSetScores = updatedHistory.join(', ');
+              const parseHistory = (rows: string[]) => rows.map((s) => {
+                const [h, a] = String(s).split(':').map(Number);
+                return { hostScore: h || 0, awayScore: a || 0 };
+              });
 
-              await supabase.from('matches').update({ set_scores: formattedSetScores }).eq('id', matchId);
-              const nextIndex = updatedHistory.length;
-              setCurrentSetIndex(nextIndex);
-              currentSetIndexRef.current = nextIndex;
-              setCurrentScores({ host: 0, away: 0 });
+              let updatedHistory = [...setHistory];
+              if (currentSetIndex < updatedHistory.length) {
+                updatedHistory[currentSetIndex] = `${currentScores.host}:${currentScores.away}`;
+              } else if (!isBestOfFiveDecided(parseHistory(updatedHistory))) {
+                updatedHistory.push(`${currentScores.host}:${currentScores.away}`);
+              } else {
+                return;
+              }
+
+              const decided = isBestOfFiveDecided(parseHistory(updatedHistory));
+              const canAdvance = !decided && updatedHistory.length < MAX_SETS;
+              await persistSetsFromHistory(updatedHistory, canAdvance ? { host: 0, away: 0 } : null);
+
+              setSetScoresHistory(updatedHistory);
+              setHistoryRef.current = updatedHistory;
+              setMatch((prev) => prev ? { ...prev, set_scores: updatedHistory.join(', ') } : prev);
+
+              if (canAdvance) {
+                const nextIndex = updatedHistory.length;
+                setCurrentSetIndex(nextIndex);
+                currentSetIndexRef.current = nextIndex;
+                setCurrentScores({ host: 0, away: 0 });
+              } else {
+                const stayIdx = Math.max(0, Math.min(currentSetIndex, updatedHistory.length - 1));
+                setCurrentSetIndex(stayIdx);
+                currentSetIndexRef.current = stayIdx;
+              }
+              resetSetUiState();
             } catch (err: any) {} finally { setActionLoading(false); }
           }
         }
@@ -486,7 +605,7 @@ export default function ScoreboardScreen() {
     } else {
       Alert.alert(
         '🏆 경기 최종 마감',
-        '현재까지의 점수를 포함하여 경기를 마감하시겠습니까?\n마감 시 상대 팀에 결과 승인 요청이 전달됩니다.',
+        '현재 세트 점수를 자동 마감하고 경기를 최종 종료합니다.',
         [
           { text: '취소', style: 'cancel' },
           { text: '최종 마감', onPress: () => processOfficialMatchFinish() }
@@ -498,22 +617,20 @@ export default function ScoreboardScreen() {
   const handleConfirmIntramuralFinish = async (winner: string) => {
     setActionLoading(true);
     try {
-      let finalHistory = [...setHistory];
-      if (currentScores.host > 0 || currentScores.away > 0) {
-        finalHistory.push(`${currentScores.host}:${currentScores.away}`);
-      }
-      const formattedSetScores = finalHistory.join(', ');
+      const finalHistory = closeLiveSetIntoHistory(setHistory);
+      await persistSetsFromHistory(finalHistory, null);
 
-      await supabase.from('matches').update({
-        set_scores: formattedSetScores,
+      const updateData = {
+        set_scores: finalHistory.join(', ') || null,
         winner_team: winner,
         recorder_host_id: null,
         recorder_away_id: null,
-      }).eq('id', matchId);
-
-      Alert.alert('내전 마감 완료! ⚔️', '팀 내전 전적이 정상 기록되었습니다.', [
-        { text: '확인', onPress: () => setReportModalVisible(true) }
-      ]);
+      };
+      await supabase.from('matches').update(updateData).eq('id', matchId);
+      setMatch((prev) => prev ? { ...prev, ...updateData } : prev);
+      setSetScoresHistory(finalHistory);
+      setHistoryRef.current = finalHistory;
+      await openPostMatchReport();
     } catch (e: any) {
       Alert.alert('오류', e.message);
     } finally {
@@ -525,13 +642,10 @@ export default function ScoreboardScreen() {
   const processOfficialMatchFinish = async () => {
     setActionLoading(true);
     try {
-      let finalHistory = [...setHistory];
-      if (currentScores.host > 0 || currentScores.away > 0) {
-        finalHistory.push(`${currentScores.host}:${currentScores.away}`);
-      }
-      const formattedSetScores = finalHistory.join(', ');
+      const finalHistory = closeLiveSetIntoHistory(setHistory);
+      await persistSetsFromHistory(finalHistory, null);
 
-      const myTeamInMatch = match && myTeams.includes(match.host_team_name)
+      const myTeamInMatch = match && teamsInclude(myTeams, match.host_team_name)
         ? match.host_team_name
         : match?.away_team_name;
 
@@ -540,34 +654,38 @@ export default function ScoreboardScreen() {
       let winningTeam = 'draw';
       let hostSetWins = 0, awaySetWins = 0;
       finalHistory.forEach(s => {
-        const [h, a] = s.split(':').map(Number);
+        const [h, a] = String(s).split(':').map(Number);
         if (h > a) hostSetWins++;
         else if (a > h) awaySetWins++;
       });
       if (hostSetWins > awaySetWins) winningTeam = match?.host_team_name || '';
       else if (awaySetWins > hostSetWins) winningTeam = match?.away_team_name || '';
 
-      await supabase.from('matches').update({
-        status: 'pending_result',
-        set_scores: formattedSetScores,
+      const updateData = {
+        status: 'completed',
+        set_scores: finalHistory.join(', ') || null,
         winner_team: winningTeam,
         result_submitter_team: myTeamInMatch,
         submitted_by_name: currentUserName,
+        approved_by_name: currentUserName,
         recorder_host_id: null,
         recorder_away_id: null,
-      }).eq('id', matchId);
+      };
+
+      await supabase.from('matches').update(updateData).eq('id', matchId);
+      setMatch((prev) => prev ? { ...prev, ...updateData } : prev);
+      setSetScoresHistory(finalHistory);
+      setHistoryRef.current = finalHistory;
 
       if (otherTeam) {
         await sendNotificationToTeam(
           otherTeam,
-          '⚠️ [경기 결과 승인 요청]',
-          `'${myTeamInMatch}'팀에서 전광판 경기를 마감하고 결과 승인을 요청했습니다.`
+          '🏆 [경기 최종 종료]',
+          `'${myTeamInMatch}'팀에서 전광판 경기를 최종 종료했습니다. (${finalHistory.join(', ') || '세트 기록 없음'})`
         );
       }
 
-      Alert.alert('마감 전달 완료 🏆', '상대 팀에 결과 승인 요청을 전달했습니다.', [
-        { text: '확인', onPress: () => setReportModalVisible(true) }
-      ]);
+      await openPostMatchReport();
     } catch (e: any) {
       Alert.alert('오류', e.message);
     } finally {
@@ -592,6 +710,9 @@ export default function ScoreboardScreen() {
       host_score: tempHostScore,
       away_score: tempAwayScore
     });
+    if (currentSetIndex >= setHistory.length) {
+      await persistSetsFromHistory(setHistory, { host: tempHostScore, away: tempAwayScore });
+    }
     setEditModalVisible(false);
   };
 
@@ -612,8 +733,8 @@ export default function ScoreboardScreen() {
     ? { key: 'host' as const, name: displayHostName, score: currentScores.host, canControl: canControlHost && myRole !== 'spectator', isHost: true }
     : { key: 'away' as const, name: displayAwayName, score: currentScores.away, canControl: canControlAway && myRole !== 'spectator', isHost: false };
 
-  const isMyHostTeam = match && myTeams.includes(match.host_team_name);
-  const isMyAwayTeam = match?.away_team_name && myTeams.includes(match.away_team_name);
+  const isMyHostTeam = match && teamsInclude(myTeams, match.host_team_name);
+  const isMyAwayTeam = !!(match?.away_team_name && teamsInclude(myTeams, match.away_team_name));
 
   const getSetRosters = (isHost: boolean) => {
     const rosterRaw = isHost ? match?.host_roster : match?.away_roster;
@@ -622,8 +743,8 @@ export default function ScoreboardScreen() {
     const setRoster: string[] = rosterMap[currentSetIndex] || rosterMap[0] || [];
 
     if (Array.isArray(setRoster) && setRoster.length > 0) {
-      const court = baseMembers.filter(m => setRoster.includes(m.user_id));
-      const bench = baseMembers.filter(m => !setRoster.includes(m.user_id));
+      const court = baseMembers.filter(m => safeIncludes(setRoster, m.user_id));
+      const bench = baseMembers.filter(m => !safeIncludes(setRoster, m.user_id));
       return { court, bench };
     }
 
@@ -714,17 +835,22 @@ export default function ScoreboardScreen() {
 
           <View style={styles.setTabNavRow}>
             {[0, 1, 2, 3, 4].map(idx => {
-              if (idx > setHistory.length) return null;
+              const decided = isBestOfFiveDecided(
+                setHistory.map((s) => {
+                  const [h, a] = String(s).split(':').map(Number);
+                  return { hostScore: h || 0, awayScore: a || 0 };
+                })
+              );
+              const maxTab = decided
+                ? Math.max(0, setHistory.length - 1)
+                : Math.min(setHistory.length, MAX_SETS - 1);
+              if (idx > maxTab) return null;
               const isCurrent = idx === currentSetIndex;
               return (
                 <TouchableOpacity
                   key={idx}
                   style={[styles.setNavPill, isCurrent && styles.setNavPillActive]}
-                  onPress={() => {
-                    setCurrentSetIndex(idx);
-                    currentSetIndexRef.current = idx;
-                    recalcScores(events, idx);
-                  }}
+                  onPress={() => changeCurrentSet(idx)}
                 >
                   <Text style={[styles.setNavPillText, isCurrent && styles.setNavPillTextActive]}>
                     {idx + 1}세트 {isCurrent ? '(LIVE)' : ''}
@@ -830,6 +956,7 @@ export default function ScoreboardScreen() {
       <View style={styles.bottomControlBar}>
         <View style={styles.timelineArea}>
           <ScoreTimeline 
+            key={timelineEpoch}
             events={events} 
             canControl={myRole !== 'spectator'} 
             displayHostName={displayHostName} 
@@ -842,13 +969,13 @@ export default function ScoreboardScreen() {
         {myRole !== 'spectator' && (
           <View style={styles.actionButtonsArea}>
             <TouchableOpacity style={styles.undoBtn} onPress={handleUndoEvent}>
-              <Text style={styles.undoBtnText}>↺ 취소 (Undo)</Text>
+              <Text style={styles.undoBtnText} numberOfLines={1}>↺ 취소 (Undo)</Text>
             </TouchableOpacity>
             <TouchableOpacity style={styles.finishSetBtn} onPress={handleFinishSet}>
-              <Text style={styles.finishSetBtnText}>🏁 세트 마감</Text>
+              <Text style={styles.finishSetBtnText} numberOfLines={1}>🏁 세트 마감</Text>
             </TouchableOpacity>
             <TouchableOpacity style={styles.finishMatchBtn} onPress={handleOpenFinishMatch}>
-              <Text style={styles.finishMatchBtnText}>🏆 경기 최종 종료</Text>
+              <Text style={styles.finishMatchBtnText} numberOfLines={1}>🏆 경기 최종 종료</Text>
             </TouchableOpacity>
           </View>
         )}
@@ -971,13 +1098,13 @@ const styles = StyleSheet.create({
   editHintText: { fontSize: 12, color: 'rgba(255, 255, 255, 0.85)', fontWeight: '800', marginTop: -5 },
   spectatorHintText: { fontSize: 11, color: 'rgba(255, 255, 255, 0.5)', fontWeight: '700', marginTop: -5 },
   bottomControlBar: { flexDirection: 'row', paddingHorizontal: 12, paddingVertical: 6, backgroundColor: '#0F172A', borderTopWidth: 1, borderTopColor: '#1E293B', alignItems: 'center' },
-  timelineArea: { flex: 1, marginRight: 10 },
-  actionButtonsArea: { flexDirection: 'row', gap: 6 },
-  undoBtn: { backgroundColor: '#334155', paddingHorizontal: 12, paddingVertical: 8, borderRadius: 8, alignItems: 'center', borderWidth: 1, borderColor: '#475569' },
+  timelineArea: { flex: 1, marginRight: 10, minWidth: 0 },
+  actionButtonsArea: { flexDirection: 'row', gap: 6, flexShrink: 0, flexGrow: 0, alignItems: 'center' },
+  undoBtn: { backgroundColor: '#334155', paddingHorizontal: 12, paddingVertical: 8, borderRadius: 8, alignItems: 'center', borderWidth: 1, borderColor: '#475569', flexShrink: 0 },
   undoBtnText: { color: '#F8FAFC', fontSize: 12, fontWeight: '800' },
-  finishSetBtn: { backgroundColor: '#2563EB', paddingHorizontal: 12, paddingVertical: 8, borderRadius: 8, alignItems: 'center' },
+  finishSetBtn: { backgroundColor: '#2563EB', paddingHorizontal: 14, paddingVertical: 8, borderRadius: 8, alignItems: 'center', flexShrink: 0 },
   finishSetBtnText: { color: '#FFFFFF', fontSize: 12, fontWeight: '900' },
-  finishMatchBtn: { backgroundColor: '#9333EA', paddingHorizontal: 12, paddingVertical: 8, borderRadius: 8, alignItems: 'center' },
+  finishMatchBtn: { backgroundColor: '#9333EA', paddingHorizontal: 14, paddingVertical: 8, borderRadius: 8, alignItems: 'center', flexShrink: 0 },
   finishMatchBtnText: { color: '#FFFFFF', fontSize: 12, fontWeight: '900' },
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.7)', justifyContent: 'center', alignItems: 'center', padding: 20 },
   modalContent: { backgroundColor: '#1E293B', borderRadius: 18, padding: 20, width: 400, maxWidth: '100%', borderWidth: 1, borderColor: '#334155' },

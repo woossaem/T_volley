@@ -12,11 +12,65 @@ export function rosterToSearchableText(roster: unknown): string {
   }
 }
 
-export function safeIncludes(roster: unknown, userId: string | null | undefined): boolean {
-  if (!userId) return false;
-  const haystack = rosterToSearchableText(roster);
+export function safeIncludes(haystack: unknown, needle: string | null | undefined): boolean {
+  if (!needle) return false;
+  const text = rosterToSearchableText(haystack);
+  if (!text) return false;
+  return text.includes(needle);
+}
+
+/** team_name 이 문자열·JSON 객체·배열이어도 표시/비교용 문자열로 정규화 */
+export function safeNameText(value: unknown): string {
+  if (value == null || value === '') return '';
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed || trimmed === 'null' || trimmed === 'undefined') return '';
+    if (
+      (trimmed.startsWith('{') && trimmed.endsWith('}')) ||
+      (trimmed.startsWith('[') && trimmed.endsWith(']'))
+    ) {
+      try {
+        return safeNameText(JSON.parse(trimmed));
+      } catch {
+        return trimmed;
+      }
+    }
+    return trimmed;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const parsed = safeNameText(item);
+      if (parsed) return parsed;
+    }
+    return '';
+  }
+  if (typeof value === 'object') {
+    const obj = value as Record<string, unknown>;
+    for (const key of ['name', 'team_name', 'formatted', 'title', 'label']) {
+      const parsed = safeNameText(obj[key]);
+      if (parsed) return parsed;
+    }
+  }
+  return '';
+}
+
+export function teamsInclude(teams: unknown, name: unknown): boolean {
+  const n = safeNameText(name);
+  if (!n) return false;
+  if (Array.isArray(teams)) {
+    return teams.some((t) => {
+      const tn = safeNameText(t);
+      return tn === n || safeIncludes(t, n) || safeIncludes(name, tn);
+    });
+  }
+  return safeIncludes(teams, n);
+}
+
+export function nameIncludesQuery(name: unknown, query: string | null | undefined): boolean {
+  if (!query) return false;
+  const haystack = safeNameText(name).toLowerCase();
   if (!haystack) return false;
-  return haystack.includes(userId);
+  return haystack.includes(query.toLowerCase());
 }
 
 function collectIds(value: unknown, bucket: Set<string>) {

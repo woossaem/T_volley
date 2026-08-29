@@ -28,7 +28,14 @@ import PastMatchRegisterModal from '../components/PastMatchRegisterModal';
 import MatchCommentModal from '../components/MatchCommentModal';
 import MatchCard, { MatchData, ApplicationData } from '../components/MatchCard';
 import { buildTeamStatusByName, isActiveTeamStatus } from '../lib/teamStatus';
-import { parseSetRosterMap } from '../lib/roster';
+import { parseSetRosterMap, safeIncludes, safeNameText, teamsInclude, nameIncludesQuery } from '../lib/roster';
+import {
+  dynamicScoresFromSets,
+  fetchMatchSets,
+  recordsFromDynamicScores,
+  rosterMapFromSets,
+  upsertMatchSets,
+} from '../lib/matchSets';
 
 interface MemberInfo {
   user_id: string;
@@ -210,7 +217,7 @@ export default function MyMatchesScreen() {
 
   const openEvaluationModal = async (match: MatchData) => {
     if (!currentUserId) return;
-    const isHost = myTeams.includes(match.host_team_name);
+    const isHost = teamsInclude(myTeams, match.host_team_name);
     const targetTeam = isHost ? (match.away_team_name || '') : match.host_team_name;
     
     if (!targetTeam) return Alert.alert('알림', '평가할 상대 팀 정보를 찾을 수 없습니다.');
@@ -308,7 +315,7 @@ export default function MyMatchesScreen() {
     const currentSetList = currentMap[setIndex] || [];
     
     let updatedSetList: string[];
-    if (currentSetList.includes(userId)) {
+    if (safeIncludes(currentSetList, userId)) {
       updatedSetList = currentSetList.filter(id => id !== userId);
     } else {
       updatedSetList = [...currentSetList, userId];
@@ -335,10 +342,10 @@ export default function MyMatchesScreen() {
     setCommentInput('');
 
     const badges: BadgeOption[] = [];
-    if (myTeams.includes(match.host_team_name)) {
+    if (teamsInclude(myTeams, match.host_team_name)) {
       badges.push({ type: 'host', teamName: match.host_team_name, label: `👑 주최팀 (${match.host_team_name})` });
     }
-    if (match.away_team_name && myTeams.includes(match.away_team_name)) {
+    if (match.away_team_name && teamsInclude(myTeams, match.away_team_name)) {
       badges.push({ type: 'applicant', teamName: match.away_team_name, label: `⚔️ 상대팀 (${match.away_team_name})` });
     }
     const myApps = myApplications.filter(a => a.match_id === match.id);
@@ -432,8 +439,8 @@ export default function MyMatchesScreen() {
     const { year, month } = parseMatchDate(match.match_date || match.created_at);
     if (year !== listYear || month !== listMonth) return false;
 
-    const isHost = myTeams.includes(match.host_team_name);
-    const isAway = match.away_team_name ? myTeams.includes(match.away_team_name) : false;
+    const isHost = teamsInclude(myTeams, match.host_team_name);
+    const isAway = match.away_team_name ? teamsInclude(myTeams, match.away_team_name) : false;
     const isMyMatch = isHost || isAway;
 
     if (mainTab === 'active') {
@@ -447,8 +454,8 @@ export default function MyMatchesScreen() {
 
     const query = searchQuery.toLowerCase();
     const passSearch = !searchQuery || 
-      match.host_team_name.toLowerCase().includes(query) ||
-      (match.away_team_name && match.away_team_name.toLowerCase().includes(query)) ||
+      nameIncludesQuery(match.host_team_name, query) ||
+      (match.away_team_name && nameIncludesQuery(match.away_team_name, query)) ||
       match.location.toLowerCase().includes(query);
 
     let passRegion = true;
@@ -549,7 +556,7 @@ export default function MyMatchesScreen() {
   };
 
   const handleCancelApplication = (match: MatchData) => {
-    const myApp = myApplications.find(a => a.match_id === match.id && (myTeams.includes(a.applicant_team_name) || a.applicant_user_id === currentUserId));
+    const myApp = myApplications.find(a => a.match_id === match.id && (teamsInclude(myTeams, a.applicant_team_name) || a.applicant_user_id === currentUserId));
     if (!myApp) return;
 
     Alert.alert('신청 취소', `'${myApp.applicant_team_name}' 참가 신청을 취소하시겠습니까?`, [
@@ -669,7 +676,7 @@ export default function MyMatchesScreen() {
     if (!selectedMatchForResult) return;
     if (!selectedWinner) return Alert.alert('알림', '최종 승리 팀을 선택해 주세요.');
     
-    const myTeamInMatch = myTeams.includes(selectedMatchForResult.host_team_name)
+    const myTeamInMatch = teamsInclude(myTeams, selectedMatchForResult.host_team_name)
       ? selectedMatchForResult.host_team_name
       : selectedMatchForResult.away_team_name;
 
@@ -696,6 +703,10 @@ export default function MyMatchesScreen() {
       };
 
       await supabase.from('matches').update(updateData).eq('id', selectedMatchForResult.id);
+      await upsertMatchSets(
+        selectedMatchForResult.id,
+        recordsFromDynamicScores(dynamicScores, hostSetRosters, awaySetRosters, true),
+      );
       setMatches(prev => prev.map(m => m.id === selectedMatchForResult.id ? { ...m, ...updateData } : m));
 
       const resultMsg = selectedWinner === 'draw' ? '무승부' : `'${selectedWinner}' 승리`;
@@ -733,9 +744,18 @@ export default function MyMatchesScreen() {
       };
 
       await supabase.from('matches').update(updateData).eq('id', selectedMatchForResult.id);
+      await upsertMatchSets(
+        selectedMatchForResult.id,
+        recordsFromDynamicScores(
+          dynamicScores.length > 0 ? dynamicScores : [{ hostScore: 0, awayScore: 0 }],
+          hostSetRosters,
+          awaySetRosters,
+          false,
+        ),
+      );
       setMatches(prev => prev.map(m => m.id === selectedMatchForResult.id ? { ...m, ...updateData } : m));
 
-      const myTeam = myTeams.includes(selectedMatchForResult.host_team_name) ? selectedMatchForResult.host_team_name : selectedMatchForResult.away_team_name;
+      const myTeam = teamsInclude(myTeams, selectedMatchForResult.host_team_name) ? selectedMatchForResult.host_team_name : selectedMatchForResult.away_team_name;
       if (myTeam) {
         await sendNotificationToTeam(
           myTeam,
@@ -753,22 +773,43 @@ export default function MyMatchesScreen() {
     }
   };
 
-  const openRosterOnlyModal = (match: MatchData) => {
+  const hydrateResultFromSsot = async (match: MatchData, fallbackScores: DynamicSetScore[]) => {
+    try {
+      const snapshot = await fetchMatchSets(match.id);
+      const scores = dynamicScoresFromSets(snapshot.sets);
+      setDynamicScores(scores.length > 0 ? scores : fallbackScores);
+      const hostMap = rosterMapFromSets(snapshot.sets, 'host');
+      const awayMap = rosterMapFromSets(snapshot.sets, 'away');
+      await fetchMatchTeamMembers(
+        safeNameText(match.host_team_name),
+        match.away_team_name ? safeNameText(match.away_team_name) : undefined,
+        JSON.stringify(hostMap),
+        JSON.stringify(awayMap),
+      );
+    } catch {
+      const parsedScores = parseScoresToArray(match.set_scores);
+      setDynamicScores(parsedScores.length > 0 ? parsedScores : fallbackScores);
+      await fetchMatchTeamMembers(
+        safeNameText(match.host_team_name),
+        match.away_team_name ? safeNameText(match.away_team_name) : undefined,
+        match.host_roster,
+        match.away_roster,
+      );
+    }
+  };
+
+  const openRosterOnlyModal = async (match: MatchData) => {
     setSelectedMatchForResult(match);
     setIsRosterOnlyMode(true);
-    const parsedScores = parseScoresToArray(match.set_scores);
-    setDynamicScores(parsedScores.length > 0 ? parsedScores : [{ hostScore: 0, awayScore: 0 }]);
-    fetchMatchTeamMembers(match.host_team_name, match.away_team_name, match.host_roster, match.away_roster);
+    await hydrateResultFromSsot(match, [{ hostScore: 0, awayScore: 0 }]);
     setResultModalVisible(true);
   };
 
-  const openResultModal = (match: MatchData) => {
+  const openResultModal = async (match: MatchData) => {
     setSelectedMatchForResult(match);
     setIsRosterOnlyMode(false);
     setSelectedWinner(match.winner_team || '');
-    const parsedScores = parseScoresToArray(match.set_scores);
-    setDynamicScores(parsedScores.length > 0 ? parsedScores : [{ hostScore: 25, awayScore: 21 }]);
-    fetchMatchTeamMembers(match.host_team_name, match.away_team_name, match.host_roster, match.away_roster);
+    await hydrateResultFromSsot(match, [{ hostScore: 25, awayScore: 21 }]);
     setHostYoutube(match.host_youtube_url || '');
     setAwayYoutube(match.away_youtube_url || '');
     setResultModalVisible(true);
@@ -793,7 +834,7 @@ export default function MyMatchesScreen() {
                 }).eq('id', match.id);
                 setMatches(prev => prev.map(m => m.id === match.id ? { ...m, status: 'completed', approved_by_name: currentUserName } : m));
                 
-                const otherTeam = myTeams.includes(match.host_team_name) ? match.away_team_name : match.host_team_name;
+                const otherTeam = teamsInclude(myTeams, match.host_team_name) ? match.away_team_name : match.host_team_name;
                 if (otherTeam) {
                   await sendNotificationToTeam(otherTeam, '✅ [결과 승인 완료]', `상대 팀이 결과를 승인하여 공식 랭킹에 정식 반영되었습니다.`);
                 }
@@ -803,7 +844,7 @@ export default function MyMatchesScreen() {
                 await supabase.from('matches').delete().eq('id', match.id);
                 setMatches(prev => prev.filter(m => m.id !== match.id));
                 
-                const otherTeam = myTeams.includes(match.host_team_name) ? match.away_team_name : match.host_team_name;
+                const otherTeam = teamsInclude(myTeams, match.host_team_name) ? match.away_team_name : match.host_team_name;
                 if (otherTeam) {
                   await sendNotificationToTeam(otherTeam, '❌ [결과 거절]', `상대 팀이 제출된 경기 결과를 거절하여 기록이 삭제되었습니다.`);
                 }
@@ -1035,6 +1076,10 @@ export default function MyMatchesScreen() {
         hostSetRosters={hostSetRosters}
         awaySetRosters={awaySetRosters}
         onToggleSetRoster={handleToggleSetRoster}
+        onRosterMapsChange={(host, away) => {
+          setHostSetRosters(host);
+          setAwaySetRosters(away);
+        }}
         selectedWinner={selectedWinner}
         onSelectWinner={setSelectedWinner}
         onSaveResult={handleSaveResult}

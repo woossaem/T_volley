@@ -15,7 +15,7 @@ import StickyAdBanner from './StickyAdBanner';
 import BadgeCollectionModal from './BadgeCollectionModal';
 import { getAllBadgesWithStatus } from '../lib/badgeUtils';
 import { formatTeamDisplayName } from '../lib/teamStatus';
-import { parseRosterUserIds } from '../lib/roster';
+import { parseRosterUserIds, safeIncludes } from '../lib/roster';
 
 interface UserProfileModalProps {
   visible: boolean;
@@ -127,10 +127,10 @@ export default function UserProfileModal({
         const hostMercList = parseRosterUserIds(m.host_mercenary_roster);
         const awayMercList = parseRosterUserIds(m.away_mercenary_roster);
 
-        const inHost = hostList.includes(userId);
-        const inAway = awayList.includes(userId);
-        const inHostMerc = hostMercList.includes(userId);
-        const inAwayMerc = awayMercList.includes(userId);
+        const inHost = hostList.includes(userId) || safeIncludes(m.host_roster, userId);
+        const inAway = awayList.includes(userId) || safeIncludes(m.away_roster, userId);
+        const inHostMerc = hostMercList.includes(userId) || safeIncludes(m.host_mercenary_roster, userId);
+        const inAwayMerc = awayMercList.includes(userId) || safeIncludes(m.away_mercenary_roster, userId);
 
         if (inHost || inAway || inHostMerc || inAwayMerc) {
           total++;

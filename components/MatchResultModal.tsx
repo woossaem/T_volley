@@ -11,6 +11,7 @@ import {
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Colors } from '../constants/Colors';
+import { safeIncludes, safeNameText } from '../lib/roster';
 
 interface DynamicSetScore {
   hostScore: number;
@@ -44,6 +45,7 @@ interface MatchResultModalProps {
   hostSetRosters: any;
   awaySetRosters: any;
   onToggleSetRoster?: any;
+  onRosterMapsChange?: (host: { [setIndex: number]: string[] }, away: { [setIndex: number]: string[] }) => void;
   selectedWinner: string;
   onSelectWinner: (winner: string) => void;
   onSaveResult: () => void;
@@ -80,6 +82,9 @@ export default function MatchResultModal({
   onUpdateScore,
   hostMembers,
   awayMembers,
+  hostSetRosters,
+  awaySetRosters,
+  onRosterMapsChange,
   selectedWinner,
   onSelectWinner,
   onSaveResult,
@@ -91,6 +96,35 @@ export default function MatchResultModal({
 
   const [hostStatusMap, setHostStatusMap] = useState<SetRosterStateMap>({});
   const [awayStatusMap, setAwayStatusMap] = useState<SetRosterStateMap>({});
+
+  const rosterToStatus = (roster: any, members: MemberInfo[], setCount: number): SetRosterStateMap => {
+    const map: SetRosterStateMap = {};
+    for (let i = 0; i < Math.max(setCount, 1); i += 1) {
+      const courtIds = Array.isArray(roster?.[i]) ? roster[i] : [];
+      map[i] = {};
+      members.forEach((m) => {
+        map[i][m.user_id] = safeIncludes(courtIds, m.user_id) ? 'court' : 'absent';
+      });
+    }
+    return map;
+  };
+
+  const statusToRoster = (statusMap: SetRosterStateMap) => {
+    const map: { [setIndex: number]: string[] } = {};
+    Object.keys(statusMap).forEach((key) => {
+      const idx = Number(key);
+      map[idx] = Object.entries(statusMap[idx] || {})
+        .filter(([, status]) => status === 'court')
+        .map(([userId]) => userId);
+    });
+    return map;
+  };
+
+  useEffect(() => {
+    if (!visible) return;
+    setHostStatusMap(rosterToStatus(hostSetRosters, hostMembers, dynamicScores.length));
+    setAwayStatusMap(rosterToStatus(awaySetRosters, awayMembers, dynamicScores.length));
+  }, [visible, match?.id, hostMembers, awayMembers, dynamicScores.length]);
 
   useEffect(() => {
     if (activeSetTab >= dynamicScores.length) {
@@ -134,8 +168,13 @@ export default function MatchResultModal({
       });
     }
 
-    if (isHost) setHostStatusMap(targetMap);
-    else setAwayStatusMap(targetMap);
+    if (isHost) {
+      setHostStatusMap(targetMap);
+      onRosterMapsChange?.(statusToRoster(targetMap), statusToRoster(awayStatusMap));
+    } else {
+      setAwayStatusMap(targetMap);
+      onRosterMapsChange?.(statusToRoster(hostStatusMap), statusToRoster(targetMap));
+    }
   };
 
   if (!match) return null;
@@ -259,7 +298,7 @@ export default function MatchResultModal({
       <View style={styles.modalOverlay}>
         <View style={styles.modalContent}>
           <Text style={styles.modalTitle}>
-            {isRosterOnlyMode ? '👥 세트별 출전 라인업 수정' : '🏆 경기 결과 & 세트 라인업 기록'}
+            {isRosterOnlyMode ? '👥 세트별 출전 라인업 수정' : '⚡ 빠른 결과 입력'}
           </Text>
           <Text style={styles.modalSub}>
             터치 1번(🔵 코트) ➔ 터치 2번(⚪ 벤치) ➔ 터치 3번(🪑 미참석) 순으로 전환됩니다.
@@ -271,7 +310,7 @@ export default function MatchResultModal({
                 <Text style={styles.inputLabel}>🎥 경기 중계/하이라이트 영상 (선택)</Text>
                 <TextInput
                   style={[styles.textInput, { marginBottom: 6 }]}
-                  placeholder={`[주최팀] ${match.host_team_name} 영상 URL`}
+                  placeholder={`[주최팀] ${safeNameText(match.host_team_name)} 영상 URL`}
                   placeholderTextColor="#94A3B8"
                   value={hostYoutube}
                   onChangeText={onChangeHostYoutube}
@@ -280,7 +319,7 @@ export default function MatchResultModal({
                 {match.away_team_name ? (
                   <TextInput
                     style={[styles.textInput, { marginBottom: 10 }]}
-                    placeholder={`[상대팀] ${match.away_team_name} 영상 URL`}
+                    placeholder={`[상대팀] ${safeNameText(match.away_team_name)} 영상 URL`}
                     placeholderTextColor="#94A3B8"
                     value={awayYoutube}
                     onChangeText={onChangeAwayYoutube}
@@ -302,7 +341,7 @@ export default function MatchResultModal({
                       </View>
 
                       <View style={styles.teamScoreCol}>
-                        <Text style={styles.teamScoreLabel} numberOfLines={1}>{match.host_team_name}</Text>
+                        <Text style={styles.teamScoreLabel} numberOfLines={1}>{safeNameText(match.host_team_name)}</Text>
                         <View style={styles.stepperRow}>
                           <TouchableOpacity style={styles.stepBtn} onPress={() => onUpdateScore(idx, true, -1)}>
                             <Text style={styles.stepBtnText}>-1</Text>
@@ -317,7 +356,7 @@ export default function MatchResultModal({
                       <Text style={styles.vsColon}>:</Text>
 
                       <View style={styles.teamScoreCol}>
-                        <Text style={styles.teamScoreLabel} numberOfLines={1}>{match.away_team_name || '상대팀'}</Text>
+                        <Text style={styles.teamScoreLabel} numberOfLines={1}>{safeNameText(match.away_team_name) || '상대팀'}</Text>
                         <View style={styles.stepperRow}>
                           <TouchableOpacity style={styles.stepBtn} onPress={() => onUpdateScore(idx, false, -1)}>
                             <Text style={styles.stepBtnText}>-1</Text>
@@ -354,8 +393,8 @@ export default function MatchResultModal({
               ))}
             </View>
 
-            {renderRosterSection(hostRosterGroup, true, match.host_team_name)}
-            {match.away_team_name ? renderRosterSection(awayRosterGroup, false, match.away_team_name) : null}
+            {renderRosterSection(hostRosterGroup, true, safeNameText(match.host_team_name))}
+            {match.away_team_name ? renderRosterSection(awayRosterGroup, false, safeNameText(match.away_team_name)) : null}
 
             {!isRosterOnlyMode && (
               <>
@@ -366,7 +405,7 @@ export default function MatchResultModal({
                     onPress={() => onSelectWinner(match.host_team_name)}
                   >
                     <Text style={[styles.winnerSelectText, selectedWinner === match.host_team_name && styles.winnerSelectTextActive]}>
-                      🥇 {match.host_team_name} 승리
+                      🥇 {safeNameText(match.host_team_name)} 승리
                     </Text>
                   </TouchableOpacity>
 
@@ -376,7 +415,7 @@ export default function MatchResultModal({
                       onPress={() => onSelectWinner(match.away_team_name)}
                     >
                       <Text style={[styles.winnerSelectText, selectedWinner === match.away_team_name && styles.winnerSelectTextActive]}>
-                        🥇 {match.away_team_name} 승리
+                        🥇 {safeNameText(match.away_team_name)} 승리
                       </Text>
                     </TouchableOpacity>
                   ) : null}

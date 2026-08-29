@@ -18,7 +18,7 @@ import { Colors } from '../constants/Colors';
 import StickyAdBanner from '../components/StickyAdBanner';
 import MatchPostgameReportModal from '../components/MatchPostgameReportModal';
 import { buildTeamStatusByName, formatTeamDisplayName } from '../lib/teamStatus';
-import { parseRosterUserIds } from '../lib/roster';
+import { parseRosterUserIds, safeIncludes, teamsInclude, nameIncludesQuery, safeNameText } from '../lib/roster';
 
 interface MatchHistoryItem {
   id: string;
@@ -152,16 +152,16 @@ export default function MyMatchHistoryScreen() {
     return rawMatches.map((match) => {
       const hostList = parseRosterUserIds(match.host_roster);
       const awayList = parseRosterUserIds(match.away_roster);
-      const inHost = currentUserId ? hostList.includes(currentUserId) : false;
-      const inAway = currentUserId ? awayList.includes(currentUserId) : false;
+      const inHost = currentUserId ? (hostList.includes(currentUserId) || safeIncludes(match.host_roster, currentUserId)) : false;
+      const inAway = currentUserId ? (awayList.includes(currentUserId) || safeIncludes(match.away_roster, currentUserId)) : false;
 
       const hostMercList = parseRosterUserIds(match.host_mercenary_roster);
       const awayMercList = parseRosterUserIds(match.away_mercenary_roster);
-      const isHostMerc = currentUserId ? hostMercList.includes(currentUserId) : false;
-      const isAwayMerc = currentUserId ? awayMercList.includes(currentUserId) : false;
+      const isHostMerc = currentUserId ? (hostMercList.includes(currentUserId) || safeIncludes(match.host_mercenary_roster, currentUserId)) : false;
+      const isAwayMerc = currentUserId ? (awayMercList.includes(currentUserId) || safeIncludes(match.away_mercenary_roster, currentUserId)) : false;
 
-      const isMyTeamHost = myTeams.includes(match.host_team_name);
-      const isMyTeamAway = match.away_team_name ? myTeams.includes(match.away_team_name) : false;
+      const isMyTeamHost = teamsInclude(myTeams, match.host_team_name);
+      const isMyTeamAway = match.away_team_name ? teamsInclude(myTeams, match.away_team_name) : false;
 
       const isPlayedByMe = inHost || inAway || isHostMerc || isAwayMerc;
       const isMyTeamPlayed = isMyTeamHost || isMyTeamAway;
@@ -245,9 +245,9 @@ export default function MyMatchHistoryScreen() {
       if (query) {
         const hostDisplay = formatTeamDisplayName(item.host_team_name, teamStatusByName[item.host_team_name]).toLowerCase();
         const awayDisplay = formatTeamDisplayName(item.away_team_name, teamStatusByName[item.away_team_name || '']).toLowerCase();
-        const passHost = item.host_team_name.toLowerCase().includes(query) || hostDisplay.includes(query);
-        const passAway = item.away_team_name?.toLowerCase().includes(query) || awayDisplay.includes(query);
-        const passLocation = item.location.toLowerCase().includes(query);
+        const passHost = nameIncludesQuery(item.host_team_name, query) || hostDisplay.includes(query);
+        const passAway = nameIncludesQuery(item.away_team_name, query) || awayDisplay.includes(query);
+        const passLocation = nameIncludesQuery(item.location, query);
         if (!passHost && !passAway && !passLocation) return false;
       }
 

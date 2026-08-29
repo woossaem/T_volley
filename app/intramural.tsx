@@ -21,7 +21,14 @@ import StickyAdBanner from '../components/StickyAdBanner';
 import MatchCommentModal from '../components/MatchCommentModal';
 import UserProfileModal from '../components/UserProfileModal';
 import MatchPostgameReportModal from '../components/MatchPostgameReportModal'; // 💡 신규 임포트
-import { parseSetRosterMap } from '../lib/roster';
+import { parseSetRosterMap, safeIncludes, safeNameText, teamsInclude } from '../lib/roster';
+import {
+  dynamicScoresFromSets,
+  fetchMatchSets,
+  recordsFromDynamicScores,
+  rosterMapFromSets,
+  upsertMatchSets,
+} from '../lib/matchSets';
 
 interface MatchData {
   id: string;
@@ -269,7 +276,7 @@ export default function IntramuralScreen() {
     setCommentInput('');
 
     const badges: BadgeOption[] = [];
-    if (myTeams.includes(match.host_team_name)) {
+    if (teamsInclude(myTeams, match.host_team_name)) {
       badges.push({ type: 'host', teamName: match.host_team_name, label: `⚔️ 소속팀 (${match.host_team_name})` });
     }
     setAvailableBadges(badges);
@@ -347,10 +354,10 @@ export default function IntramuralScreen() {
     let updatedA = [...currA];
     let updatedB = [...currB];
 
-    if (currA.includes(userId)) {
+    if (safeIncludes(currA, userId)) {
       updatedA = updatedA.filter(id => id !== userId);
       updatedB.push(userId);
-    } else if (currB.includes(userId)) {
+    } else if (safeIncludes(currB, userId)) {
       updatedB = updatedB.filter(id => id !== userId);
     } else {
       updatedA.push(userId);
@@ -385,7 +392,7 @@ export default function IntramuralScreen() {
     return scoresArray.map(s => `${s.hostScore}:${s.awayScore}`).join(', ');
   };
 
-  const openIntraModal = (match?: MatchData) => {
+  const openIntraModal = async (match?: MatchData) => {
     if (!currentUserId || myTeams.length === 0) return Alert.alert('알림', '가입된 팀이 없습니다.');
     const today = new Date().toISOString().split('T')[0];
     setShowCalendar(false);
@@ -402,9 +409,17 @@ export default function IntramuralScreen() {
       setIntraRostersB(parseRoster(match.away_roster));
       setIntraActiveSetTab(0);
       setIntraWinner(match.winner_team || null);
-      
-      const parsedScores = parseScoresToArray(match.set_scores);
-      setIntraDynamicScores(parsedScores.length > 0 ? parsedScores : []);
+
+      try {
+        const snapshot = await fetchMatchSets(match.id);
+        setIntraRostersA(rosterMapFromSets(snapshot.sets, 'host'));
+        setIntraRostersB(rosterMapFromSets(snapshot.sets, 'away'));
+        const scores = dynamicScoresFromSets(snapshot.sets);
+        setIntraDynamicScores(scores);
+      } catch {
+        const parsedScores = parseScoresToArray(match.set_scores);
+        setIntraDynamicScores(parsedScores.length > 0 ? parsedScores : []);
+      }
       setIntraModalVisible(true);
     } else {
       setEditingIntraId(null);
@@ -466,11 +481,25 @@ export default function IntramuralScreen() {
 
       if (editingIntraId) {
         await supabase.from('matches').update(payload).eq('id', editingIntraId);
+        if (intraDynamicScores.length > 0) {
+          await upsertMatchSets(
+            editingIntraId,
+            recordsFromDynamicScores(intraDynamicScores, intraRostersA, intraRostersB, !!intraWinner),
+          );
+        }
         setMatches(prev => prev.map(m => m.id === editingIntraId ? { ...m, ...payload } : m));
         Alert.alert('수정 완료', '내전 기록이 수정되었습니다.');
       } else {
         const { data: newMatch } = await supabase.from('matches').insert(payload).select().single();
-        if (newMatch) setMatches(prev => [newMatch, ...prev]);
+        if (newMatch) {
+          setMatches(prev => [newMatch, ...prev]);
+          if (intraDynamicScores.length > 0) {
+            await upsertMatchSets(
+              newMatch.id,
+              recordsFromDynamicScores(intraDynamicScores, intraRostersA, intraRostersB, !!intraWinner),
+            );
+          }
+        }
 
         await sendNotificationToTeam(
           intraTeam,
@@ -505,7 +534,7 @@ export default function IntramuralScreen() {
   const filteredMatches = matches.filter(match => {
     const { year, month } = parseMatchDate(match.match_date || match.created_at);
     if (year !== listYear || month !== listMonth) return false;
-    return selectedTeamFilter ? match.host_team_name === selectedTeamFilter : myTeams.includes(match.host_team_name);
+    return selectedTeamFilter ? safeNameText(match.host_team_name) === selectedTeamFilter : teamsInclude(myTeams, match.host_team_name);
   });
 
   const intramuralRankings = useMemo(() => {
@@ -516,7 +545,7 @@ export default function IntramuralScreen() {
     });
 
     matches.forEach(match => {
-      if (selectedTeamFilter && match.host_team_name !== selectedTeamFilter) return;
+      if (selectedTeamFilter && safeNameText(match.host_team_name) !== selectedTeamFilter) return;
 
       if (selectedSeason !== 'all') {
         const targetYear = Number(selectedSeason);
@@ -802,7 +831,7 @@ export default function IntramuralScreen() {
                     </TouchableOpacity>
                     
                     <TouchableOpacity style={styles.editCardBtn} onPress={() => openIntraModal(match)}>
-                      <Text style={styles.editCardBtnText}>✏️ 경기 수동입력 / 수정 변경</Text>
+                      <Text style={styles.editCardBtnText}>⚡ 빠른 결과 입력</Text>
                     </TouchableOpacity>
                   </View>
                 );
@@ -886,7 +915,7 @@ export default function IntramuralScreen() {
       <Modal visible={intraModalVisible} animationType="slide" transparent={true}>
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>⚡ 결과 빠른 입력 및 초기 설정</Text>
+            <Text style={styles.modalTitle}>⚡ 빠른 결과 입력</Text>
             <Text style={styles.modalSub}>생성 후 바로 0:0 전광판으로 진입하거나 점수를 먼저 입력할 수 있습니다.</Text>
             <ScrollView style={{ maxHeight: 440, marginVertical: 8 }} showsVerticalScrollIndicator={false}>
               
@@ -980,8 +1009,8 @@ export default function IntramuralScreen() {
                   {intraMembers.map(m => {
                     const currentA = intraRostersA[intraActiveSetTab] || [];
                     const currentB = intraRostersB[intraActiveSetTab] || [];
-                    const isA = currentA.includes(m.user_id);
-                    const isB = currentB.includes(m.user_id);
+                    const isA = safeIncludes(currentA, m.user_id);
+                    const isB = safeIncludes(currentB, m.user_id);
                     const displayTeamA = teamAName.trim() || 'A팀';
                     const displayTeamB = teamBName.trim() || 'B팀';
                     return (
@@ -1046,7 +1075,7 @@ export default function IntramuralScreen() {
                 )}
 
                 <TouchableOpacity style={styles.toggleSet3Btn} onPress={addIntraDynamicSet}>
-                  <Text style={styles.toggleSet3Text}>➕ 수동 세트 점수칸 추가하기</Text>
+                  <Text style={styles.toggleSet3Text}>➕ 세트 점수칸 추가하기</Text>
                 </TouchableOpacity>
               </View>
 

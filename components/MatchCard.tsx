@@ -3,6 +3,7 @@ import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Colors } from '../constants/Colors';
 import { formatTeamDisplayName } from '../lib/teamStatus';
+import { teamsInclude } from '../lib/roster';
 
 export interface MatchData {
   id: string;
@@ -93,8 +94,8 @@ export default function MatchCard({
   const displayTeamName = (name?: string | null) =>
     formatTeamDisplayName(name, name ? teamStatusByName?.[name] : undefined);
 
-  const isHost = myTeams.includes(match.host_team_name);
-  const isAway = match.away_team_name ? myTeams.includes(match.away_team_name) : false;
+  const isHost = teamsInclude(myTeams, match.host_team_name);
+  const isAway = match.away_team_name ? teamsInclude(myTeams, match.away_team_name) : false;
   const myApp = myApplications.find((app) => app.match_id === match.id);
   const myMercenaryApp = myApplications.find(
     (app) => app.match_id === match.id && app.applicant_user_id === currentUserId && app.application_type === 'mercenary'
@@ -311,7 +312,7 @@ export default function MatchCard({
                     style={[styles.resultBtn, { backgroundColor: '#475569' }]}
                     onPress={() => onOpenResultModal(match)}
                   >
-                    <Text style={styles.resultBtnText}>✏️ 결과 재수정</Text>
+                    <Text style={styles.resultBtnText}>⚡ 빠른 결과 수정</Text>
                   </TouchableOpacity>
                   <TouchableOpacity
                     style={[styles.resultBtn, { backgroundColor: '#0284C7' }]}
@@ -348,7 +349,7 @@ export default function MatchCard({
                     style={[styles.resultBtn, { backgroundColor: '#475569' }]}
                     onPress={() => onOpenResultModal(match)}
                   >
-                    <Text style={styles.resultBtnText}>✏️ 친선 결과 재수정</Text>
+                    <Text style={styles.resultBtnText}>⚡ 친선 빠른 결과 수정</Text>
                   </TouchableOpacity>
                   <TouchableOpacity
                     style={[styles.resultBtn, { backgroundColor: '#0284C7' }]}
@@ -388,7 +389,7 @@ export default function MatchCard({
                   style={[styles.resultBtn, { flex: 1.2, backgroundColor: '#3B82F6' }]}
                   onPress={() => onOpenResultModal(match)}
                 >
-                  <Text style={styles.resultBtnText}>✏️ 수정 제출</Text>
+                  <Text style={styles.resultBtnText}>⚡ 빠른 결과 수정</Text>
                 </TouchableOpacity>
                 <TouchableOpacity
                   style={[styles.cancelAppBtn, { flex: 1, paddingVertical: 12 }]}
@@ -411,7 +412,7 @@ export default function MatchCard({
             {isMyMatch && (
               <View style={{ flexDirection: 'row', gap: 6 }}>
                 <TouchableOpacity style={styles.resultBtn} onPress={() => onOpenResultModal(match)}>
-                  <Text style={styles.resultBtnText}>🏆 결과 등록</Text>
+                  <Text style={styles.resultBtnText}>⚡ 빠른 결과 입력</Text>
                 </TouchableOpacity>
                 <TouchableOpacity
                   style={[styles.resultBtn, { backgroundColor: '#0284C7' }]}

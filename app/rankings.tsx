@@ -16,7 +16,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
 import { Colors } from '../constants/Colors';
 import { formatTeamDisplayName } from '../lib/teamStatus';
-import { parseRosterUserIds } from '../lib/roster';
+import { parseRosterUserIds, safeIncludes, safeNameText } from '../lib/roster';
 import UserProfileModal from '../components/UserProfileModal';
 import TeamReportModal from '../components/TeamReportModal';
 import StickyAdBanner from '../components/StickyAdBanner';
@@ -233,7 +233,7 @@ export default function RankingScreen() {
         if (!pureName) return null;
 
         const matches = targetMatches.filter((m: any) => {
-          return m.host_team_name === t.name || m.away_team_name === t.name;
+          return safeNameText(m.host_team_name) === t.name || safeNameText(m.away_team_name) === t.name;
         });
 
         let wins = 0, draws = 0, losses = 0;
@@ -301,8 +301,8 @@ export default function RankingScreen() {
         let wins = 0, losses = 0, draws = 0;
 
         targetMatches.forEach((m: any) => {
-          const inHost = parseRosterUserIds(m.host_roster).includes(p.id);
-          const inAway = parseRosterUserIds(m.away_roster).includes(p.id);
+          const inHost = safeIncludes(m.host_roster, p.id) || parseRosterUserIds(m.host_roster).includes(p.id);
+          const inAway = safeIncludes(m.away_roster, p.id) || parseRosterUserIds(m.away_roster).includes(p.id);
 
           if (inHost || inAway) {
             const myTeamInMatch = inHost ? m.host_team_name : m.away_team_name;
@@ -385,7 +385,7 @@ export default function RankingScreen() {
     });
 
     const teamMatches = targetMatches.filter((m: any) => {
-      return m.host_team_name === teamName || m.away_team_name === teamName;
+      return safeNameText(m.host_team_name) === teamName || safeNameText(m.away_team_name) === teamName;
     });
 
     let setsWon = 0, setsLost = 0, shutoutWins = 0, fullsetWins = 0;
