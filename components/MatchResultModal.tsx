@@ -11,7 +11,9 @@ import {
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Colors } from '../constants/Colors';
-import { safeIncludes, safeNameText } from '../lib/roster';
+import FormationModal from './FormationModal';
+import { isAnonymousSlotId, parseSetFormation, safeIncludes, safeNameText, type SetFormation } from '../lib/roster';
+import { resolveTeamName } from '../lib/nameUtils';
 
 interface DynamicSetScore {
   hostScore: number;
@@ -50,6 +52,7 @@ interface MatchResultModalProps {
   onSelectWinner: (winner: string) => void;
   onSaveResult: () => void;
   onSaveRosterOnly: () => void;
+  onPersistFormation?: (isHost: boolean, setIndex: number, formation: SetFormation) => void;
   actionLoading: boolean;
 }
 
@@ -89,10 +92,12 @@ export default function MatchResultModal({
   onSelectWinner,
   onSaveResult,
   onSaveRosterOnly,
+  onPersistFormation,
   actionLoading,
 }: MatchResultModalProps) {
   const [activeSetTab, setActiveSetTab] = useState<number>(0);
   const [searchQuery, setSearchQuery] = useState('');
+  const [formationSide, setFormationSide] = useState<'host' | 'away' | null>(null);
 
   const [hostStatusMap, setHostStatusMap] = useState<SetRosterStateMap>({});
   const [awayStatusMap, setAwayStatusMap] = useState<SetRosterStateMap>({});
@@ -220,9 +225,17 @@ export default function MatchResultModal({
 
     return (
       <View style={{ marginBottom: 12 }}>
-        <Text style={styles.subInputLabel}>
-          👥 [{teamName}] {activeSetTab > 0 ? '오늘 참석 멤버 (자동 압축)' : '전체 멤버'}
-        </Text>
+        <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+          <Text style={[styles.subInputLabel, { marginBottom: 0 }]}>
+            👥 [{teamName}] {activeSetTab > 0 ? '오늘 참석 멤버 (자동 압축)' : '전체 멤버'}
+          </Text>
+          <TouchableOpacity
+            style={styles.formationOpenBtn}
+            onPress={() => setFormationSide(isHost ? 'host' : 'away')}
+          >
+            <Text style={styles.formationOpenText}>📐 3줄 코트 배치</Text>
+          </TouchableOpacity>
+        </View>
 
         <View style={styles.rosterContainer}>
           {membersGroup.compressed.map(m => {
@@ -294,6 +307,7 @@ export default function MatchResultModal({
   };
 
   return (
+    <>
     <Modal visible={visible} animationType="slide" transparent={true} onRequestClose={onClose}>
       <View style={styles.modalOverlay}>
         <View style={styles.modalContent}>
@@ -393,8 +407,8 @@ export default function MatchResultModal({
               ))}
             </View>
 
-            {renderRosterSection(hostRosterGroup, true, safeNameText(match.host_team_name))}
-            {match.away_team_name ? renderRosterSection(awayRosterGroup, false, safeNameText(match.away_team_name)) : null}
+            {renderRosterSection(hostRosterGroup, true, resolveTeamName(match.host_team_name, safeNameText(match.host_team_name)))}
+            {match.away_team_name ? renderRosterSection(awayRosterGroup, false, resolveTeamName(match.away_team_name, safeNameText(match.away_team_name))) : null}
 
             {!isRosterOnlyMode && (
               <>
@@ -448,6 +462,45 @@ export default function MatchResultModal({
         </View>
       </View>
     </Modal>
+      <FormationModal
+        visible={formationSide !== null}
+        teamName={formationSide === 'away'
+          ? resolveTeamName(match.away_team_name, safeNameText(match.away_team_name) || '상대팀')
+          : resolveTeamName(match.host_team_name, safeNameText(match.host_team_name))}
+        members={formationSide === 'away' ? awayMembers : hostMembers}
+        initial={parseSetFormation(
+          formationSide === 'away' ? awaySetRosters : hostSetRosters,
+          activeSetTab,
+        )}
+        onClose={() => setFormationSide(null)}
+        onSave={(formation) => {
+          const isHost = formationSide !== 'away';
+          const courtIds = (formation.court || []).filter((id) => id && !isAnonymousSlotId(id));
+          const benchIds = formation.bench || [];
+          const members = isHost ? hostMembers : awayMembers;
+          const nextStatus: SetRosterStateMap = { ...(isHost ? hostStatusMap : awayStatusMap) };
+          const setMap: { [userId: string]: PlayerStatus } = { ...(nextStatus[activeSetTab] || {}) };
+          members.forEach((m) => {
+            if (safeIncludes(courtIds, m.user_id)) setMap[m.user_id] = 'court';
+            else if (safeIncludes(benchIds, m.user_id)) setMap[m.user_id] = 'bench';
+            else setMap[m.user_id] = 'absent';
+          });
+          nextStatus[activeSetTab] = setMap;
+          if (activeSetTab === 0) {
+            dynamicScores.forEach((_, idx) => {
+              if (idx > 0 && !nextStatus[idx]) nextStatus[idx] = { ...setMap };
+            });
+          }
+          const hostMaps = isHost ? statusToRoster(nextStatus) : statusToRoster(hostStatusMap);
+          const awayMaps = !isHost ? statusToRoster(nextStatus) : statusToRoster(awayStatusMap);
+          if (isHost) setHostStatusMap(nextStatus);
+          else setAwayStatusMap(nextStatus);
+          onRosterMapsChange?.(hostMaps, awayMaps);
+          onPersistFormation?.(isHost, activeSetTab, formation);
+          setFormationSide(null);
+        }}
+      />
+    </>
   );
 }
 
@@ -487,6 +540,8 @@ const styles = StyleSheet.create({
   chipTextCourt: { color: '#1D4ED8', fontWeight: '800' },
   chipTextBench: { color: '#475569', fontWeight: '800' },
 
+  formationOpenBtn: { backgroundColor: '#0F172A', borderRadius: 8, paddingHorizontal: 8, paddingVertical: 5 },
+  formationOpenText: { fontSize: 10, fontWeight: '800', color: '#38BDF8' },
   lateArrivalBox: { backgroundColor: '#FEFCE8', borderRadius: 8, padding: 8, borderWidth: 1, borderColor: '#FDE68A', marginTop: 6 },
   lateArrivalTitle: { fontSize: 10, fontWeight: '800', color: '#B45309', marginBottom: 4 },
   searchInput: { backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#FCD34D', borderRadius: 6, paddingHorizontal: 8, paddingVertical: 4, fontSize: 11, marginBottom: 6 },

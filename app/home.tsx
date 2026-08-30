@@ -20,7 +20,10 @@ import { Colors } from '../constants/Colors';
 import StickyAdBanner from '../components/StickyAdBanner';
 import BadgeCollectionModal from '../components/BadgeCollectionModal';
 import { getAllBadgesWithStatus } from '../lib/badgeUtils';
+import { resolveTeamName, extractRow } from '../lib/nameUtils';
+import { isActiveMembership, isActiveTeamStatus } from '../lib/teamStatus';
 import { APP_VERSION } from '../constants/Version'; // 💡 공통 버전 변수 Import
+import { safeIncludes, teamsInclude } from '../lib/roster';
 
 const MENU_ITEMS = [
   { id: 'matches', emoji: '📅', label: '경기 목록', route: '/matches' },
@@ -83,38 +86,6 @@ export default function HomeScreen() {
   const [liveIntraMatch, setLiveIntraMatch] = useState<any>(null);
   const [hotPoll, setHotPoll] = useState<HotPollData | null>(null);
 
-  const parseTeamName = (rawName: any): string => {
-    if (!rawName) return '';
-    if (typeof rawName === 'string') {
-      const trimmed = rawName.trim();
-      if (!trimmed || trimmed === 'null' || trimmed === 'undefined') return '';
-      if ((trimmed.startsWith('{') && trimmed.endsWith('}')) || (trimmed.startsWith('[') && trimmed.endsWith(']'))) {
-        try { return parseTeamName(JSON.parse(trimmed)); } catch (e) {}
-      }
-      return trimmed;
-    }
-    if (Array.isArray(rawName)) {
-      if (rawName.length === 0) return '';
-      for (const item of rawName) {
-        const parsed = parseTeamName(item);
-        if (parsed) return parsed;
-      }
-    }
-    if (typeof rawName === 'object') {
-      const candidate = rawName.name || rawName.team_name || rawName.title || rawName.formatted;
-      if (candidate && candidate !== rawName) {
-        const parsedCand = parseTeamName(candidate);
-        if (parsedCand) return parsedCand;
-      }
-      for (const key of Object.keys(rawName)) {
-        if (typeof rawName[key] === 'string' && rawName[key].trim().length > 0 && !['id', 'team_id', 'user_id', 'team_type', 'region'].includes(key)) {
-          return rawName[key].trim();
-        }
-      }
-    }
-    return '';
-  };
-
   useFocusEffect(
     useCallback(() => {
       fetchDashboardData();
@@ -133,22 +104,20 @@ export default function HomeScreen() {
       const { data: profData } = await supabase.from('profiles').select('*').eq('id', userId).maybeSingle();
       const { data: tmData } = await supabase
         .from('team_members')
-        .select('is_primary, team_id, teams(id, name, team_type)')
+        .select('is_primary, team_id, is_active, teams(*)')
         .eq('user_id', userId)
-        .eq('is_active', true)
         .order('is_primary', { ascending: false });
 
       const teamList: { id: string; name: string }[] = [];
       const addedIds = new Set<string>();
 
       (tmData || []).forEach((tm: any) => {
-        const teamObj = Array.isArray(tm.teams) ? tm.teams[0] : tm.teams;
+        if (!isActiveMembership(tm.is_active)) return;
+        const teamObj = extractRow<any>(tm.teams);
         if (teamObj && teamObj.id && !addedIds.has(teamObj.id)) {
-          const parsed = parseTeamName(teamObj.name || teamObj);
-          if (parsed) {
-            addedIds.add(teamObj.id);
-            teamList.push({ id: teamObj.id, name: parsed });
-          }
+          if (!isActiveTeamStatus(teamObj.status)) return;
+          addedIds.add(teamObj.id);
+          teamList.push({ id: teamObj.id, name: resolveTeamName(teamObj) });
         }
       });
 
@@ -181,13 +150,11 @@ export default function HomeScreen() {
         .order('created_at', { ascending: false });
 
       const currentOfficialLive = activeOfficialMatches?.find((m: any) => {
-        const isMyTeamHost = teamNames.includes(m.host_team_name);
-        const isMyTeamAway = m.away_team_name ? teamNames.includes(m.away_team_name) : false;
+        const isMyTeamHost = teamsInclude(teamNames, m.host_team_name);
+        const isMyTeamAway = m.away_team_name ? teamsInclude(teamNames, m.away_team_name) : false;
         
-        const hostRoster = m.host_roster || '';
-        const awayRoster = m.away_roster || '';
-        const inHostRoster = hostRoster.includes(userId);
-        const inAwayRoster = awayRoster.includes(userId);
+        const inHostRoster = safeIncludes(m.host_roster, userId);
+        const inAwayRoster = safeIncludes(m.away_roster, userId);
 
         return (isMyTeamHost || isMyTeamAway) && (inHostRoster || inAwayRoster);
       });
@@ -202,7 +169,7 @@ export default function HomeScreen() {
         .order('created_at', { ascending: false });
 
       const currentIntraLive = activeIntraMatches?.find((m: any) => 
-        teamNames.includes(m.host_team_name) && !m.winner_team
+        teamsInclude(teamNames, m.host_team_name) && !m.winner_team
       );
       setLiveIntraMatch(currentIntraLive || null);
 
@@ -249,8 +216,8 @@ export default function HomeScreen() {
       matchesData?.forEach(m => {
         if (m.host_user_id === userId) recordCount++;
 
-        const inH = (m.host_roster || '').includes(userId) || (m.host_mercenary_roster || '').includes(userId);
-        const inA = (m.away_roster || '').includes(userId) || (m.away_mercenary_roster || '').includes(userId);
+        const inH = safeIncludes(m.host_roster, userId) || safeIncludes(m.host_mercenary_roster, userId);
+        const inA = safeIncludes(m.away_roster, userId) || safeIncludes(m.away_mercenary_roster, userId);
 
         if (inH || inA) {
           total++;

@@ -11,7 +11,7 @@ import { Colors } from '../constants/Colors';
 import StickyAdBanner from './StickyAdBanner';
 import { supabase } from '../lib/supabase';
 import { buildTeamStatusByName, formatTeamDisplayName } from '../lib/teamStatus';
-import { resolveTeamNameOrNull, cleanRegionName, getTeamIcon } from '../lib/nameUtils';
+import { resolveTeamName, resolveTeamNameOrNull, cleanRegionName, getTeamIcon } from '../lib/nameUtils';
 
 export interface TeamReportStat {
   totalMatches: number;
@@ -139,7 +139,7 @@ export default function TeamReportModal({
   };
 
   const teamIcon = getTeamIcon(analytics.teamType);
-  const rawTeamName = resolveTeamNameOrNull(analytics.teamName) || resolveTeamNameOrNull(analytics) || '소속팀';
+  const rawTeamName = resolveTeamName(analytics.teamName, resolveTeamName(analytics, '소속팀'));
   const displayTeamName = formatTeamDisplayName(
     rawTeamName,
     analytics.status || statusByName[rawTeamName]

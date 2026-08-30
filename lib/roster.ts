@@ -117,9 +117,10 @@ export function rosterHasUser(roster: unknown, userId: string | null | undefined
   return parseRosterUserIds(roster).includes(userId) || safeIncludes(roster, userId);
 }
 
-export const COURT_SLOT_COUNT = 6;
+export const COURT_SLOT_COUNT = 9;
 export const LINE_MIN = 1;
 export const LINE_MAX = 5;
+export const DEFAULT_LINE_COUNT = 3;
 export const ANON_SLOT_PREFIX = 'anon:';
 export const ANONYMOUS_PLAYER_NAME = '무기명';
 
@@ -145,35 +146,49 @@ export function clampLineCount(value: unknown, fallback = 3): number {
   return Math.min(LINE_MAX, Math.max(LINE_MIN, Math.round(n)));
 }
 
+export type CourtRow = 'front' | 'middle' | 'back';
+
 const FRONT_LINE_LABELS = [
   ['전위'],
-  ['레프트', '라이트'],
-  ['레프트', '전위센터', '라이트'],
-  ['레프트', '전위센터', '라이트', '전위라이트'],
-  ['레프트', '세컨레프트', '전위센터', '세컨라이트', '라이트'],
+  ['전위 좌측', '전위 우측'],
+  ['전위 좌측', '전위 중앙', '전위 우측'],
+  ['전위 좌측', '전위 중앙', '전위 우측', '전위 라이트'],
+  ['전위 좌측', '세컨레프트', '전위 중앙', '세컨라이트', '전위 우측'],
+];
+
+const MIDDLE_LINE_LABELS = [
+  ['중위'],
+  ['중위 좌측', '중위 우측'],
+  ['중위 좌측', '중위 중앙', '중위 우측'],
+  ['중위 좌측', '중위 중앙', '중위 우측', '중위 서브'],
+  ['중위 좌측', '세컨중좌', '중위 중앙', '세컨중우', '중위 우측'],
 ];
 
 const BACK_LINE_LABELS = [
   ['후위'],
-  ['후위레프트', '후위라이트'],
-  ['후위레프트', '후위센터', '후위라이트'],
-  ['후위레프트', '후위센터', '후위라이트', '후위서브'],
-  ['후위레프트', '세컨백레프트', '후위센터', '세컨백라이트', '후위라이트'],
+  ['후위 좌측', '후위 우측'],
+  ['후위 좌측', '후위 중앙', '후위 우측'],
+  ['후위 좌측', '후위 중앙', '후위 우측', '후위 서브'],
+  ['후위 좌측', '세컨백레프트', '후위 중앙', '세컨백라이트', '후위 우측'],
 ];
 
-export function lineSlotLabels(row: 'front' | 'back', count: number): string[] {
+export function lineSlotLabels(row: CourtRow, count: number): string[] {
   const n = clampLineCount(count);
+  if (row === 'middle') return MIDDLE_LINE_LABELS[n - 1];
   return (row === 'front' ? FRONT_LINE_LABELS : BACK_LINE_LABELS)[n - 1];
 }
 
-/** 코트 슬롯 순서: 전위 레프트-센터-라이트, 후위 레프트-센터-라이트 */
+/** 코트 슬롯 순서: 전위 → 중위 → 후위, 각 라인 좌-중-우 */
 export const COURT_SLOT_META = [
-  { key: '4', label: '레프트', short: 'L', row: 'front' as const },
-  { key: '3', label: '전위센터', short: 'C', row: 'front' as const },
-  { key: '2', label: '라이트', short: 'R', row: 'front' as const },
-  { key: '5', label: '후위레프트', short: 'BL', row: 'back' as const },
-  { key: '6', label: '후위센터', short: 'BC', row: 'back' as const },
-  { key: '1', label: '후위라이트', short: 'BR', row: 'back' as const },
+  { key: '4', label: '전위 좌측', short: 'FL', row: 'front' as const },
+  { key: '3', label: '전위 중앙', short: 'FC', row: 'front' as const },
+  { key: '2', label: '전위 우측', short: 'FR', row: 'front' as const },
+  { key: 'mL', label: '중위 좌측', short: 'ML', row: 'middle' as const },
+  { key: 'mC', label: '중위 중앙', short: 'MC', row: 'middle' as const },
+  { key: 'mR', label: '중위 우측', short: 'MR', row: 'middle' as const },
+  { key: '5', label: '후위 좌측', short: 'BL', row: 'back' as const },
+  { key: '6', label: '후위 중앙', short: 'BC', row: 'back' as const },
+  { key: '1', label: '후위 우측', short: 'BR', row: 'back' as const },
 ] as const;
 
 export interface SetFormation {
@@ -181,7 +196,53 @@ export interface SetFormation {
   bench: string[];
   late: string[];
   frontCount?: number;
+  middleCount?: number;
   backCount?: number;
+}
+
+export function cloneFormation(src?: SetFormation | null): SetFormation {
+  return {
+    court: [...(src?.court || [])],
+    bench: [...(src?.bench || [])],
+    late: [...(src?.late || [])],
+    frontCount: src?.frontCount,
+    middleCount: src?.middleCount,
+    backCount: src?.backCount,
+  };
+}
+
+export function formationSlotTotal(formation?: SetFormation | null): number {
+  const front = clampLineCount(formation?.frontCount, DEFAULT_LINE_COUNT);
+  const middle = clampLineCount(formation?.middleCount, DEFAULT_LINE_COUNT);
+  const back = clampLineCount(formation?.backCount, DEFAULT_LINE_COUNT);
+  return front + middle + back;
+}
+
+/** 이전 세트의 최종 라인업을 다음 세트 기본값으로 이월 */
+export function resolveFormationForSet(
+  map: { [setIndex: number]: SetFormation },
+  setIndex: number,
+): SetFormation {
+  if (map[setIndex]) return cloneFormation(map[setIndex]);
+  for (let i = setIndex - 1; i >= 0; i -= 1) {
+    if (map[i]) return cloneFormation(map[i]);
+  }
+  return { court: [], bench: [], late: [] };
+}
+
+export function seedNextSetFormation(
+  map: { [setIndex: number]: SetFormation },
+  fromIndex: number,
+  force = false,
+): { [setIndex: number]: SetFormation } {
+  const src = map[fromIndex];
+  if (!src) return map;
+  const nextIndex = fromIndex + 1;
+  const next: { [setIndex: number]: SetFormation } = { ...map };
+  if (force || !next[nextIndex] || (next[nextIndex].court || []).length === 0) {
+    next[nextIndex] = cloneFormation(src);
+  }
+  return next;
 }
 
 function asIdArray(value: unknown): string[] {
@@ -206,8 +267,9 @@ function formationFromValue(value: unknown): SetFormation {
         court: asIdArray(rec.court).length > 0 ? asIdArray(rec.court) : fromSlots,
         bench: asIdArray(rec.bench),
         late: asIdArray(rec.late),
-        frontCount: clampLineCount(rec.frontCount, 3),
-        backCount: clampLineCount(rec.backCount, 3),
+        frontCount: clampLineCount(rec.frontCount, DEFAULT_LINE_COUNT),
+        middleCount: clampLineCount(rec.middleCount, DEFAULT_LINE_COUNT),
+        backCount: clampLineCount(rec.backCount, DEFAULT_LINE_COUNT),
       };
     }
     return { court: asIdArray(value), bench: [], late: [] };
@@ -239,8 +301,7 @@ export function parseSetFormationMap(roster: unknown): { [setIndex: number]: Set
 }
 
 export function parseSetFormation(roster: unknown, setIndex: number): SetFormation {
-  const map = parseSetFormationMap(roster);
-  return map[setIndex] || map[0] || { court: [], bench: [], late: [] };
+  return resolveFormationForSet(parseSetFormationMap(roster), setIndex);
 }
 
 export function serializeSetFormationMap(map: { [setIndex: number]: SetFormation }): string {

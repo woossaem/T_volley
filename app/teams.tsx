@@ -21,7 +21,7 @@ import UserProfileModal from '../components/UserProfileModal';
 import TeamReportModal, { TeamReportAnalytics } from '../components/TeamReportModal';
 import StickyAdBanner from '../components/StickyAdBanner';
 import BatchProposalModal from '../components/BatchProposalModal';
-import { isActiveTeamStatus } from '../lib/teamStatus';
+import { isActiveTeamStatus, isActiveMembership } from '../lib/teamStatus';
 import {
   resolveTeamName,
   resolveTeamNameOrNull,
@@ -29,7 +29,6 @@ import {
   extractRow,
   cleanRegionName,
   getTeamIcon,
-  snapshotTeamForState,
   isSameName,
 } from '../lib/nameUtils';
 
@@ -103,7 +102,7 @@ export default function AllTeamsListScreen() {
   const [selectedUserIdForModal, setSelectedUserIdForModal] = useState<string | null>(null);
   const [profileModalVisible, setProfileModalVisible] = useState(false);
 
-  const [selectedTeamForReport, setSelectedTeamForReport] = useState<TeamData | null>(null);
+  const [selectedTeamIdForReport, setSelectedTeamIdForReport] = useState<string | null>(null);
   const [teamReportModalVisible, setTeamReportModalVisible] = useState(false);
 
   const [createModalVisible, setCreateModalVisible] = useState(false);
@@ -149,11 +148,11 @@ export default function AllTeamsListScreen() {
       if (currentUserId) {
         const { data: myMems } = await supabase.from('team_members').select('team_id, is_active, teams(*)').eq('user_id', currentUserId);
         if (myMems) {
-          activeMyTeams = (myMems || []).filter((m: any) => m.is_active).map((m: any) => m.team_id as string);
+          activeMyTeams = (myMems || []).filter((m: any) => isActiveMembership(m.is_active)).map((m: any) => m.team_id as string);
           setMyTeamIds(activeMyTeams);
           
           const names = (myMems || []).filter((m: any) => {
-            if (!m.is_active) return false;
+            if (!isActiveMembership(m.is_active)) return false;
             const teamObj = extractRow<any>(m.teams);
             return isActiveTeamStatus(teamObj?.status);
           }).map((m: any) => {
@@ -162,7 +161,7 @@ export default function AllTeamsListScreen() {
           }).filter((n): n is string => !!n);
           setMyTeamsNames(names);
 
-          setPendingTeamIds((myMems || []).filter((m: any) => !m.is_active).map((m: any) => m.team_id as string));
+          setPendingTeamIds((myMems || []).filter((m: any) => m.is_active === false).map((m: any) => m.team_id as string));
         }
       }
 
@@ -197,18 +196,18 @@ export default function AllTeamsListScreen() {
       const { data, error } = await supabase
         .from('team_members')
         .select(`
-          team_id, user_id,
+          team_id, user_id, is_active,
           teams(*),
-          profiles(full_name)
-        `)
-        .eq('is_active', true);
+          profiles(*)
+        `);
 
       if (error) console.error('team_members 조인 에러:', error);
 
-      const teamMap = new Map<string, { name: string; region: string; team_type: 'school' | 'club'; youtube_channel_url?: string | null; manner_temp?: number; leader_id?: string | null; hasPassword: boolean; memberObjs: TeamMemberObj[] }>();
+      const teamMap = new Map<string, { name: string; region: string; team_type: string; youtube_channel_url?: string | null; manner_temp?: number; leader_id?: string | null; hasPassword: boolean; memberObjs: TeamMemberObj[] }>();
       const regionsSet = new Set<string>();
 
       data?.forEach((item: any) => {
+        if (!isActiveMembership(item.is_active)) return;
         const teamObj = extractRow<any>(item.teams);
         const profileObj = extractRow<any>(item.profiles);
         const uId = item.user_id;
@@ -601,9 +600,15 @@ export default function AllTeamsListScreen() {
     };
   };
 
+  const selectedTeamForReport = useMemo(
+    () => teams.find((t) => t.team_id === selectedTeamIdForReport) || null,
+    [teams, selectedTeamIdForReport],
+  );
+
   const selectedTeamAnalytics = useMemo<TeamReportAnalytics | null>(() => {
     if (!selectedTeamForReport) return null;
     const teamName = resolveTeamName(selectedTeamForReport);
+    const region = cleanRegionName(selectedTeamForReport.region);
 
     const teamMatches = allMatches.filter((m: any) => isSameName(m.host_team_name, teamName) || isSameName(m.away_team_name, teamName));
 
@@ -623,7 +628,7 @@ export default function AllTeamsListScreen() {
 
     return {
       teamName,
-      region: cleanRegionName(selectedTeamForReport.region),
+      region,
       teamType: selectedTeamForReport.team_type === 'school' || selectedTeamForReport.team_type === '학교'
         ? 'school'
         : selectedTeamForReport.team_type === 'club' || selectedTeamForReport.team_type === '동호회'
@@ -651,7 +656,7 @@ export default function AllTeamsListScreen() {
   }, [selectedTeamForReport, allMatches]);
 
   const openTeamReport = (team: TeamData) => {
-    setSelectedTeamForReport(snapshotTeamForState(team));
+    setSelectedTeamIdForReport(team.team_id);
     setTeamReportModalVisible(true);
   };
 
@@ -1057,7 +1062,7 @@ export default function AllTeamsListScreen() {
         visible={teamReportModalVisible}
         onClose={() => {
           setTeamReportModalVisible(false);
-          setSelectedTeamForReport(null);
+          setSelectedTeamIdForReport(null);
         }}
         analytics={selectedTeamAnalytics}
       />

@@ -22,6 +22,7 @@ interface Props {
   displayHostName: string;
   displayAwayName: string;
   currentSetIndex: number;
+  compact?: boolean;
   onPressEvent?: (event: MatchEvent) => void;
   onEditEvent?: (event: MatchEvent) => void;
 }
@@ -32,6 +33,7 @@ export default function ScoreTimeline({
   displayHostName,
   displayAwayName,
   currentSetIndex,
+  compact = false,
   onPressEvent,
   onEditEvent,
 }: Props) {
@@ -49,19 +51,63 @@ export default function ScoreTimeline({
     return () => clearTimeout(timer);
   }, [currentSetEvents.length, setKey, currentSetEvents.map((e) => e.id).join('|')]);
 
+  const renderChip = (ev: MatchEvent, content: string, isHost: boolean, isCanceled: boolean) => (
+    <TouchableOpacity
+      style={[
+        styles.chip,
+        compact && styles.chipCompact,
+        isHost ? styles.hostBg : styles.awayBg,
+        isCanceled && styles.canceledBg,
+      ]}
+      onPress={() => {
+        if (!canControl) return;
+        if (onPressEvent) onPressEvent(ev);
+        else if (onEditEvent && !isCanceled && ev.event_type === 'score') onEditEvent(ev);
+      }}
+      disabled={!canControl}
+      activeOpacity={0.7}
+    >
+      <Text style={[styles.text, compact && styles.textCompact, isHost ? styles.hostText : styles.awayText, isCanceled && styles.canceledText]}>
+        {content}
+      </Text>
+    </TouchableOpacity>
+  );
+
   return (
     <ScrollView
       ref={scrollViewRef}
       horizontal
       showsHorizontalScrollIndicator={false}
-      style={styles.scroller}
-      contentContainerStyle={styles.scroll}
+      style={[styles.scroller, compact && styles.scrollerCompact]}
+      contentContainerStyle={[styles.scroll, compact && styles.scrollCompact]}
     >
       {currentSetEvents.length === 0 && (
         <Text style={styles.emptyText}>{displayHostName} vs {displayAwayName} · {setKey + 1}세트 기록 없음</Text>
       )}
 
-      {currentSetEvents.length > 0 && (
+      {compact && currentSetEvents.length > 0 && (
+        <View style={styles.compactRow}>
+          {currentSetEvents.map((ev, index) => {
+            const isHost = ev.team_type === 'host';
+            const isCanceled = ev.is_canceled;
+            const name = ev.player_name
+              ? (ev.player_name.length > 3 ? ev.player_name.substring(0, 3) : ev.player_name)
+              : '무기명';
+            let content = '';
+            if (ev.event_type === 'score') content = `${isHost ? ev.host_score : ev.away_score} (${name})`;
+            else if (ev.event_type === 'fault') content = `${isHost ? ev.host_score : ev.away_score} ⚠${name}`;
+            else if (ev.event_type === 'sub') content = `🔄 교체`;
+            else content = `✏️ 보정`;
+            return (
+              <View key={`${ev.id}-${setKey}-${index}`} style={styles.compactChipWrap}>
+                {renderChip(ev, content, isHost, isCanceled)}
+              </View>
+            );
+          })}
+        </View>
+      )}
+
+      {!compact && currentSetEvents.length > 0 && (
         <View style={styles.trackContainer}>
           <View style={styles.horizontalLine} />
 
@@ -139,4 +185,10 @@ const styles = StyleSheet.create({
   hostText: { color: '#BAE6FD' },
   awayText: { color: '#FECDD3' },
   canceledText: { color: '#64748B', textDecorationLine: 'line-through' },
+  scrollerCompact: { flexGrow: 0, flexShrink: 1, maxHeight: 40 },
+  scrollCompact: { minHeight: 32, paddingVertical: 2, paddingRight: 12, alignItems: 'center' },
+  compactRow: { flexDirection: 'row', alignItems: 'center' },
+  compactChipWrap: { marginRight: 4 },
+  chipCompact: { minWidth: 56, paddingHorizontal: 6, paddingVertical: 3 },
+  textCompact: { fontSize: 10 },
 });

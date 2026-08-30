@@ -213,10 +213,29 @@ export function getTeamIcon(type?: string | null): string {
 /**
  * 모달/State 에 넣을 팀 스냅샷. 원본 배열 원소를 참조·변이하지 않는다.
  */
-export function snapshotTeamForState<T extends Record<string, any>>(team: T): T & { team_name: string; region: string } {
-  return {
-    ...team,
-    team_name: resolveTeamName(team),
-    region: cleanRegionName(team?.region),
-  };
+/**
+ * 팀 row의 모든 이름 별칭을 수집한다. 타입/상태 맵 키용.
+ * 원본 객체는 변경하지 않는다.
+ */
+export function collectTeamNameAliases(team: unknown): string[] {
+  const row = extractRow<Record<string, unknown>>(team);
+  const aliases = new Set<string>();
+  const resolved = resolveTeamNameOrNull(team);
+  if (resolved) aliases.add(resolved);
+  if (row) {
+    for (const key of TEAM_NAME_KEYS) {
+      const value = normalizeNameKey(row[key]);
+      if (value) aliases.add(value);
+    }
+  }
+  return Array.from(aliases);
+}
+
+export function resolveTeamType(raw?: unknown): string {
+  if (raw == null) return '';
+  if (typeof raw === 'string') return raw.trim();
+  const row = extractRow<Record<string, unknown>>(raw);
+  if (!row) return '';
+  const type = row.team_type ?? row.type;
+  return typeof type === 'string' ? type.trim() : '';
 }

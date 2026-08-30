@@ -24,6 +24,11 @@ export function isActiveTeamStatus(status?: string | null): boolean {
   return !status || status === 'active';
 }
 
+/** 레거시 멤버십은 is_active 가 NULL. false 만 승인 대기로 본다. */
+export function isActiveMembership(isActive?: boolean | null): boolean {
+  return isActive !== false;
+}
+
 export function buildTeamStatusByName(
   teams: { name?: string | null; status?: string | null }[]
 ): Record<string, string> {
