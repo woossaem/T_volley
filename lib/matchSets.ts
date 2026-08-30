@@ -14,8 +14,10 @@ export interface MatchSetRecord {
   awayBench?: string[];
   awayLate?: string[];
   hostFrontCount?: number;
+  hostMiddleCount?: number;
   hostBackCount?: number;
   awayFrontCount?: number;
+  awayMiddleCount?: number;
   awayBackCount?: number;
   isClosed: boolean;
 }
@@ -52,12 +54,165 @@ function asStringArray(value: unknown): string[] {
   return [];
 }
 
+export function listMatchSetRows(match: any): Array<{ setNumber: number; host_score: number; away_score: number }> {
+  const raw = Array.isArray(match?.match_sets)
+    ? match.match_sets
+    : Array.isArray(match?.sets)
+    ? match.sets
+    : [];
+
+  const fromTable: Array<{ host: number; away: number }> = [];
+  if (raw.length > 0) {
+    raw.forEach((s: any, i: number) => {
+      const idx = Math.max(0, (Number(s?.set_number ?? s?.setNumber ?? i + 1) || i + 1) - 1);
+      while (fromTable.length <= idx) fromTable.push({ host: 0, away: 0 });
+      fromTable[idx] = {
+        host: Number(s?.host_score ?? s?.hostScore ?? s?.host) || 0,
+        away: Number(s?.away_score ?? s?.awayScore ?? s?.away) || 0,
+      };
+    });
+  } else {
+    fromTable.push(...parseSetScoresString(match?.set_scores));
+  }
+
+  const attachedEvents = match?.match_events || match?.events || [];
+  const merged = mergeSetRowsWithEvents(fromTable, attachedEvents);
+
+  return merged.map((s, i) => ({
+    setNumber: i + 1,
+    host_score: s.host,
+    away_score: s.away,
+  }));
+}
+
+export function extractMatchSetScores(match: any): { host: number; away: number }[] {
+  return listMatchSetRows(match).map((s) => ({ host: s.host_score, away: s.away_score }));
+}
+
+/** 리포트 모달과 동일: match_events 마지막 점수로 세트별 host/away 복원 */
+export function lastScoresBySetFromEvents(events: MatchEventLike[]): { host: number; away: number }[] {
+  const last = new Map<number, { host: number; away: number }>();
+  (events || []).forEach((e) => {
+    if (!e || e.is_canceled || e.event_type === 'sub') return;
+    const idx = Number(e.set_index ?? 0);
+    if (!Number.isFinite(idx) || idx < 0) return;
+    last.set(idx, {
+      host: Number(e.host_score) || 0,
+      away: Number(e.away_score) || 0,
+    });
+  });
+  if (last.size === 0) return [];
+  const max = Math.max(...Array.from(last.keys()));
+  const out: { host: number; away: number }[] = [];
+  for (let i = 0; i <= max; i += 1) {
+    out.push(last.get(i) || { host: 0, away: 0 });
+  }
+  return out;
+}
+
+export function mergeSetRowsWithEvents(
+  existing: Array<{ host: number; away: number }>,
+  events: MatchEventLike[],
+): Array<{ host: number; away: number }> {
+  const fromEvents = lastScoresBySetFromEvents(events);
+  const max = Math.max(existing.length, fromEvents.length);
+  const next: Array<{ host: number; away: number }> = [];
+  for (let i = 0; i < max; i += 1) {
+    const row = existing[i];
+    const ev = fromEvents[i];
+    if (row && (row.host > 0 || row.away > 0)) next.push(row);
+    else if (ev && (ev.host > 0 || ev.away > 0)) next.push(ev);
+    else if (row) next.push(row);
+    else if (ev) next.push(ev);
+  }
+  return next;
+}
+
+/** 경기 마감 시 setHistory + 현재 세트 + match_sets + match_events 를 모두 모아 닫힌 세트 목록을 만든다. */
+export function collectClosedSetScores(input: {
+  history: string[];
+  currentSetIndex: number;
+  currentScores: { host: number; away: number };
+  matchSets?: Array<{ hostScore?: number; awayScore?: number; host_score?: number; away_score?: number }>;
+  events?: MatchEventLike[];
+}): string[] {
+  const fromHistory = parseSetScoresString((input.history || []).join(', '));
+  const fromSets = (input.matchSets || []).map((s) => ({
+    host: Number(s.hostScore ?? s.host_score) || 0,
+    away: Number(s.awayScore ?? s.away_score) || 0,
+  }));
+  const fromEvents = lastScoresBySetFromEvents(input.events || []);
+  const max = Math.max(
+    fromHistory.length,
+    fromSets.length,
+    fromEvents.length,
+    (Number(input.currentSetIndex) || 0) + 1,
+    0,
+  );
+
+  const slots: Array<{ host: number; away: number }> = [];
+  for (let i = 0; i < max; i += 1) {
+    let pick = { host: 0, away: 0 };
+    if (i === input.currentSetIndex) {
+      pick = {
+        host: Number(input.currentScores?.host) || 0,
+        away: Number(input.currentScores?.away) || 0,
+      };
+    } else if (fromHistory[i] && (fromHistory[i].host > 0 || fromHistory[i].away > 0)) {
+      pick = fromHistory[i];
+    } else if (fromSets[i] && (fromSets[i].host > 0 || fromSets[i].away > 0)) {
+      pick = fromSets[i];
+    } else if (fromEvents[i] && (fromEvents[i].host > 0 || fromEvents[i].away > 0)) {
+      pick = fromEvents[i];
+    } else {
+      pick = fromHistory[i] || fromSets[i] || fromEvents[i] || pick;
+    }
+    if (pick.host === 0 && pick.away === 0) {
+      if (fromEvents[i] && (fromEvents[i].host > 0 || fromEvents[i].away > 0)) pick = fromEvents[i];
+      else if (fromSets[i] && (fromSets[i].host > 0 || fromSets[i].away > 0)) pick = fromSets[i];
+    }
+    slots.push(pick);
+  }
+
+  while (slots.length > 1) {
+    const i = slots.length - 1;
+    const last = slots[i];
+    const scored =
+      last.host > 0 ||
+      last.away > 0 ||
+      (fromEvents[i] && (fromEvents[i].host > 0 || fromEvents[i].away > 0)) ||
+      (fromSets[i] && (fromSets[i].host > 0 || fromSets[i].away > 0));
+    if (!scored && i !== input.currentSetIndex) slots.pop();
+    else break;
+  }
+
+  return slots.map((s) => `${s.host}:${s.away}`);
+}
+
+function setsNeedEventRepair(sets: MatchSetRecord[], events: MatchEventLike[]): boolean {
+  const fromEvents = lastScoresBySetFromEvents(events);
+  if (fromEvents.length > sets.length) return true;
+  return sets.some((s, i) => {
+    const ev = fromEvents[i];
+    return !!ev && (ev.host > 0 || ev.away > 0) && s.hostScore === 0 && s.awayScore === 0;
+  });
+}
+
 export function parseSetScoresString(scoreStr: string | null | undefined): { host: number; away: number }[] {
   if (!scoreStr || !String(scoreStr).trim()) return [];
-  return String(scoreStr).split(',').map((chunk) => {
-    const [h, a] = chunk.trim().split(':').map(Number);
-    return { host: h || 0, away: a || 0 };
-  });
+  return String(scoreStr)
+    .split(',')
+    .map((chunk) => chunk.trim())
+    .filter(Boolean)
+    .map((chunk) => {
+      const parts = chunk.split(/[:\-]/);
+      const host = Number(parts[0]);
+      const away = Number(parts[1]);
+      return {
+        host: Number.isFinite(host) ? host : 0,
+        away: Number.isFinite(away) ? away : 0,
+      };
+    });
 }
 
 export function formatSetScoresString(sets: Array<{ hostScore: number; awayScore: number }>): string | null {
@@ -81,8 +236,8 @@ export function formationMapFromSets(sets: MatchSetRecord[], side: 'host' | 'awa
   const map: { [idx: number]: SetFormation } = {};
   sets.forEach((set, idx) => {
     map[idx] = side === 'host'
-      ? { court: set.hostLineup || [], bench: set.hostBench || [], late: set.hostLate || [], frontCount: set.hostFrontCount, backCount: set.hostBackCount }
-      : { court: set.awayLineup || [], bench: set.awayBench || [], late: set.awayLate || [], frontCount: set.awayFrontCount, backCount: set.awayBackCount };
+      ? { court: set.hostLineup || [], bench: set.hostBench || [], late: set.hostLate || [], frontCount: set.hostFrontCount, middleCount: set.hostMiddleCount, backCount: set.hostBackCount }
+      : { court: set.awayLineup || [], bench: set.awayBench || [], late: set.awayLate || [], frontCount: set.awayFrontCount, middleCount: set.awayMiddleCount, backCount: set.awayBackCount };
   });
   return map;
 }
@@ -95,6 +250,80 @@ export function countSetWins(sets: Array<{ hostScore: number; awayScore: number 
     else if (s.awayScore > s.hostScore) away += 1;
   });
   return { host, away };
+}
+
+/** 무승부 여부와 관계없이 세트 스코어를 `1:1 (21:18, 18:21)` 형태로 항상 노출 */
+export function formatSetScoreDisplay(setScores?: string | null): string | null {
+  const raw = setScores != null ? String(setScores).trim() : '';
+  if (!raw) return null;
+  const parsed = parseSetScoresString(raw);
+  if (parsed.length === 0) return raw;
+  const tally = countSetWins(parsed.map((s) => ({ hostScore: s.host, awayScore: s.away })));
+  const details = parsed.map((s) => `${s.host}:${s.away}`).join(', ');
+  return `${tally.host}:${tally.away} (${details})`;
+}
+
+/** match_sets + match_events 로 세트 점수를 복원해 카드/통계에 붙인다. */
+export async function hydrateMatchesWithSetScores<T extends { id?: string; set_scores?: string | null }>(
+  matches: T[],
+): Promise<T[]> {
+  const ids = matches.map((m) => m.id).filter(Boolean) as string[];
+  if (ids.length === 0) return matches;
+
+  try {
+    const { data: setData } = await supabase
+      .from('match_sets')
+      .select('match_id, set_number, host_score, away_score')
+      .in('match_id', ids)
+      .order('set_number', { ascending: true });
+
+    const eventsByMatch = new Map<string, MatchEventLike[]>();
+    for (let i = 0; i < ids.length; i += 80) {
+      const chunk = ids.slice(i, i + 80);
+      const { data: evRows } = await supabase
+        .from('match_events')
+        .select('match_id, set_index, event_type, is_canceled, host_score, away_score')
+        .in('match_id', chunk)
+        .eq('is_canceled', false);
+      (evRows || []).forEach((e: any) => {
+        const list = eventsByMatch.get(e.match_id) || [];
+        list.push(e);
+        eventsByMatch.set(e.match_id, list);
+      });
+    }
+
+    const byMatch = new Map<string, Array<{ host: number; away: number }>>();
+    (setData || []).forEach((row: any) => {
+      const list = byMatch.get(row.match_id) || [];
+      const idx = Math.max(0, (Number(row.set_number) || 1) - 1);
+      while (list.length <= idx) list.push({ host: 0, away: 0 });
+      list[idx] = { host: Number(row.host_score) || 0, away: Number(row.away_score) || 0 };
+      byMatch.set(row.match_id, list);
+    });
+
+    return matches.map((m) => {
+      if (!m.id) return m;
+      const fromTable = byMatch.get(m.id) || parseSetScoresString((m as any).set_scores);
+      const merged = mergeSetRowsWithEvents(fromTable, eventsByMatch.get(m.id) || []);
+      if (merged.length === 0) return m;
+      const use = merged.map((s, i) => ({
+        set_number: i + 1,
+        host_score: s.host,
+        away_score: s.away,
+        hostScore: s.host,
+        awayScore: s.away,
+      }));
+      return {
+        ...m,
+        set_scores: formatSetScoresString(use.map((s) => ({ hostScore: s.host_score, awayScore: s.away_score }))),
+        match_sets: use,
+        sets: use,
+        match_events: eventsByMatch.get(m.id) || (m as any).match_events,
+      };
+    });
+  } catch {
+    return matches;
+  }
 }
 
 export function isBestOfFiveDecided(sets: Array<{ hostScore: number; awayScore: number }>): boolean {
@@ -111,17 +340,15 @@ export function isMatchRecordingFinished(match: { status?: string; winner_team?:
 
 function overlayLiveScoresFromEvents(sets: MatchSetRecord[], events: MatchEventLike[]): MatchSetRecord[] {
   if (!events.length) return sets;
+  const lastBySet = lastScoresBySetFromEvents(events);
   return sets.map((set, idx) => {
-    if (set.isClosed) return set;
-    const valid = events.filter(
-      (e) => e.set_index === idx && !e.is_canceled && e.event_type !== 'sub'
-    );
-    if (valid.length === 0) return set;
-    const last = valid[valid.length - 1];
+    const ev = lastBySet[idx];
+    if (!ev) return set;
+    if (set.isClosed && (set.hostScore > 0 || set.awayScore > 0)) return set;
     return {
       ...set,
-      hostScore: last.host_score || 0,
-      awayScore: last.away_score || 0,
+      hostScore: ev.host,
+      awayScore: ev.away,
     };
   });
 }
@@ -145,14 +372,13 @@ function appendLiveSetsFromEvents(
 ): MatchSetRecord[] {
   const finished = isMatchRecordingFinished(match);
   const decided = isBestOfFiveDecided(sets.filter((s) => s.isClosed));
-  if (finished || decided) return sets;
 
   const eventSetIndexes = events
     .filter((e) => !e.is_canceled)
     .map((e) => e.set_index ?? 0);
   const maxEventSet = eventSetIndexes.length > 0 ? Math.max(...eventSetIndexes) : -1;
 
-  const pushLiveSet = (idx: number) => {
+  const pushSet = (idx: number, closed: boolean) => {
     if (idx >= MAX_SETS) return;
     if (sets.some((s) => s.setNumber === idx + 1)) return;
     sets.push({
@@ -161,22 +387,31 @@ function appendLiveSetsFromEvents(
       awayScore: 0,
       hostLineup: hostRoster[idx] || hostRoster[0] || [],
       awayLineup: awayRoster[idx] || awayRoster[0] || [],
-      isClosed: false,
+      isClosed: closed,
     });
   };
 
+  if (maxEventSet >= 0) {
+    for (let idx = 0; idx <= Math.min(maxEventSet, MAX_SETS - 1); idx += 1) {
+      pushSet(idx, finished || decided);
+    }
+    if (finished || decided) return sets;
+  } else if (finished || decided) {
+    return sets;
+  }
+
   if (sets.length === 0) {
-    pushLiveSet(0);
+    pushSet(0, false);
   } else if (maxEventSet >= sets.length) {
     for (let idx = sets.length; idx <= Math.min(maxEventSet, MAX_SETS - 1); idx += 1) {
-      pushLiveSet(idx);
+      pushSet(idx, false);
     }
   } else if (maxEventSet === sets.length - 1) {
     sets[sets.length - 1] = { ...sets[sets.length - 1], isClosed: false };
   } else if (match?.status === 'intramural' && !match?.winner_team && maxEventSet < 0) {
     sets[sets.length - 1] = { ...sets[sets.length - 1], isClosed: false };
   } else if (!sets.some((s) => !s.isClosed) && sets.length < MAX_SETS) {
-    pushLiveSet(sets.length);
+    pushSet(sets.length, false);
   }
 
   return sets;
@@ -201,8 +436,10 @@ function snapshotFromLegacy(match: any, events: MatchEventLike[]): MatchSetsSnap
     awayBench: awayForm[idx]?.bench || awayForm[0]?.bench || [],
     awayLate: awayForm[idx]?.late || awayForm[0]?.late || [],
     hostFrontCount: hostForm[idx]?.frontCount || hostForm[0]?.frontCount,
+    hostMiddleCount: hostForm[idx]?.middleCount || hostForm[0]?.middleCount,
     hostBackCount: hostForm[idx]?.backCount || hostForm[0]?.backCount,
     awayFrontCount: awayForm[idx]?.frontCount || awayForm[0]?.frontCount,
+    awayMiddleCount: awayForm[idx]?.middleCount || awayForm[0]?.middleCount,
     awayBackCount: awayForm[idx]?.backCount || awayForm[0]?.backCount,
     isClosed: true,
   }));
@@ -254,8 +491,10 @@ export async function fetchMatchSets(matchId: string): Promise<MatchSetsSnapshot
           awayBench: awayForm[idx]?.bench || awayForm[0]?.bench || [],
           awayLate: awayForm[idx]?.late || awayForm[0]?.late || [],
           hostFrontCount: hostForm[idx]?.frontCount || hostForm[0]?.frontCount,
+          hostMiddleCount: hostForm[idx]?.middleCount || hostForm[0]?.middleCount,
           hostBackCount: hostForm[idx]?.backCount || hostForm[0]?.backCount,
           awayFrontCount: awayForm[idx]?.frontCount || awayForm[0]?.frontCount,
+          awayMiddleCount: awayForm[idx]?.middleCount || awayForm[0]?.middleCount,
           awayBackCount: awayForm[idx]?.backCount || awayForm[0]?.backCount,
           isClosed: !!row.is_closed,
         };
@@ -263,15 +502,27 @@ export async function fetchMatchSets(matchId: string): Promise<MatchSetsSnapshot
       appendLiveSetsFromEvents(sets, match, events, hostRoster, awayRoster);
       const finished = isMatchRecordingFinished(match);
       const overlayed = overlayLiveScoresFromEvents(sets, events);
+      const repaired = finished && setsNeedEventRepair(overlayed, events)
+        ? overlayed.map((s) => ({ ...s, isClosed: true }))
+        : overlayed;
+      if (repaired !== overlayed) {
+        await upsertMatchSets(matchId, repaired);
+      }
       return {
         match,
-        sets: overlayed,
-        liveSetIndex: liveIndexFromSets(overlayed, finished),
+        sets: repaired,
+        liveSetIndex: liveIndexFromSets(repaired, finished),
       };
     }
   }
 
-  return snapshotFromLegacy(match, events);
+  const legacy = snapshotFromLegacy(match, events);
+  if (isMatchRecordingFinished(match) && setsNeedEventRepair(legacy.sets, events)) {
+    const repaired = legacy.sets.map((s) => ({ ...s, isClosed: true }));
+    await upsertMatchSets(matchId, repaired);
+    return { ...legacy, sets: repaired, liveSetIndex: liveIndexFromSets(repaired, true) };
+  }
+  return legacy;
 }
 
 export async function upsertMatchSets(matchId: string, sets: MatchSetRecord[]): Promise<void> {
@@ -331,7 +582,18 @@ export function recordsFromDynamicScores(
   }));
 }
 
-export async function deleteSetAndReindex(matchId: string, setIndex: number): Promise<void> {
+function shiftFormationMap<T>(map: { [idx: number]: T }, removedIndex: number): { [idx: number]: T } {
+  const next: { [idx: number]: T } = {};
+  Object.keys(map).forEach((key) => {
+    const n = Number(key);
+    if (n === removedIndex) return;
+    next[n > removedIndex ? n - 1 : n] = map[n];
+  });
+  return next;
+}
+
+/** 세트 삭제 후 남은 세트를 1부터 재인덱싱하고 match_sets / events / matches 캐시를 동기화 */
+export async function deleteSetAndReindex(matchId: string, setIndex: number): Promise<MatchSetRecord[]> {
   const { data: eventRows } = await supabase
     .from('match_events')
     .select('id, set_index')
@@ -349,6 +611,99 @@ export async function deleteSetAndReindex(matchId: string, setIndex: number): Pr
       supabase.from('match_events').update({ set_index: Number(e.set_index) - 1 }).eq('id', e.id)
     )
   );
+
+  const { data: match } = await supabase.from('matches').select('*').eq('id', matchId).maybeSingle();
+  const hostForm = shiftFormationMap(parseSetFormationMap(match?.host_roster), setIndex);
+  const awayForm = shiftFormationMap(parseSetFormationMap(match?.away_roster), setIndex);
+
+  let remaining: MatchSetRecord[] = [];
+  let loadedFromTable = false;
+
+  if (matchSetsTableAvailable) {
+    const { data: setRows, error: setError } = await supabase
+      .from('match_sets')
+      .select('*')
+      .eq('match_id', matchId)
+      .order('set_number', { ascending: true });
+
+    if (setError) {
+      matchSetsTableAvailable = false;
+    } else if (setRows) {
+      loadedFromTable = setRows.length > 0;
+      const kept = setRows.filter((row: any) => Number(row.set_number) !== setIndex + 1);
+      remaining = kept.map((row: any, i: number) => {
+        const formIdx = i;
+        return {
+          setNumber: i + 1,
+          hostScore: row.host_score || 0,
+          awayScore: row.away_score || 0,
+          hostLineup: asStringArray(row.host_lineup).length > 0 ? asStringArray(row.host_lineup) : (hostForm[formIdx]?.court || []),
+          awayLineup: asStringArray(row.away_lineup).length > 0 ? asStringArray(row.away_lineup) : (awayForm[formIdx]?.court || []),
+          hostBench: hostForm[formIdx]?.bench || [],
+          hostLate: hostForm[formIdx]?.late || [],
+          awayBench: awayForm[formIdx]?.bench || [],
+          awayLate: awayForm[formIdx]?.late || [],
+          hostFrontCount: hostForm[formIdx]?.frontCount,
+          hostMiddleCount: hostForm[formIdx]?.middleCount,
+          hostBackCount: hostForm[formIdx]?.backCount,
+          awayFrontCount: awayForm[formIdx]?.frontCount,
+          awayMiddleCount: awayForm[formIdx]?.middleCount,
+          awayBackCount: awayForm[formIdx]?.backCount,
+          isClosed: !!row.is_closed,
+        };
+      });
+
+      await supabase.from('match_sets').delete().eq('match_id', matchId);
+      if (remaining.length > 0) {
+        const { error: insertError } = await supabase.from('match_sets').insert(
+          remaining.map((s) => ({
+            match_id: matchId,
+            set_number: s.setNumber,
+            host_score: s.hostScore,
+            away_score: s.awayScore,
+            host_lineup: s.hostLineup,
+            away_lineup: s.awayLineup,
+            is_closed: s.isClosed,
+            updated_at: new Date().toISOString(),
+          }))
+        );
+        if (insertError) matchSetsTableAvailable = false;
+      }
+    }
+  }
+
+  if (!loadedFromTable) {
+    const parsed = parseSetScoresString(match?.set_scores);
+    remaining = parsed
+      .filter((_, i) => i !== setIndex)
+      .map((s, i) => ({
+        setNumber: i + 1,
+        hostScore: s.host,
+        awayScore: s.away,
+        hostLineup: hostForm[i]?.court || [],
+        awayLineup: awayForm[i]?.court || [],
+        hostBench: hostForm[i]?.bench || [],
+        hostLate: hostForm[i]?.late || [],
+        awayBench: awayForm[i]?.bench || [],
+        awayLate: awayForm[i]?.late || [],
+        hostFrontCount: hostForm[i]?.frontCount,
+        hostMiddleCount: hostForm[i]?.middleCount,
+        hostBackCount: hostForm[i]?.backCount,
+        awayFrontCount: awayForm[i]?.frontCount,
+        awayMiddleCount: awayForm[i]?.middleCount,
+        awayBackCount: awayForm[i]?.backCount,
+        isClosed: true,
+      }));
+  }
+
+  const closed = remaining.filter((s) => s.isClosed);
+  await supabase.from('matches').update({
+    set_scores: formatSetScoresString(closed.length > 0 ? closed : remaining),
+    host_roster: JSON.stringify(hostForm),
+    away_roster: JSON.stringify(awayForm),
+  }).eq('id', matchId);
+
+  return remaining;
 }
 
 export function dynamicScoresFromSets(sets: MatchSetRecord[]): Array<{ hostScore: number; awayScore: number }> {

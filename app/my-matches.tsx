@@ -28,12 +28,13 @@ import PastMatchRegisterModal from '../components/PastMatchRegisterModal';
 import MatchCommentModal from '../components/MatchCommentModal';
 import MatchCard, { MatchData, ApplicationData } from '../components/MatchCard';
 import { buildTeamStatusByName, isActiveTeamStatus } from '../lib/teamStatus';
-import { parseSetRosterMap, safeIncludes, safeNameText, teamsInclude, nameIncludesQuery } from '../lib/roster';
-import { resolveTeamName, resolveTeamNameOrNull } from '../lib/nameUtils';
+import { parseSetFormationMap, parseSetRosterMap, safeIncludes, safeNameText, seedNextSetFormation, teamsInclude, nameIncludesQuery, type SetFormation } from '../lib/roster';
+import { resolveTeamName, resolveTeamNameOrNull, collectTeamNameAliases } from '../lib/nameUtils';
 import { insertMatchIgnoringUnknownColumns, updateMatchIgnoringUnknownColumns } from '../lib/matchWrite';
 import {
   dynamicScoresFromSets,
   fetchMatchSets,
+  hydrateMatchesWithSetScores,
   recordsFromDynamicScores,
   rosterMapFromSets,
   upsertMatchSets,
@@ -189,22 +190,24 @@ export default function MyMatchesScreen() {
       const { data: teamsData } = await supabase.from('teams').select('*');
       if (teamsData) {
         const parsed = teamsData.map((t: any) => ({
-          name: resolveTeamNameOrNull(t),
+          name: resolveTeamName(t),
           status: t.status || 'active',
           type: t.team_type || '',
-        })).filter((t: any) => t.name);
+          aliases: collectTeamNameAliases(t),
+        }));
         setTeamStatusByName(buildTeamStatusByName(parsed));
         setAllTeams(parsed.filter((t: any) => isActiveTeamStatus(t.status)).map((t: any) => t.name as string));
         const typeMap: Record<string, string> = {};
         parsed.forEach((t: any) => {
+          t.aliases.forEach((alias: string) => { typeMap[alias] = t.type; });
           if (t.name) typeMap[t.name] = t.type;
         });
         setTeamTypeByName(typeMap);
       }
 
-      const { data: matchData, error } = await supabase.from('matches').select('*').order('created_at', { ascending: false });
+      const { data: matchData, error } = await supabase.from('matches').select('*, match_sets(*)').order('created_at', { ascending: false });
       if (error) throw error;
-      if (matchData) setMatches(matchData);
+      if (matchData) setMatches(await hydrateMatchesWithSetScores(matchData));
     } catch (err) {
       console.error('데이터 조회 오류:', err);
     } finally {
@@ -695,7 +698,6 @@ export default function MyMatchesScreen() {
         status: 'pending_result',
         winner_team: selectedWinner,
         result_submitter_team: myTeamInMatch,
-        submitted_by_name: currentUserName,
         set_scores: formattedScores,
         host_roster: JSON.stringify(hostSetRosters),
         away_roster: JSON.stringify(awaySetRosters),
@@ -761,8 +763,9 @@ export default function MyMatchesScreen() {
       if (myTeam) {
         await sendNotificationToTeam(
           myTeam,
-          '👥 [출전 명단 수정 완료]',
-          `'${currentUserName}' 님이 출전 명단을 변경했습니다. (${nowTimeStr})`
+          '[팀 라인업 작성]',
+          `'${currentUserName} 선생님'이 라인업을 등록했습니다`,
+          currentUserId,
         );
       }
 
@@ -796,6 +799,30 @@ export default function MyMatchesScreen() {
         match.away_team_name ? safeNameText(match.away_team_name) : undefined,
         match.host_roster,
         match.away_roster,
+      );
+    }
+  };
+
+  const handlePersistFormation = async (isHost: boolean, setIndex: number, formation: SetFormation) => {
+    if (!selectedMatchForResult) return;
+    const formMap = parseSetFormationMap(isHost ? selectedMatchForResult.host_roster : selectedMatchForResult.away_roster);
+    formMap[setIndex] = formation;
+    const carried = seedNextSetFormation(formMap, setIndex);
+    const payload = isHost
+      ? { host_roster: JSON.stringify(carried) }
+      : { away_roster: JSON.stringify(carried) };
+    await supabase.from('matches').update(payload).eq('id', selectedMatchForResult.id);
+    setSelectedMatchForResult((prev) => prev ? { ...prev, ...payload } : prev);
+    setMatches((prev) => prev.map((m) => m.id === selectedMatchForResult.id ? { ...m, ...payload } : m));
+    const teamName = isHost
+      ? resolveTeamName(selectedMatchForResult.host_team_name)
+      : resolveTeamName(selectedMatchForResult.away_team_name);
+    if (teamName) {
+      await sendNotificationToTeam(
+        teamName,
+        '[팀 라인업 작성]',
+        `'${currentUserName} 선생님'이 라인업을 등록했습니다`,
+        currentUserId,
       );
     }
   };
@@ -1094,6 +1121,7 @@ export default function MyMatchesScreen() {
         onSelectWinner={setSelectedWinner}
         onSaveResult={handleSaveResult}
         onSaveRosterOnly={handleSaveRosterOnly}
+        onPersistFormation={handlePersistFormation}
         actionLoading={actionLoading}
       />
 

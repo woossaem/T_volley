@@ -15,8 +15,9 @@ import { useRouter } from 'expo-router';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
 import { Colors } from '../constants/Colors';
-import { formatTeamDisplayName } from '../lib/teamStatus';
-import { addMatchPlayerStats, emptyPlayerCareerStats } from '../lib/playerStats';
+import { formatTeamDisplayName, isActiveMembership } from '../lib/teamStatus';
+import { addMatchPlayerStats, emptyPlayerCareerStats, formatSetRecordLabel } from '../lib/playerStats';
+import { hydrateMatchesWithSetScores } from '../lib/matchSets';
 import { resolveTeamName, resolveTeamNameOrNull, cleanRegionName, getTeamIcon, isSameName, UNSET_REGION } from '../lib/nameUtils';
 import UserProfileModal from '../components/UserProfileModal';
 import TeamReportModal from '../components/TeamReportModal';
@@ -63,6 +64,9 @@ interface PersonalRankingData {
   points: number;
   faults: number;
   setsPlayed: number;
+  setWins: number;
+  setDraws: number;
+  setLosses: number;
   setWinRate: number;
 }
 
@@ -152,20 +156,24 @@ export default function RankingScreen() {
       setLoading(true);
 
       const { data: allTeams } = await supabase.from('teams').select('*');
-      const { data: allMatches } = await supabase.from('matches').select('*').in('status', ['completed', 'friendly']);
+      const { data: allMatchesRaw } = await supabase.from('matches').select('*, match_sets(*)').in('status', ['completed', 'friendly']);
+      const { data: intraMatchesRaw } = await supabase.from('matches').select('*, match_sets(*)').eq('status', 'intramural');
+      const allMatches = await hydrateMatchesWithSetScores(allMatchesRaw || []);
+      const intraMatches = await hydrateMatchesWithSetScores(intraMatchesRaw || []);
       const { data: allProfiles } = await supabase.from('profiles').select('*');
       
       const { data: tmData } = await supabase
         .from('team_members')
-        .select('user_id, team_id, is_primary')
-        .eq('is_active', true);
+        .select('user_id, team_id, is_primary, is_active');
 
-      if (allMatches) setRawMatches(allMatches);
+      setRawMatches(allMatches);
 
-      if (currentUserId && tmData) {
-        const myTeamIds = tmData.filter((tm: any) => tm.user_id === currentUserId).map((tm: any) => tm.team_id);
+      const activeTmData = (tmData || []).filter((tm: any) => isActiveMembership(tm.is_active));
+
+      if (currentUserId && activeTmData.length > 0) {
+        const myTeamIds = activeTmData.filter((tm: any) => tm.user_id === currentUserId).map((tm: any) => tm.team_id);
         const teammateIds = new Set<string>();
-        tmData.forEach((tm: any) => {
+        activeTmData.forEach((tm: any) => {
           if (myTeamIds.includes(tm.team_id)) {
             teammateIds.add(tm.user_id);
           }
@@ -184,13 +192,13 @@ export default function RankingScreen() {
 
       (allTeams || []).forEach((t: any) => {
         if (!t.id) return;
-        const tName = resolveTeamNameOrNull(t);
-        if (tName) teamIdToNameMap.set(t.id, tName);
+        const tName = resolveTeamName(t);
+        teamIdToNameMap.set(t.id, tName);
         teamIdToRegionMap.set(t.id, cleanRegionName(t.region, UNSET_REGION));
         teamIdToTypeMap.set(t.id, t.team_type || '');
       });
 
-      tmData?.forEach((item: any) => {
+      activeTmData.forEach((item: any) => {
         const uId = item.user_id;
         const tId = item.team_id;
         
@@ -235,10 +243,14 @@ export default function RankingScreen() {
         const mSeasonCode = getMatchSeasonCode(m.match_date || m.created_at);
         return mSeasonCode === selectedPeriod;
       });
+      const personalTargetMatches = [...allMatches, ...intraMatches].filter((m: any) => {
+        if (selectedPeriod === 'hall_of_fame') return true;
+        const mSeasonCode = getMatchSeasonCode(m.match_date || m.created_at);
+        return mSeasonCode === selectedPeriod;
+      });
 
       const processedTeams: TeamRankingData[] = (allTeams || []).map((t: any) => {
-        const pureName = resolveTeamNameOrNull(t);
-        if (!pureName) return null;
+        const pureName = resolveTeamName(t);
 
         const matches = targetMatches.filter((m: any) => {
           return isSameName(m.host_team_name, pureName) || isSameName(m.away_team_name, pureName);
@@ -306,12 +318,12 @@ export default function RankingScreen() {
       setPendingTeamRanks(pending);
 
       const eventsByMatch = new Map<string, any[]>();
-      const targetMatchIds = targetMatches.map((m: any) => m.id).filter(Boolean);
+      const targetMatchIds = personalTargetMatches.map((m: any) => m.id).filter(Boolean);
       for (let i = 0; i < targetMatchIds.length; i += 80) {
         const chunk = targetMatchIds.slice(i, i + 80);
         const { data: evRows } = await supabase
           .from('match_events')
-          .select('match_id, player_id, event_type, is_canceled')
+          .select('match_id, player_id, event_type, is_canceled, set_index, host_score, away_score')
           .in('match_id', chunk)
           .eq('is_canceled', false);
         (evRows || []).forEach((e: any) => {
@@ -323,7 +335,7 @@ export default function RankingScreen() {
 
       const pRanks: PersonalRankingData[] = (allProfiles || []).map((p: any) => {
         const career = emptyPlayerCareerStats();
-        targetMatches.forEach((m: any) => {
+        personalTargetMatches.forEach((m: any) => {
           addMatchPlayerStats(career, p.id, m, eventsByMatch.get(m.id) || []);
         });
 
@@ -343,15 +355,18 @@ export default function RankingScreen() {
           gender: p.gender || '남성',
           avatarIcon: p.avatar_icon || '🏐',
           avatarUrl: p.avatar_url,
-          totalMatches: career.matchesPlayed,
-          wins: career.matchWins,
-          losses: career.matchLosses,
-          draws: career.matchDraws,
-          winRate: career.matchWinRate,
+          totalMatches: career.setsPlayed,
+          wins: career.setWins,
+          losses: career.setLosses,
+          draws: career.setDraws,
+          winRate: career.setWinRate,
           mannerTemp: p.manner_temp || 36.5,
           points: career.points,
           faults: career.faults,
           setsPlayed: career.setsPlayed,
+          setWins: career.setWins,
+          setDraws: career.setDraws,
+          setLosses: career.setLosses,
           setWinRate: career.setWinRate,
         };
       });
@@ -787,9 +802,11 @@ export default function RankingScreen() {
 
                     <View style={{ alignItems: 'flex-end' }}>
                       <Text style={[styles.winRateNum, { color: '#0284C7' }]}>{item.wins}승</Text>
-                      <Text style={styles.winRateLabel}>{item.totalMatches}전 · 승률 {item.winRate}%</Text>
+                      <Text style={styles.winRateLabel}>
+                        {formatSetRecordLabel(item.setWins, item.setDraws, item.setLosses)} · 세트승률 {item.setWinRate}%
+                      </Text>
                       <Text style={styles.personalStatLine}>득점 {item.points} · 범실 {item.faults}</Text>
-                      <Text style={styles.personalStatLine}>{item.setsPlayed}세트 출전 · 세트승률 {item.setWinRate}%</Text>
+                      <Text style={styles.personalStatLine}>{item.setsPlayed}세트 출전</Text>
                       <Text style={styles.mannerTempTag}>🌡️ {item.mannerTemp.toFixed(1)}°C</Text>
                     </View>
                   </TouchableOpacity>

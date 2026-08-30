@@ -19,7 +19,9 @@ import StickyAdBanner from '../components/StickyAdBanner';
 import MatchPostgameReportModal from '../components/MatchPostgameReportModal';
 import { buildTeamStatusByName, formatTeamDisplayName } from '../lib/teamStatus';
 import { parseRosterUserIds, safeIncludes, teamsInclude, nameIncludesQuery } from '../lib/roster';
-import { resolveTeamName, resolveTeamNameOrNull, getTeamIcon, isSameName, cleanRegionName } from '../lib/nameUtils';
+import { resolveTeamName, resolveTeamNameOrNull, getTeamIcon, isSameName, cleanRegionName, collectTeamNameAliases } from '../lib/nameUtils';
+import { formatSetScoreDisplay, formatSetScoresString, hydrateMatchesWithSetScores, listMatchSetRows } from '../lib/matchSets';
+import SetScoreStrip from '../components/SetScoreStrip';
 
 interface MatchHistoryItem {
   id: string;
@@ -111,26 +113,39 @@ export default function MyMatchHistoryScreen() {
       const { data: teamsData } = await supabase.from('teams').select('*');
       if (teamsData) {
         const parsed = teamsData.map((t: any) => ({
-          name: resolveTeamNameOrNull(t),
+          name: resolveTeamName(t),
           status: t.status || 'active',
           type: t.team_type || '',
-        })).filter((t: any) => t.name);
+          aliases: collectTeamNameAliases(t),
+        }));
         setTeamStatusByName(buildTeamStatusByName(parsed));
         const typeMap: Record<string, string> = {};
         parsed.forEach((t: any) => {
+          t.aliases.forEach((alias: string) => {
+            typeMap[alias] = t.type;
+          });
           if (t.name) typeMap[t.name] = t.type;
         });
         setTeamTypeByName(typeMap);
       }
 
-      const { data: matchesData, error } = await supabase
+      let { data: matchesData, error } = await supabase
         .from('matches')
-        .select('*')
+        .select('*, match_sets(*)')
         .in('status', ['completed', 'friendly', 'intramural', 'pending_result', 'matched'])
         .order('created_at', { ascending: false });
+      if (error) {
+        const retry = await supabase
+          .from('matches')
+          .select('*')
+          .in('status', ['completed', 'friendly', 'intramural', 'pending_result', 'matched'])
+          .order('created_at', { ascending: false });
+        matchesData = retry.data;
+        error = retry.error;
+      }
 
       if (error) throw error;
-      if (matchesData) setRawMatches(matchesData);
+      if (matchesData) setRawMatches(await hydrateMatchesWithSetScores(matchesData));
     } catch (err) {
       console.error('출전 이력 조회 오류:', err);
     } finally {
@@ -370,6 +385,9 @@ export default function MyMatchHistoryScreen() {
             const isWin = match.myResult === 'win';
             const isDraw = match.myResult === 'draw';
             const isPending = match.myResult === 'pending';
+            const setRows = listMatchSetRows(match);
+            const resolvedSetScores = formatSetScoresString(setRows.map((s) => ({ hostScore: s.host_score, awayScore: s.away_score })));
+            const setScoreLabel = formatSetScoreDisplay(resolvedSetScores);
 
             return (
               <View key={match.id} style={styles.historyCard}>
@@ -380,20 +398,27 @@ export default function MyMatchHistoryScreen() {
                     <Text style={styles.awayTeamText}>{match.away_team_name ? `${getTeamIcon(teamTypeByName[resolveTeamName(match.away_team_name)])} ${formatTeamDisplayName(resolveTeamName(match.away_team_name), teamStatusByName[resolveTeamName(match.away_team_name)])}` : '자체 내전'}</Text>
                   </View>
 
-                  <View
-                    style={[
-                      styles.resultBadge,
-                      isWin ? styles.winBadge : isDraw ? styles.drawBadge : isPending ? styles.pendingBadge : styles.lossBadge,
-                    ]}
-                  >
-                    <Text
+                  <View style={styles.resultBadgeCol}>
+                    <View
                       style={[
-                        styles.resultBadgeText,
-                        isWin ? styles.winBadgeText : isDraw ? styles.drawBadgeText : isPending ? styles.pendingBadgeText : styles.lossBadgeText,
+                        styles.resultBadge,
+                        isWin ? styles.winBadge : isDraw ? styles.drawBadge : isPending ? styles.pendingBadge : styles.lossBadge,
                       ]}
                     >
-                      {isWin ? '🏆 승리' : isDraw ? '🤝 무승부' : isPending ? '⏳ 진행중' : '❌ 패배'}
-                    </Text>
+                      <Text
+                        style={[
+                          styles.resultBadgeText,
+                          isWin ? styles.winBadgeText : isDraw ? styles.drawBadgeText : isPending ? styles.pendingBadgeText : styles.lossBadgeText,
+                        ]}
+                      >
+                        {isWin ? '🏆 승리' : isDraw ? '🤝 무승부' : isPending ? '⏳ 진행중' : '❌ 패배'}
+                      </Text>
+                    </View>
+                    {setScoreLabel ? (
+                      <Text style={isDraw ? styles.drawSetScoreBeside : styles.setScoreBeside} numberOfLines={2}>
+                        {setScoreLabel}
+                      </Text>
+                    ) : null}
                   </View>
                 </View>
 
@@ -426,11 +451,12 @@ export default function MyMatchHistoryScreen() {
                     <Text style={styles.detailIcon}>📍</Text>
                     <Text style={styles.detailText}>[{cleanRegionName(match.region)}] {match.location}</Text>
                   </View>
-                  {match.set_scores ? (
+                  <SetScoreStrip match={match} setScores={resolvedSetScores} sets={setRows} />
+                  {setScoreLabel ? (
                     <View style={styles.detailRow}>
                       <Text style={styles.detailIcon}>📊</Text>
-                      <Text style={[styles.detailText, { fontWeight: '800', color: Colors.primary }]}>
-                        세트 점수: {match.set_scores}
+                      <Text style={[styles.detailText, styles.setScoreDetailText]}>
+                        세트 점수: {setScoreLabel}
                       </Text>
                     </View>
                   ) : null}
@@ -581,7 +607,11 @@ const styles = StyleSheet.create({
   vsText: { fontSize: 11, fontWeight: '800', color: '#94A3B8' },
   awayTeamText: { fontSize: 15, fontWeight: '800', color: '#0284C7' },
 
+  resultBadgeCol: { alignItems: 'flex-end', gap: 4, maxWidth: '46%' },
   resultBadge: { paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8, borderWidth: 1 },
+  setScoreBeside: { fontSize: 11, fontWeight: '900', color: '#1D4ED8', textAlign: 'right' },
+  drawSetScoreBeside: { fontSize: 12, fontWeight: '900', color: '#1D4ED8', textAlign: 'right' },
+  setScoreDetailText: { fontWeight: '900', color: '#1D4ED8' },
   winBadge: { backgroundColor: '#ECFDF5', borderColor: '#A7F3D0' },
   winBadgeText: { color: '#059669', fontSize: 11, fontWeight: '800' },
   drawBadge: { backgroundColor: '#F8FAFC', borderColor: '#CBD5E1' },

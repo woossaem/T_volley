@@ -5,6 +5,7 @@ import { Colors } from '../constants/Colors';
 import { formatTeamDisplayName } from '../lib/teamStatus';
 import { teamsInclude } from '../lib/roster';
 import { resolveTeamName, getTeamIcon } from '../lib/nameUtils';
+import { formatSetScoreDisplay, formatSetScoresString, listMatchSetRows } from '../lib/matchSets';
 
 export interface MatchData {
   id: string;
@@ -26,6 +27,9 @@ export interface MatchData {
   roster_updated_by_name?: string;
   roster_updated_at?: string;
   set_scores?: string | null;
+  match_sets?: Array<{ set_number?: number; host_score?: number; away_score?: number }>;
+  match_events?: Array<{ set_index?: number; event_type?: string; is_canceled?: boolean; host_score?: number; away_score?: number }>;
+  sets?: Array<{ set_number?: number; host_score?: number; away_score?: number; hostScore?: number; awayScore?: number }>;
   host_roster?: string;
   away_roster?: string;
   created_at: string;
@@ -101,8 +105,8 @@ export default function MatchCard({
 
   const hostName = resolveTeamName(match.host_team_name);
   const awayName = match.away_team_name ? resolveTeamName(match.away_team_name) : '';
-  const hostIcon = getTeamIcon(teamTypeByName?.[hostName]);
-  const awayIcon = getTeamIcon(teamTypeByName?.[awayName]);
+  const hostIcon = getTeamIcon(teamTypeByName?.[hostName] || teamTypeByName?.[String(match.host_team_name || '')]);
+  const awayIcon = getTeamIcon(teamTypeByName?.[awayName] || teamTypeByName?.[String(match.away_team_name || '')]);
 
   const isHost = teamsInclude(myTeams, match.host_team_name);
   const isAway = match.away_team_name ? teamsInclude(myTeams, match.away_team_name) : false;
@@ -114,9 +118,18 @@ export default function MatchCard({
 
   const isCompleted = match.status === 'completed';
   const isFriendly = match.status === 'friendly';
+  const isIntramural = match.status === 'intramural';
   const isPending = match.status === 'pending_result';
   const isMatched = match.status === 'matched';
   const isOpen = match.status === 'open';
+  const isDrawResult = match.winner_team === 'draw' || match.winner_team === '무승부';
+  const setRows = listMatchSetRows(match).map((s) => ({
+    set_number: s.setNumber,
+    host_score: s.host_score,
+    away_score: s.away_score,
+  }));
+  const resolvedSetScores = formatSetScoresString(setRows.map((s) => ({ hostScore: Number(s.host_score) || 0, awayScore: Number(s.away_score) || 0 })));
+  const setScoreLabel = formatSetScoreDisplay(resolvedSetScores);
 
   const isBothTeams = isHost && isAway;
   const submitterIsMyHostTeam = match.result_submitter_team === match.host_team_name;
@@ -210,6 +223,20 @@ export default function MatchCard({
         </View>
       </View>
 
+      {setRows.length > 0 ? (
+        <View style={styles.setScoreBox}>
+          <View style={styles.setScorePillsRow}>
+            {setRows.map((s, i) => (
+              <View key={`set-${s.set_number || i + 1}`} style={styles.setScorePill}>
+                <Text style={styles.setScorePillLabel}>{s.set_number || i + 1}세트</Text>
+                <Text style={styles.setScorePillValue}>{s.host_score}:{s.away_score}</Text>
+              </View>
+            ))}
+          </View>
+          {setScoreLabel ? <Text style={styles.setScoreSummary}>{setScoreLabel}</Text> : null}
+        </View>
+      ) : null}
+
       {match.need_mercenary && match.mercenary_details && isMercenaryExpanded ? (
         <View style={styles.mercenaryInfoBox}>
           <Text style={styles.mercenaryInfoTitle}>🙋‍♂️ 용병 상세 조건</Text>
@@ -299,10 +326,12 @@ export default function MatchCard({
         {isCompleted && (
           <View style={{ gap: 8 }}>
             <View style={styles.completedBanner}>
-              <Text style={styles.completedBannerText}>
-                🏆 전적: {match.winner_team === 'draw' ? '무승부' : `${match.winner_team} 승리!`}
-              </Text>
-              {match.set_scores ? <Text style={styles.setScoreText}>📊 세트 스코어: {match.set_scores}</Text> : null}
+              <View style={styles.resultScoreRow}>
+                <Text style={styles.completedBannerText}>
+                  🏆 전적: {isDrawResult ? '무승부' : `${match.winner_team} 승리!`}
+                </Text>
+              </View>
+              {setScoreLabel ? <Text style={styles.setScoreText}>📊 세트 스코어: {setScoreLabel}</Text> : null}
               {match.approved_by_name && (
                 <Text style={styles.auditSubText}>(최종 확정: {match.approved_by_name} 선생님 승인)</Text>
               )}
@@ -336,13 +365,30 @@ export default function MatchCard({
           </View>
         )}
 
+        {isIntramural && (
+          <View style={{ gap: 8 }}>
+            <View style={[styles.completedBanner, { backgroundColor: '#FAF5FF', borderColor: '#E9D5FF' }]}>
+              <View style={styles.resultScoreRow}>
+                <Text style={[styles.completedBannerText, { color: '#6B21A8' }]}>
+                  {match.winner_team
+                    ? (isDrawResult ? '🤝 무승부' : `🏆 ${match.winner_team} 승리!`)
+                    : '⚡ 내전 진행 중'}
+                </Text>
+              </View>
+              {setScoreLabel ? <Text style={styles.setScoreText}>📊 세트 스코어: {setScoreLabel}</Text> : null}
+            </View>
+          </View>
+        )}
+
         {isFriendly && (
           <View style={{ gap: 8 }}>
             <View style={[styles.completedBanner, { backgroundColor: '#F8FAFC', borderColor: '#CBD5E1' }]}>
-              <Text style={[styles.completedBannerText, { color: '#64748B' }]}>
-                🤝 친선: {match.winner_team === 'draw' ? '무승부' : `${match.winner_team} 승리!`}
-              </Text>
-              {match.set_scores ? <Text style={styles.setScoreText}>📊 세트 스코어: {match.set_scores}</Text> : null}
+              <View style={styles.resultScoreRow}>
+                <Text style={[styles.completedBannerText, { color: '#64748B' }]}>
+                  🤝 친선: {isDrawResult ? '무승부' : `${match.winner_team} 승리!`}
+                </Text>
+              </View>
+              {setScoreLabel ? <Text style={styles.setScoreText}>📊 세트 스코어: {setScoreLabel}</Text> : null}
             </View>
 
             {isMyMatch && (
@@ -377,9 +423,9 @@ export default function MatchCard({
           <View style={{ gap: 8 }}>
             <View style={styles.pendingBanner}>
               <Text style={styles.pendingBannerText}>
-                제출 결과: {match.winner_team === 'draw' ? '무승부' : `'${match.winner_team}' 승리`}
-                {match.set_scores ? ` (${match.set_scores})` : ''}
+                제출 결과: {isDrawResult ? '무승부' : `'${match.winner_team}' 승리`}
               </Text>
+              {setScoreLabel ? <Text style={styles.setScoreText}>📊 세트 스코어: {setScoreLabel}</Text> : null}
               {match.submitted_by_name && (
                 <Text style={styles.auditSubText}>
                   (제출자: {match.submitted_by_name} 선생님 ➔ 상대팀 승인 대기)
@@ -491,6 +537,20 @@ export default function MatchCard({
           </View>
         )}
       </View>
+
+      {setRows.length > 0 ? (
+        <View style={[styles.setScoreBox, { marginTop: 10, marginBottom: 0 }]}>
+          <View style={styles.setScorePillsRow}>
+            {setRows.map((s, i) => (
+              <View key={`set-bottom-${s.set_number || i + 1}`} style={styles.setScorePill}>
+                <Text style={styles.setScorePillLabel}>{s.set_number || i + 1}세트</Text>
+                <Text style={styles.setScorePillValue}>{s.host_score}:{s.away_score}</Text>
+              </View>
+            ))}
+          </View>
+          {setScoreLabel ? <Text style={styles.setScoreSummary}>{setScoreLabel}</Text> : null}
+        </View>
+      ) : null}
     </View>
   );
 }
@@ -564,7 +624,16 @@ const styles = StyleSheet.create({
   matchedBannerText: { color: '#1E40AF', fontSize: 12.5, fontWeight: '800' },
   completedBanner: { backgroundColor: '#F1F5F9', padding: 10, borderRadius: 10, alignItems: 'center', borderWidth: 1, borderColor: '#E2E8F0' },
   completedBannerText: { color: '#0F172A', fontSize: 14, fontWeight: '900' },
-  setScoreText: { fontSize: 13, fontWeight: '800', color: '#2563EB', marginTop: 2 },
+  resultScoreRow: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'center', gap: 6 },
+  drawSetScoreBadge: { backgroundColor: '#DBEAFE', borderWidth: 1, borderColor: '#3B82F6', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 8 },
+  drawSetScoreBadgeText: { fontSize: 12, fontWeight: '900', color: '#1D4ED8' },
+  setScoreBox: { backgroundColor: '#EFF6FF', borderWidth: 2, borderColor: '#1D4ED8', borderRadius: 12, paddingVertical: 10, paddingHorizontal: 10, marginBottom: 10 },
+  setScorePillsRow: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'center', gap: 8 },
+  setScorePill: { backgroundColor: '#FFFFFF', borderRadius: 10, paddingHorizontal: 12, paddingVertical: 6, minWidth: 78, alignItems: 'center', borderWidth: 1, borderColor: '#93C5FD' },
+  setScorePillLabel: { fontSize: 10, fontWeight: '800', color: '#64748B' },
+  setScorePillValue: { fontSize: 18, fontWeight: '900', color: '#1D4ED8', marginTop: 1 },
+  setScoreSummary: { marginTop: 6, textAlign: 'center', fontSize: 13, fontWeight: '900', color: '#1E3A8A' },
+  setScoreText: { fontSize: 14, fontWeight: '900', color: '#1D4ED8', marginTop: 4, textAlign: 'center' },
   auditSubText: { fontSize: 10.5, color: '#64748B', fontWeight: '700', marginTop: 2 },
   pendingBanner: { backgroundColor: '#FEFCE8', padding: 10, borderRadius: 8, alignItems: 'center', borderWidth: 1, borderColor: '#FEF08A' },
   pendingBannerText: { color: '#A16207', fontSize: 13, fontWeight: '800' },
