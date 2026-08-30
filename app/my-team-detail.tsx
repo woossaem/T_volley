@@ -18,6 +18,8 @@ import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
 import { Colors } from '../constants/Colors';
 import { parseRosterUserIds, safeIncludes } from '../lib/roster';
+import { addMatchPlayerStats, emptyPlayerCareerStats } from '../lib/playerStats';
+import { hydrateMatchesWithSetScores } from '../lib/matchSets';
 
 interface MyTeam {
   id: string;
@@ -242,36 +244,27 @@ export default function MyTeamDetailScreen() {
 
       setMembers(memList);
 
-      const { data: intraMatches } = await supabase
+      const { data: intraMatchesRaw } = await supabase
         .from('matches')
-        .select('*')
+        .select('*, match_sets(*)')
         .eq('host_team_name', teamName)
         .eq('status', 'intramural');
+      const intraMatches = await hydrateMatchesWithSetScores(intraMatchesRaw || []);
 
       const rankMap: { [key: string]: MemberIntraStat } = {};
       memList.forEach(m => {
         rankMap[m.id] = { userId: m.id, fullName: m.full_name, schoolName: m.school_name, total: 0, wins: 0, draws: 0, losses: 0, winRate: 0 };
       });
 
-      (intraMatches || []).forEach((m: any) => {
-        const hostList = parseRosterUserIds(m.host_roster);
-        const awayList = parseRosterUserIds(m.away_roster);
-
-        memList.forEach(mUser => {
-          const inA = hostList.includes(mUser.id) || safeIncludes(m.host_roster, mUser.id);
-          const inB = awayList.includes(mUser.id) || safeIncludes(m.away_roster, mUser.id);
-
-          if (inA || inB) {
-            rankMap[mUser.id].total++;
-            if (m.winner_team === 'draw') {
-              rankMap[mUser.id].draws++;
-            } else if ((inA && m.winner_team === 'A팀') || (inB && m.winner_team === 'B팀')) {
-              rankMap[mUser.id].wins++;
-            } else {
-              rankMap[mUser.id].losses++;
-            }
-          }
+      memList.forEach(mUser => {
+        const career = emptyPlayerCareerStats();
+        intraMatches.forEach((m: any) => {
+          addMatchPlayerStats(career, mUser.id, m, []);
         });
+        rankMap[mUser.id].total = career.setsPlayed;
+        rankMap[mUser.id].wins = career.setWins;
+        rankMap[mUser.id].draws = career.setDraws;
+        rankMap[mUser.id].losses = career.setLosses;
       });
 
       const rankList = Object.values(rankMap).map(item => {

@@ -1,4 +1,4 @@
-import { parseSetScoresString } from './matchSets';
+import { listMatchSetRows } from './matchSets';
 import { isAnonymousSlotId, listHasUser, parseRosterUserIds, parseSetRosterMap, safeIncludes } from './roster';
 
 export interface PlayerCareerStats {
@@ -16,11 +16,17 @@ export interface PlayerCareerStats {
   matchWinRate: number;
 }
 
+export type SetSide = 'host' | 'away';
+export type SetOutcome = 'win' | 'loss' | 'draw';
+
 export type PlayerEventLike = {
   match_id?: string;
   player_id?: string | null;
   event_type?: string;
   is_canceled?: boolean;
+  set_index?: number;
+  host_score?: number;
+  away_score?: number;
 };
 
 const EMPTY_STATS: PlayerCareerStats = {
@@ -38,8 +44,16 @@ const EMPTY_STATS: PlayerCareerStats = {
   matchWinRate: 0,
 };
 
-function isDrawWinner(winner?: string | null) {
-  return winner === 'draw' || winner === '무승부';
+export function evaluateSetOutcome(hostScore: number, awayScore: number, playedAs: SetSide): SetOutcome {
+  const host = Number(hostScore) || 0;
+  const away = Number(awayScore) || 0;
+  if (host > away) return playedAs === 'host' ? 'win' : 'loss';
+  if (away > host) return playedAs === 'away' ? 'win' : 'loss';
+  return 'draw';
+}
+
+export function formatSetRecordLabel(wins: number, draws: number, losses: number): string {
+  return draws > 0 ? `${wins}승 ${draws}무 ${losses}패` : `${wins}승 ${losses}패`;
 }
 
 export function emptyPlayerCareerStats(): PlayerCareerStats {
@@ -50,13 +64,26 @@ export function isScoringEvent(eventType?: string | null) {
   return eventType === 'score' || eventType === 'fault' || eventType === 'manual';
 }
 
-/** 개인 킬 득점 (상대 범실로 올린 팀 득점은 제외) */
 export function isPersonalKill(eventType?: string | null) {
   return eventType === 'score';
 }
 
 export function isPersonalFault(eventType?: string | null) {
   return eventType === 'fault';
+}
+
+export function readMatchSets(
+  match: any,
+  events?: PlayerEventLike[],
+): Array<{ set_number: number; host_score: number; away_score: number }> {
+  return listMatchSetRows({
+    ...match,
+    match_events: match?.match_events || match?.events || events,
+  }).map((s) => ({
+    set_number: s.setNumber,
+    host_score: s.host_score,
+    away_score: s.away_score,
+  }));
 }
 
 export function addMatchPlayerStats(
@@ -76,34 +103,40 @@ export function addMatchPlayerStats(
 
   const hostMap = parseSetRosterMap(match.host_roster);
   const awayMap = parseSetRosterMap(match.away_roster);
-  const scores = parseSetScoresString(match.set_scores);
-  const setCount = Math.max(scores.length, Object.keys(hostMap).length, Object.keys(awayMap).length, 1);
+  const setRows = readMatchSets(match, events);
 
   let playedThisMatch = false;
-  for (let idx = 0; idx < setCount; idx += 1) {
+  let setWinsThisMatch = 0;
+  let setLossesThisMatch = 0;
+
+  setRows.forEach((set) => {
+    const idx = Math.max(0, set.set_number - 1);
     const hostLine = hostMap[idx] || hostMap[0] || [];
     const awayLine = awayMap[idx] || awayMap[0] || [];
-    const onHost = listHasUser(hostLine, userId) || (inHost && hostLine.length === 0);
-    const onAway = listHasUser(awayLine, userId) || (inAway && awayLine.length === 0);
-    if (!onHost && !onAway) continue;
+    const onHost = listHasUser(hostLine, userId) || ((inHost || inHostMerc) && hostLine.length === 0);
+    const onAway = listHasUser(awayLine, userId) || ((inAway || inAwayMerc) && awayLine.length === 0);
+    if (!onHost && !onAway) return;
 
     playedThisMatch = true;
     acc.setsPlayed += 1;
-    const score = scores[idx];
-    if (!score) continue;
-    const myScore = onHost ? score.host : score.away;
-    const oppScore = onHost ? score.away : score.host;
-    if (myScore > oppScore) acc.setWins += 1;
-    else if (myScore < oppScore) acc.setLosses += 1;
-    else acc.setDraws += 1;
-  }
+
+    const myScore = onHost ? set.host_score : set.away_score;
+    const oppScore = onHost ? set.away_score : set.host_score;
+    if (myScore > oppScore) {
+      acc.setWins += 1;
+      setWinsThisMatch += 1;
+    } else if (myScore < oppScore) {
+      acc.setLosses += 1;
+      setLossesThisMatch += 1;
+    } else if (myScore === oppScore) {
+      acc.setDraws += 1;
+    }
+  });
 
   if (playedThisMatch || inHost || inAway || inHostMerc || inAwayMerc) {
     acc.matchesPlayed += 1;
-    const myTeam = (inHost || inHostMerc) ? match.host_team_name : match.away_team_name;
-    if (isDrawWinner(match.winner_team)) acc.matchDraws += 1;
-    else if (match.winner_team === myTeam) acc.matchWins += 1;
-    else acc.matchLosses += 1;
+    if (setWinsThisMatch > setLossesThisMatch) acc.matchWins += 1;
+    else if (setLossesThisMatch > setWinsThisMatch) acc.matchLosses += 1;
   }
 
   events.forEach((e) => {

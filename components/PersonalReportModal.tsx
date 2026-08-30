@@ -20,6 +20,7 @@ interface PersonalReportModalProps {
     attendanceRate: number;
     recent5: string[];
     setsWon: number;
+    setsDrawn?: number;
     setsLost: number;
     bestPartnerName: string;
     maxPartnerWins: number;
@@ -34,6 +35,10 @@ export default function PersonalReportModal({
   selectedSeason,
 }: PersonalReportModalProps) {
   if (!analytics) return null;
+
+  const setDraws = analytics.setsDrawn ?? 0;
+  const setsPlayed = analytics.setsWon + setDraws + analytics.setsLost;
+  const setWinRate = setsPlayed > 0 ? Math.round((analytics.setsWon / setsPlayed) * 100) : 0;
 
   return (
     <Modal
@@ -88,17 +93,13 @@ export default function PersonalReportModal({
               )}
             </View>
 
-            {/* 세트 승률 */}
             <View style={styles.reportBox}>
-              <Text style={styles.reportLabel}>
-                📈 세트 승률 (
-                {analytics.setsWon + analytics.setsLost > 0
-                  ? Math.round((analytics.setsWon / (analytics.setsWon + analytics.setsLost)) * 100)
-                  : 0}
-                %)
-              </Text>
+              <Text style={styles.reportLabel}>📈 세트 성적 (승률 {setWinRate}%)</Text>
               <Text style={styles.reportValue}>
-                {analytics.setsWon}세트 획득 / {analytics.setsLost}세트 내어줌
+                {analytics.setsWon}승 {setDraws}무 {analytics.setsLost}패
+              </Text>
+              <Text style={styles.reportSubText}>
+                출전 세트 점수로만 집계 (경기 무승부와 무관)
               </Text>
             </View>
 

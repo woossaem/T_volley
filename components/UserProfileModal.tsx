@@ -16,6 +16,7 @@ import BadgeCollectionModal from './BadgeCollectionModal';
 import { getAllBadgesWithStatus } from '../lib/badgeUtils';
 import { formatTeamDisplayName } from '../lib/teamStatus';
 import { addMatchPlayerStats, emptyPlayerCareerStats } from '../lib/playerStats';
+import { hydrateMatchesWithSetScores } from '../lib/matchSets';
 
 interface UserProfileModalProps {
   visible: boolean;
@@ -66,6 +67,9 @@ export default function UserProfileModal({
     points: 0,
     faults: 0,
     setsPlayed: 0,
+    setWins: 0,
+    setDraws: 0,
+    setLosses: 0,
     setWinRate: 0,
   });
   const [userTeams, setUserTeams] = useState<{ id: string; name: string; status?: string }[]>([]);
@@ -118,18 +122,19 @@ export default function UserProfileModal({
       });
       setUserTeams(teamsList);
 
-      const { data: allMatches } = await supabase
+      const { data: allMatchesRaw } = await supabase
         .from('matches')
-        .select('*')
+        .select('*, match_sets(*)')
         .in('status', ['completed', 'friendly', 'intramural']);
+      const allMatches = await hydrateMatchesWithSetScores(allMatchesRaw || []);
 
-      const matchIds = (allMatches || []).map((m: any) => m.id).filter(Boolean);
+      const matchIds = allMatches.map((m: any) => m.id).filter(Boolean);
       const eventByMatch = new Map<string, any[]>();
       for (let i = 0; i < matchIds.length; i += 80) {
         const chunk = matchIds.slice(i, i + 80);
         const { data: evRows } = await supabase
           .from('match_events')
-          .select('match_id, player_id, event_type, is_canceled')
+          .select('match_id, player_id, event_type, is_canceled, set_index, host_score, away_score')
           .in('match_id', chunk)
           .eq('player_id', userId);
         (evRows || []).forEach((e: any) => {
@@ -145,14 +150,17 @@ export default function UserProfileModal({
       });
 
       setStats({
-        total: career.matchesPlayed,
-        wins: career.matchWins,
-        draws: career.matchDraws,
-        losses: career.matchLosses,
-        winRate: career.matchWinRate,
+        total: career.setsPlayed,
+        wins: career.setWins,
+        draws: career.setDraws,
+        losses: career.setLosses,
+        winRate: career.setWinRate,
         points: career.points,
         faults: career.faults,
         setsPlayed: career.setsPlayed,
+        setWins: career.setWins,
+        setDraws: career.setDraws,
+        setLosses: career.setLosses,
         setWinRate: career.setWinRate,
       });
 
@@ -298,7 +306,7 @@ export default function UserProfileModal({
                 </View>
 
                 <View style={styles.statsCard}>
-                  <Text style={styles.statsCardTitle}>🏆 공식전 개인 출전 전적</Text>
+                  <Text style={styles.statsCardTitle}>🏆 개인 세트 전적</Text>
                   <Text style={styles.statsMainText}>
                     {stats.wins}승 {stats.draws}무 {stats.losses}패
                   </Text>
@@ -318,6 +326,10 @@ export default function UserProfileModal({
                     <View style={styles.detailStatChip}>
                       <Text style={styles.detailStatLabel}>출전 세트</Text>
                       <Text style={styles.detailStatValue}>{stats.setsPlayed}</Text>
+                    </View>
+                    <View style={styles.detailStatChip}>
+                      <Text style={styles.detailStatLabel}>세트 전적</Text>
+                      <Text style={styles.detailStatValue}>{stats.setWins}승 {stats.setDraws}무 {stats.setLosses}패</Text>
                     </View>
                     <View style={styles.detailStatChip}>
                       <Text style={styles.detailStatLabel}>세트 승률</Text>

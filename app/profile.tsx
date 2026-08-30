@@ -17,6 +17,8 @@ import * as Clipboard from 'expo-clipboard';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
 import { parseRosterUserIds, safeIncludes, safeNameText } from '../lib/roster';
+import { addMatchPlayerStats, emptyPlayerCareerStats } from '../lib/playerStats';
+import { hydrateMatchesWithSetScores } from '../lib/matchSets';
 import { Colors } from '../constants/Colors';
 import StickyAdBanner from '../components/StickyAdBanner';
 
@@ -228,8 +230,8 @@ export default function ProfileScreen() {
 
       setMyTeamsList(teamsList);
 
-      const { data: allMatches } = await supabase.from('matches').select('*').in('status', ['completed', 'friendly', 'intramural']);
-      if (allMatches) setRawMatches(allMatches);
+      const { data: allMatches } = await supabase.from('matches').select('*, match_sets(*)').in('status', ['completed', 'friendly', 'intramural']);
+      if (allMatches) setRawMatches(await hydrateMatchesWithSetScores(allMatches));
 
     } catch (err) {
       console.error('프로필 조회 오류:', err);
@@ -646,22 +648,15 @@ export default function ProfileScreen() {
       return isWin ? 'WIN' : isDraw ? 'DRAW' : 'LOSS';
     });
 
-    let setsWon = 0, setsLost = 0;
     const partnerWinsMap: { [userId: string]: number } = {};
-
+    const career = emptyPlayerCareerStats();
     myPlayedForTeam.forEach(m => {
       const isHost = safeNameText(m.host_team_name) === teamName;
       const myRoster = parseRosterUserIds(isHost ? m.host_roster : m.away_roster);
       const isWin = m.winner_team === teamName;
 
-      if (m.set_scores) {
-        m.set_scores.split(', ').forEach(s => {
-          const [h, a] = s.split(':').map(Number);
-          if (!isNaN(h) && !isNaN(a)) {
-            if (isHost) { if (h > a) setsWon++; else if (a > h) setsLost++; } 
-            else { if (a > h) setsWon++; else if (h > a) setsLost++; }
-          }
-        });
+      if (currentUserId) {
+        addMatchPlayerStats(career, currentUserId, m, []);
       }
 
       if (isWin && myRoster.length > 0) {
@@ -673,6 +668,10 @@ export default function ProfileScreen() {
       }
     });
 
+    const setsWon = career.setWins;
+    const setsDrawn = career.setDraws;
+    const setsLost = career.setLosses;
+
     let bestPartnerName = '데이터 없음', maxPartnerWins = 0;
     Object.entries(partnerWinsMap).forEach(([id, wins]) => {
       if (wins > maxPartnerWins) {
@@ -680,7 +679,7 @@ export default function ProfileScreen() {
       }
     });
 
-    return { teamName, totalTeamGames, myGames, attendanceRate, recent5, setsWon, setsLost, bestPartnerName, maxPartnerWins };
+    return { teamName, totalTeamGames, myGames, attendanceRate, recent5, setsWon, setsDrawn, setsLost, bestPartnerName, maxPartnerWins };
   }, [selectedPersonalTeam, rawMatches, selectedSeason, currentUserId, profilesMap]);
 
   const mercenaryAnalytics = useMemo(() => {

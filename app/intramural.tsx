@@ -22,13 +22,17 @@ import MatchCommentModal from '../components/MatchCommentModal';
 import UserProfileModal from '../components/UserProfileModal';
 import MatchPostgameReportModal from '../components/MatchPostgameReportModal'; // 💡 신규 임포트
 import { parseSetRosterMap, safeIncludes, safeNameText, teamsInclude } from '../lib/roster';
+import { evaluateSetOutcome } from '../lib/playerStats';
 import {
   dynamicScoresFromSets,
   fetchMatchSets,
   recordsFromDynamicScores,
   rosterMapFromSets,
   upsertMatchSets,
+  hydrateMatchesWithSetScores,
+  listMatchSetRows,
 } from '../lib/matchSets';
+import SetScoreStrip from '../components/SetScoreStrip';
 
 interface MatchData {
   id: string;
@@ -223,12 +227,13 @@ export default function IntramuralScreen() {
         }
       }
 
-      const { data: matchData, error } = await supabase.from('matches').select('*').eq('status', 'intramural').order('created_at', { ascending: false });
+      const { data: matchData, error } = await supabase.from('matches').select('*, match_sets(*)').eq('status', 'intramural').order('created_at', { ascending: false });
       if (error) throw error;
       if (matchData) {
-        setMatches(matchData);
+        const hydrated = await hydrateMatchesWithSetScores(matchData);
+        setMatches(hydrated);
         if (params.openMatchId) {
-          const target = matchData.find(m => m.id === params.openMatchId);
+          const target = hydrated.find(m => m.id === params.openMatchId);
           if (target) {
             openIntraModal(target);
           }
@@ -558,62 +563,28 @@ export default function IntramuralScreen() {
 
       const parsedA = parseRoster(match.host_roster);
       const parsedB = parseRoster(match.away_roster);
-      const parsedScores = parseScoresToArray(match.set_scores);
-
-      if (parsedScores.length === 0) {
-        const { teamA, teamB } = parseIntraDescription(match.description);
-        const rosterAIds = new Set<string>();
-        Object.values(parsedA).forEach(arr => arr.forEach(id => rosterAIds.add(id)));
-        const rosterBIds = new Set<string>();
-        Object.values(parsedB).forEach(arr => arr.forEach(id => rosterBIds.add(id)));
-
-        const allMatchUsers = new Set([...rosterAIds, ...rosterBIds]);
-        allMatchUsers.forEach(uId => {
-          if (!userStats[uId]) userStats[uId] = { wins: 0, draws: 0, losses: 0, total: 0 };
-        });
-
-        const isAWin = winner === teamA || winner === 'A팀' || winner === '청팀';
-        const isBWin = winner === teamB || winner === 'B팀' || winner === '백팀';
-        const isDraw = winner === 'draw' || winner === '무승부';
-
-        rosterAIds.forEach(uId => {
-          userStats[uId].total++;
-          if (isAWin) userStats[uId].wins++;
-          else if (isDraw) userStats[uId].draws++;
-          else if (isBWin) userStats[uId].losses++;
-        });
-
-        rosterBIds.forEach(uId => {
-          userStats[uId].total++;
-          if (isBWin) userStats[uId].wins++;
-          else if (isDraw) userStats[uId].draws++;
-          else if (isAWin) userStats[uId].losses++;
-        });
-        return;
-      }
+      const parsedScores = listMatchSetRows(match);
 
       parsedScores.forEach((score, idx) => {
         const rosterA = parsedA[idx] || parsedA[0] || [];
         const rosterB = parsedB[idx] || parsedB[0] || [];
-        
-        const isAWin = score.hostScore > score.awayScore;
-        const isBWin = score.awayScore > score.hostScore;
-        const isDraw = score.hostScore === score.awayScore;
+        const hostOutcome = evaluateSetOutcome(score.host_score, score.away_score, 'host');
+        const awayOutcome = evaluateSetOutcome(score.host_score, score.away_score, 'away');
 
         rosterA.forEach(uId => {
           if (!userStats[uId]) userStats[uId] = { wins: 0, draws: 0, losses: 0, total: 0 };
           userStats[uId].total++;
-          if (isAWin) userStats[uId].wins++;
-          else if (isDraw) userStats[uId].draws++;
-          else if (isBWin) userStats[uId].losses++;
+          if (hostOutcome === 'win') userStats[uId].wins++;
+          else if (hostOutcome === 'draw') userStats[uId].draws++;
+          else userStats[uId].losses++;
         });
 
         rosterB.forEach(uId => {
           if (!userStats[uId]) userStats[uId] = { wins: 0, draws: 0, losses: 0, total: 0 };
           userStats[uId].total++;
-          if (isBWin) userStats[uId].wins++;
-          else if (isDraw) userStats[uId].draws++;
-          else if (isAWin) userStats[uId].losses++;
+          if (awayOutcome === 'win') userStats[uId].wins++;
+          else if (awayOutcome === 'draw') userStats[uId].draws++;
+          else userStats[uId].losses++;
         });
       });
     });
@@ -764,6 +735,7 @@ export default function IntramuralScreen() {
                 const { teamA, teamB, note } = parseIntraDescription(match.description);
                 const currentTeamIcon = getTeamIcon(teamTypeMap[match.host_team_name]);
                 const isFinished = !!match.winner_team;
+                const isDraw = match.winner_team === 'draw' || match.winner_team === '무승부';
 
                 return (
                   <View key={match.id} style={styles.matchCard}>
@@ -790,14 +762,14 @@ export default function IntramuralScreen() {
                     </View>
 
                     <View style={styles.scoreBanner}>
-                      <Text style={styles.scoreBannerWinner}>
-                        {isFinished 
-                          ? (match.winner_team === 'draw' ? '🤝 무승부 (연습경기 마감)' : `🏆 ${match.winner_team} 승리!`)
-                          : '⚡ 경기 진행 중 (승패 미정)'}
-                      </Text>
-                      {match.set_scores ? (
-                        <Text style={styles.scoreBannerSetText}>세트 스코어 {match.set_scores}</Text>
-                      ) : null}
+                      <View style={styles.scoreBannerResultRow}>
+                        <Text style={styles.scoreBannerWinner}>
+                          {isFinished 
+                            ? (isDraw ? '🤝 무승부 (연습경기 마감)' : `🏆 ${match.winner_team} 승리!`)
+                            : '⚡ 경기 진행 중 (승패 미정)'}
+                        </Text>
+                      </View>
+                      <SetScoreStrip match={match} setScores={match.set_scores} />
                     </View>
 
                     <TouchableOpacity
@@ -1256,8 +1228,11 @@ const styles = StyleSheet.create({
   noteTagText: { fontSize: 12, color: '#B45309', fontWeight: '700' },
 
   scoreBanner: { backgroundColor: '#FAF5FF', paddingVertical: 10, paddingHorizontal: 12, borderRadius: 10, alignItems: 'center', borderWidth: 1, borderColor: '#E9D5FF' },
+  scoreBannerResultRow: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'center', gap: 6 },
   scoreBannerWinner: { color: '#6B21A8', fontSize: 14, fontWeight: '900' },
-  scoreBannerSetText: { fontSize: 12, fontWeight: '800', color: '#7E22CE', marginTop: 2 },
+  drawSetScoreBadge: { backgroundColor: '#DBEAFE', borderWidth: 1, borderColor: '#3B82F6', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 8 },
+  drawSetScoreBadgeText: { fontSize: 12, fontWeight: '900', color: '#1D4ED8' },
+  scoreBannerSetText: { fontSize: 13, fontWeight: '900', color: '#1D4ED8', marginTop: 4, textAlign: 'center' },
 
   scoreboardLiveBtn: { backgroundColor: '#0F172A', borderRadius: 10, paddingVertical: 10, alignItems: 'center', marginTop: 8 },
   scoreboardLiveBtnText: { color: '#38BDF8', fontSize: 12.5, fontWeight: '900' },
