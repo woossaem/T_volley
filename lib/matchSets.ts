@@ -1,5 +1,5 @@
 import { supabase } from './supabase';
-import { parseSetFormationMap, parseSetRosterMap, persistCourtSlots, type SetFormation, type SetRosterMap } from './roster';
+import { assignedUserId, parseSetFormationMap, parseSetRosterMap, persistCourtSlots, type SetFormation, type SetRosterMap } from './roster';
 
 export type { SetRosterMap };
 
@@ -34,6 +34,9 @@ export interface MatchEventLike {
   is_canceled?: boolean;
   host_score?: number;
   away_score?: number;
+  player_id?: string | null;
+  player_name?: string | null;
+  team_type?: string | null;
 }
 
 const BEST_OF_FIVE_WINS = 3;
@@ -108,6 +111,93 @@ export function extractMatchSetScores(match: any): { host: number; away: number 
 }
 
 /** 리포트 모달과 동일: match_events 마지막 점수로 세트별 host/away 복원 */
+/** 해당 세트의 남은(미취소) 득점 로그 마지막 스코어. 로그 0개면 0:0 */
+export function lastScoreForSetFromEvents(events: MatchEventLike[], setIndex: number): { host: number; away: number } {
+  let last = { host: 0, away: 0 };
+  (events || []).forEach((e) => {
+    if (!e || e.is_canceled || e.event_type === 'sub') return;
+    if (Number(e.set_index) !== setIndex) return;
+    last = { host: Number(e.host_score) || 0, away: Number(e.away_score) || 0 };
+  });
+  return last;
+}
+
+/**
+ * 점수 취소/타임라인 삭제 후 해당 세트만 재계산해 match_sets + matches.set_scores 에 반영.
+ * winner_team / 다른 세트 라인업은 건드리지 않는다.
+ */
+export async function syncSetScoreFromRemainingEvents(
+  matchId: string,
+  events: MatchEventLike[],
+  setIndex: number,
+): Promise<{ host: number; away: number }> {
+  const score = lastScoreForSetFromEvents(events, setIndex);
+  const setNumber = Math.max(1, setIndex + 1);
+
+  let rows: Array<{ set_number: number; host_score: number; away_score: number }> = [];
+  if (matchSetsTableAvailable) {
+    try {
+      const { data, error } = await supabase
+        .from('match_sets')
+        .select('set_number, host_score, away_score')
+        .eq('match_id', matchId)
+        .order('set_number', { ascending: true });
+      if (error) {
+        matchSetsTableAvailable = false;
+      } else {
+        rows = (data || []).map((r: any) => ({
+          set_number: Number(r.set_number) || 0,
+          host_score: Number(r.host_score) || 0,
+          away_score: Number(r.away_score) || 0,
+        }));
+      }
+    } catch {
+      matchSetsTableAvailable = false;
+    }
+  }
+
+  if (matchSetsTableAvailable) {
+    const exists = rows.some((r) => r.set_number === setNumber);
+    const stamp = new Date().toISOString();
+    if (exists) {
+      await supabase
+        .from('match_sets')
+        .update({ host_score: score.host, away_score: score.away, updated_at: stamp })
+        .eq('match_id', matchId)
+        .eq('set_number', setNumber);
+      rows = rows.map((r) => (
+        r.set_number === setNumber ? { ...r, host_score: score.host, away_score: score.away } : r
+      ));
+    } else {
+      await supabase.from('match_sets').insert({
+        match_id: matchId,
+        set_number: setNumber,
+        host_score: score.host,
+        away_score: score.away,
+        is_closed: false,
+        updated_at: stamp,
+      });
+      rows.push({ set_number: setNumber, host_score: score.host, away_score: score.away });
+    }
+  } else {
+    const { data: matchRow } = await supabase.from('matches').select('set_scores').eq('id', matchId).maybeSingle();
+    rows = parseSetScoresString(matchRow?.set_scores).map((s, i) => ({
+      set_number: i + 1,
+      host_score: s.host,
+      away_score: s.away,
+    }));
+    while (rows.length < setNumber) {
+      rows.push({ set_number: rows.length + 1, host_score: 0, away_score: 0 });
+    }
+    rows[setIndex] = { set_number: setNumber, host_score: score.host, away_score: score.away };
+  }
+
+  rows.sort((a, b) => a.set_number - b.set_number);
+  const summary = formatSetScoresString(rows.map((r) => ({ hostScore: r.host_score, awayScore: r.away_score })));
+  await supabase.from('matches').update({ set_scores: summary }).eq('id', matchId);
+  return score;
+}
+
 export function lastScoresBySetFromEvents(events: MatchEventLike[]): { host: number; away: number }[] {
   const last = new Map<number, { host: number; away: number }>();
   (events || []).forEach((e) => {
@@ -133,13 +223,18 @@ export function mergeSetRowsWithEvents(
   events: MatchEventLike[],
 ): Array<{ host: number; away: number }> {
   const fromEvents = lastScoresBySetFromEvents(events);
+  const activeSets = new Set<number>();
+  (events || []).forEach((e) => {
+    if (!e || e.is_canceled || e.event_type === 'sub') return;
+    const idx = Number(e.set_index ?? 0);
+    if (Number.isFinite(idx) && idx >= 0) activeSets.add(idx);
+  });
   const max = Math.max(existing.length, fromEvents.length);
   const next: Array<{ host: number; away: number }> = [];
   for (let i = 0; i < max; i += 1) {
     const row = existing[i];
     const ev = fromEvents[i];
-    if (row && (row.host > 0 || row.away > 0)) next.push(row);
-    else if (ev && (ev.host > 0 || ev.away > 0)) next.push(ev);
+    if (activeSets.has(i)) next.push(ev || { host: 0, away: 0 });
     else if (row) next.push(row);
     else if (ev) next.push(ev);
   }
@@ -291,7 +386,7 @@ export async function hydrateMatchesWithSetScores<T extends { id?: string; set_s
   try {
     const { data: setData } = await supabase
       .from('match_sets')
-      .select('match_id, set_number, host_score, away_score')
+      .select('match_id, set_number, host_score, away_score, host_lineup, away_lineup')
       .in('match_id', ids)
       .order('set_number', { ascending: true });
 
@@ -300,7 +395,7 @@ export async function hydrateMatchesWithSetScores<T extends { id?: string; set_s
       const chunk = ids.slice(i, i + 80);
       const { data: evRows } = await supabase
         .from('match_events')
-        .select('match_id, set_index, event_type, is_canceled, host_score, away_score')
+        .select('match_id, set_index, event_type, is_canceled, host_score, away_score, player_id, player_name, team_type')
         .in('match_id', chunk)
         .eq('is_canceled', false);
       (evRows || []).forEach((e: any) => {
@@ -310,27 +405,48 @@ export async function hydrateMatchesWithSetScores<T extends { id?: string; set_s
       });
     }
 
-    const byMatch = new Map<string, Array<{ host: number; away: number }>>();
+    const byMatch = new Map<string, Array<{ host: number; away: number; host_lineup?: unknown; away_lineup?: unknown }>>();
     (setData || []).forEach((row: any) => {
       const list = byMatch.get(row.match_id) || [];
       const idx = Math.max(0, (Number(row.set_number) || 1) - 1);
       while (list.length <= idx) list.push({ host: 0, away: 0 });
-      list[idx] = { host: Number(row.host_score) || 0, away: Number(row.away_score) || 0 };
+      list[idx] = {
+        host: Number(row.host_score) || 0,
+        away: Number(row.away_score) || 0,
+        host_lineup: row.host_lineup,
+        away_lineup: row.away_lineup,
+      };
       byMatch.set(row.match_id, list);
     });
 
     return matches.map((m) => {
       if (!m.id) return m;
-      const fromTable = byMatch.get(m.id) || parseSetScoresString((m as any).set_scores);
+      const origSets = Array.isArray((m as any).match_sets) ? (m as any).match_sets : [];
+      const fromTable = byMatch.get(m.id) || parseSetScoresString((m as any).set_scores).map((s) => ({
+        host: s.host,
+        away: s.away,
+      }));
       const merged = mergeSetRowsWithEvents(fromTable, eventsByMatch.get(m.id) || []);
       if (merged.length === 0) return m;
-      const use = merged.map((s, i) => ({
-        set_number: i + 1,
-        host_score: s.host,
-        away_score: s.away,
-        hostScore: s.host,
-        awayScore: s.away,
-      }));
+      const tableSets = byMatch.get(m.id) || [];
+      const use = merged.map((s, i) => {
+        const fromHydrate = tableSets[i];
+        const fromOrig = origSets.find((row: any) => Number(row?.set_number ?? row?.setNumber) === i + 1) || origSets[i];
+        const hostLineup = fromHydrate?.host_lineup ?? fromOrig?.host_lineup ?? fromOrig?.hostLineup;
+        const awayLineup = fromHydrate?.away_lineup ?? fromOrig?.away_lineup ?? fromOrig?.awayLineup;
+        return {
+          set_number: i + 1,
+          setNumber: i + 1,
+          host_score: s.host,
+          away_score: s.away,
+          hostScore: s.host,
+          awayScore: s.away,
+          host_lineup: hostLineup,
+          away_lineup: awayLineup,
+          hostLineup,
+          awayLineup,
+        };
+      });
       return {
         ...m,
         set_scores: formatSetScoresString(use.map((s) => ({ hostScore: s.host_score, awayScore: s.away_score }))),
@@ -612,18 +728,62 @@ export async function upsertMatchSets(matchId: string, sets: MatchSetRecord[]): 
   }
 }
 
+export function deepCloneLineup(lineup: unknown): string[] {
+  const src = Array.isArray(lineup) ? lineup : [];
+  return JSON.parse(JSON.stringify(src));
+}
+
+function lineupHasAssignedPlayers(lineup: unknown): boolean {
+  if (!Array.isArray(lineup) || lineup.length === 0) return false;
+  return lineup.some((id) => !!assignedUserId(id == null ? null : String(id)));
+}
+
+/**
+ * 저장 직전: 2·3세트 라인업이 비어 있으면 1세트를 Deep Copy 한다.
+ * 사용자가 2·3세트 명단을 직접 배정한 경우 그 값을 유지한다.
+ */
+export function carrySet1LineupsToEmptySet2And3(
+  hostRosters: SetRosterMap,
+  awayRosters: SetRosterMap,
+): { hostRosters: SetRosterMap; awayRosters: SetRosterMap } {
+  const cloneMap = (src: SetRosterMap): SetRosterMap => {
+    const next: SetRosterMap = {};
+    Object.keys(src || {}).forEach((key) => {
+      next[Number(key)] = deepCloneLineup(src[Number(key)]);
+    });
+    return next;
+  };
+
+  const host = cloneMap(hostRosters);
+  const away = cloneMap(awayRosters);
+  const host1 = deepCloneLineup(host[0]);
+  const away1 = deepCloneLineup(away[0]);
+
+  [1, 2].forEach((idx) => {
+    if (!lineupHasAssignedPlayers(host[idx]) && lineupHasAssignedPlayers(host1)) {
+      host[idx] = deepCloneLineup(host1);
+    }
+    if (!lineupHasAssignedPlayers(away[idx]) && lineupHasAssignedPlayers(away1)) {
+      away[idx] = deepCloneLineup(away1);
+    }
+  });
+
+  return { hostRosters: host, awayRosters: away };
+}
+
 export function recordsFromDynamicScores(
   scores: Array<{ hostScore: number; awayScore: number }>,
   hostRosters: SetRosterMap,
   awayRosters: SetRosterMap,
   allClosed: boolean,
 ): MatchSetRecord[] {
+  const { hostRosters: host, awayRosters: away } = carrySet1LineupsToEmptySet2And3(hostRosters, awayRosters);
   return scores.map((s, idx) => ({
     setNumber: idx + 1,
     hostScore: s.hostScore,
     awayScore: s.awayScore,
-    hostLineup: hostRosters[idx] || [],
-    awayLineup: awayRosters[idx] || [],
+    hostLineup: deepCloneLineup(host[idx] || []),
+    awayLineup: deepCloneLineup(away[idx] || []),
     isClosed: allClosed || idx < scores.length - 1,
   }));
 }

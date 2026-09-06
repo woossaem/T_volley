@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, Modal, ScrollView } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import CourtGrid, { CourtSlotPlayer } from './CourtGrid';
-import { ANONYMOUS_PLAYER_NAME, DEFAULT_LINE_COUNT, isAnonymousPlayer, makeAnonSlotId } from '../lib/roster';
+import { ANONYMOUS_PLAYER_NAME, DEFAULT_LINE_COUNT, isAnonymousPlayer, makeTempSlotId, positionKeyFromCourtIndex } from '../lib/roster';
 
 export interface Member {
   user_id: string;
@@ -34,7 +34,7 @@ interface Props {
 }
 
 function asMember(player: CourtSlotPlayer): Member {
-  return { user_id: player.user_id || makeAnonSlotId(0), full_name: player.full_name };
+  return { user_id: player.user_id || makeTempSlotId(positionKeyFromCourtIndex(0)), full_name: player.full_name };
 }
 
 function padCourt(members: Member[], layout?: CourtLayout): CourtSlotPlayer[] {
@@ -44,7 +44,9 @@ function padCourt(members: Member[], layout?: CourtLayout): CourtSlotPlayer[] {
     (layout?.backCount ?? DEFAULT_LINE_COUNT);
   const next: CourtSlotPlayer[] = [...members];
   while (next.length < total) {
-    next.push({ user_id: makeAnonSlotId(next.length), full_name: ANONYMOUS_PLAYER_NAME });
+    const idx = next.length;
+    const pos = positionKeyFromCourtIndex(idx);
+    next.push({ user_id: makeTempSlotId(pos, `pad${idx}`), full_name: ANONYMOUS_PLAYER_NAME });
   }
   return next.slice(0, total);
 }

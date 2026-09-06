@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useMemo } from 'react';
+import React, { useEffect, useState, useMemo, useCallback } from 'react';
 import {
   View,
   Text,
@@ -12,7 +12,7 @@ import {
   TextInput,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useRouter, useLocalSearchParams } from 'expo-router';
+import { useRouter, useLocalSearchParams, useFocusEffect } from 'expo-router';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
 import { Colors } from '../constants/Colors';
@@ -24,6 +24,12 @@ import MatchPostgameReportModal from '../components/MatchPostgameReportModal'; /
 import { parseSetRosterMap, safeIncludes, safeNameText, teamsInclude } from '../lib/roster';
 import { evaluateSetOutcome } from '../lib/playerStats';
 import {
+  collectLineupPlayerIds,
+  collectScoreLogPlayerIds,
+  parseMatchScoreLogs,
+  resolvePlayerSetPlay,
+} from '../lib/rankingService';
+import {
   dynamicScoresFromSets,
   fetchMatchSets,
   recordsFromDynamicScores,
@@ -32,8 +38,9 @@ import {
   hydrateMatchesWithSetScores,
   listMatchSetRows,
   makeDefaultQuickSetScore,
+  carrySet1LineupsToEmptySet2And3,
 } from '../lib/matchSets';
-import SetScoreStrip from '../components/SetScoreStrip';
+import IntramuralCard from '../components/IntramuralCard';
 
 interface MatchData {
   id: string;
@@ -249,7 +256,7 @@ export default function IntramuralScreen() {
     }
   };
 
-  useEffect(() => { fetchData(); }, [session, params.openMatchId]);
+  useFocusEffect(useCallback(() => { fetchData(); }, [session, params.openMatchId]));
   const onRefresh = () => { setRefreshing(true); fetchData(); };
 
   const fetchIntraMembers = async (tName: string) => {
@@ -375,8 +382,8 @@ export default function IntramuralScreen() {
     if (intraActiveSetTab === 0) {
       intraDynamicScores.forEach((_, idx) => {
         if (idx > 0) {
-          if (!mapA[idx] || mapA[idx].length === 0) mapA[idx] = updatedA;
-          if (!mapB[idx] || mapB[idx].length === 0) mapB[idx] = updatedB;
+          if (!mapA[idx] || mapA[idx].length === 0) mapA[idx] = JSON.parse(JSON.stringify(updatedA));
+          if (!mapB[idx] || mapB[idx].length === 0) mapB[idx] = JSON.parse(JSON.stringify(updatedB));
         }
       });
     }
@@ -461,6 +468,7 @@ export default function IntramuralScreen() {
 
   const saveIntramuralMatch = async () => {
     const formattedScores = convertScoresToString(intraDynamicScores);
+    const { hostRosters, awayRosters } = carrySet1LineupsToEmptySet2And3(intraRostersA, intraRostersB);
 
     const tA = teamAName.trim() || 'A팀';
     const tB = teamBName.trim() || 'B팀';
@@ -481,8 +489,8 @@ export default function IntramuralScreen() {
         winner_team: intraWinner || null, 
         result_submitter_team: intraTeam,
         set_scores: formattedScores,
-        host_roster: JSON.stringify(intraRostersA),
-        away_roster: JSON.stringify(intraRostersB),
+        host_roster: JSON.stringify(hostRosters),
+        away_roster: JSON.stringify(awayRosters),
       };
 
       if (editingIntraId) {
@@ -490,7 +498,7 @@ export default function IntramuralScreen() {
         if (intraDynamicScores.length > 0) {
           await upsertMatchSets(
             editingIntraId,
-            recordsFromDynamicScores(intraDynamicScores, intraRostersA, intraRostersB, !!intraWinner),
+            recordsFromDynamicScores(intraDynamicScores, hostRosters, awayRosters, !!intraWinner),
           );
         }
         setMatches(prev => prev.map(m => m.id === editingIntraId ? { ...m, ...payload } : m));
@@ -502,7 +510,7 @@ export default function IntramuralScreen() {
           if (intraDynamicScores.length > 0) {
             await upsertMatchSets(
               newMatch.id,
-              recordsFromDynamicScores(intraDynamicScores, intraRostersA, intraRostersB, !!intraWinner),
+              recordsFromDynamicScores(intraDynamicScores, hostRosters, awayRosters, !!intraWinner),
             );
           }
         }
@@ -545,9 +553,11 @@ export default function IntramuralScreen() {
 
   const intramuralRankings = useMemo(() => {
     const userStats: { [userId: string]: { wins: number; draws: number; losses: number; total: number } } = {};
+    const nameById: { [userId: string]: string } = {};
 
     intraMembers.forEach(m => {
       userStats[m.user_id] = { wins: 0, draws: 0, losses: 0, total: 0 };
+      nameById[m.user_id] = m.full_name;
     });
 
     matches.forEach(match => {
@@ -562,29 +572,30 @@ export default function IntramuralScreen() {
       const winner = match.winner_team;
       if (!winner) return;
 
-      const parsedA = parseRoster(match.host_roster);
-      const parsedB = parseRoster(match.away_roster);
       const parsedScores = listMatchSetRows(match);
+      const extraLogs = parseMatchScoreLogs(match);
+      const candidateIds = new Set<string>([
+        ...Object.keys(userStats),
+        ...collectLineupPlayerIds(match),
+        ...collectScoreLogPlayerIds(match, extraLogs),
+      ]);
 
-      parsedScores.forEach((score, idx) => {
-        const rosterA = parsedA[idx] || parsedA[0] || [];
-        const rosterB = parsedB[idx] || parsedB[0] || [];
+      parsedScores.forEach((score) => {
         const hostOutcome = evaluateSetOutcome(score.host_score, score.away_score, 'host');
         const awayOutcome = evaluateSetOutcome(score.host_score, score.away_score, 'away');
+        const credited = new Set<string>();
 
-        rosterA.forEach(uId => {
+        candidateIds.forEach((uId) => {
+          const appearance = resolvePlayerSetPlay(match, score.setNumber, uId, nameById[uId], extraLogs);
+          if (!appearance.played || credited.has(uId)) return;
+          credited.add(uId);
+
           if (!userStats[uId]) userStats[uId] = { wins: 0, draws: 0, losses: 0, total: 0 };
           userStats[uId].total++;
-          if (hostOutcome === 'win') userStats[uId].wins++;
-          else if (hostOutcome === 'draw') userStats[uId].draws++;
-          else userStats[uId].losses++;
-        });
-
-        rosterB.forEach(uId => {
-          if (!userStats[uId]) userStats[uId] = { wins: 0, draws: 0, losses: 0, total: 0 };
-          userStats[uId].total++;
-          if (awayOutcome === 'win') userStats[uId].wins++;
-          else if (awayOutcome === 'draw') userStats[uId].draws++;
+          const side = appearance.side || 'host';
+          const outcome = side === 'away' ? awayOutcome : hostOutcome;
+          if (outcome === 'win') userStats[uId].wins++;
+          else if (outcome === 'draw') userStats[uId].draws++;
           else userStats[uId].losses++;
         });
       });
@@ -674,7 +685,7 @@ export default function IntramuralScreen() {
           <Text style={styles.backText}>‹</Text>
         </TouchableOpacity>
         <Text style={styles.headerTitle}>팀 내전 기록실</Text>
-        <TouchableOpacity style={styles.addBtn} onPress={() => openIntraModal()}>
+        <TouchableOpacity style={styles.addBtn} onPress={() => openIntraModal()} hitSlop={8}>
           <Text style={styles.addBtnText}>+ 내전 기록</Text>
         </TouchableOpacity>
       </View>
@@ -690,6 +701,7 @@ export default function IntramuralScreen() {
                   key={tName}
                   style={[styles.teamSwiperChip, isSelected && styles.teamSwiperChipActive]}
                   onPress={() => setSelectedTeamFilter(tName)}
+                  hitSlop={8}
                 >
                   <Text style={[styles.teamSwiperChipText, isSelected && styles.teamSwiperChipTextActive]} numberOfLines={1}>
                     {teamIcon} {tName}
@@ -702,10 +714,10 @@ export default function IntramuralScreen() {
       )}
 
       <View style={styles.segmentedContainer}>
-        <TouchableOpacity style={[styles.segmentBtn, mainTab === 'list' && styles.segmentBtnActive]} onPress={() => setMainTab('list')}>
+        <TouchableOpacity style={[styles.segmentBtn, mainTab === 'list' && styles.segmentBtnActive]} onPress={() => setMainTab('list')} hitSlop={8}>
           <Text style={[styles.segmentText, mainTab === 'list' && styles.segmentTextActive]}>📜 내전 기록 목록</Text>
         </TouchableOpacity>
-        <TouchableOpacity style={[styles.segmentBtn, mainTab === 'ranking' && styles.segmentBtnActive]} onPress={() => setMainTab('ranking')}>
+        <TouchableOpacity style={[styles.segmentBtn, mainTab === 'ranking' && styles.segmentBtnActive]} onPress={() => setMainTab('ranking')} hitSlop={8}>
           <Text style={[styles.segmentText, mainTab === 'ranking' && styles.segmentTextActive]}>🔥 팀 내전 랭킹</Text>
         </TouchableOpacity>
       </View>
@@ -713,11 +725,11 @@ export default function IntramuralScreen() {
       {mainTab === 'list' ? (
         <>
           <View style={styles.monthSelectorBar}>
-            <TouchableOpacity onPress={() => changeListMonth(-1)} style={styles.monthSelectorBtn}>
+            <TouchableOpacity onPress={() => changeListMonth(-1)} style={styles.monthSelectorBtn} hitSlop={8}>
               <Text style={styles.monthSelectorArrow}>‹</Text>
             </TouchableOpacity>
             <Text style={styles.monthSelectorText}>{listYear}년 {listMonth}월 내전</Text>
-            <TouchableOpacity onPress={() => changeListMonth(1)} style={styles.monthSelectorBtn}>
+            <TouchableOpacity onPress={() => changeListMonth(1)} style={styles.monthSelectorBtn} hitSlop={8}>
               <Text style={styles.monthSelectorArrow}>›</Text>
             </TouchableOpacity>
           </View>
@@ -735,78 +747,23 @@ export default function IntramuralScreen() {
               filteredMatches.map((match) => {
                 const { teamA, teamB, note } = parseIntraDescription(match.description);
                 const currentTeamIcon = getTeamIcon(teamTypeMap[match.host_team_name]);
-                const isFinished = !!match.winner_team;
-                const isDraw = match.winner_team === 'draw' || match.winner_team === '무승부';
 
                 return (
-                  <View key={match.id} style={styles.matchCard}>
-                    <View style={styles.cardHeader}>
-                      <View style={styles.cardHeaderLeft}>
-                        <Text style={styles.cardTeamTitle} numberOfLines={1}>
-                          ⚔️ {currentTeamIcon} {match.host_team_name}
-                        </Text>
-                        <View style={styles.vsSubChip}>
-                          <Text style={styles.vsSubChipText}>{teamA} VS {teamB}</Text>
-                        </View>
-                      </View>
-                      
-                      <View style={[styles.statusBadge, !isFinished && { backgroundColor: '#DBEAFE', borderColor: '#3B82F6' }]}>
-                        <Text style={[styles.statusText, !isFinished && { color: '#1D4ED8' }]}>
-                          {isFinished ? '내전종료' : '진행 중 (대기)'}
-                        </Text>
-                      </View>
-                    </View>
-
-                    <View style={styles.matchDetailsRow}>
-                      <Text style={styles.detailText}>📅 {match.match_date}</Text>
-                      {note ? <Text style={styles.noteTagText}>💡 {note}</Text> : null}
-                    </View>
-
-                    <View style={styles.scoreBanner}>
-                      <View style={styles.scoreBannerResultRow}>
-                        <Text style={styles.scoreBannerWinner}>
-                          {isFinished 
-                            ? (isDraw ? '🤝 무승부 (연습경기 마감)' : `🏆 ${match.winner_team} 승리!`)
-                            : '⚡ 경기 진행 중 (승패 미정)'}
-                        </Text>
-                      </View>
-                      <SetScoreStrip match={match} setScores={match.set_scores} />
-                    </View>
-
-                    <TouchableOpacity
-                      style={styles.scoreboardLiveBtn}
-                      onPress={() => router.push({ pathname: '/scoreboard', params: { matchId: match.id } })}
-                      activeOpacity={0.85}
-                    >
-                      <Text style={styles.scoreboardLiveBtnText}>📊 실시간 전광판 스코어보드 진입 ▶</Text>
-                    </TouchableOpacity>
-
-                    {/* 💡 [신규] 분석 리포트 확인 버튼 */}
-                    {isFinished && (
-                      <TouchableOpacity
-                        style={styles.reportBarBtn}
-                        onPress={() => {
-                          setReportTargetMatch(match);
-                          setReportModalVisible(true);
-                        }}
-                        activeOpacity={0.85}
-                      >
-                        <Text style={styles.reportBarBtnText}>📊 경기 결과 분석 리포트 보기</Text>
-                      </TouchableOpacity>
-                    )}
-
-                    <TouchableOpacity
-                      style={styles.commentBarBtn}
-                      onPress={() => openCommentModal(match)}
-                      activeOpacity={0.85}
-                    >
-                      <Text style={styles.commentBarBtnText}>💬 팀 내전 소통 / 질문 댓글방</Text>
-                    </TouchableOpacity>
-                    
-                    <TouchableOpacity style={styles.editCardBtn} onPress={() => openIntraModal(match)}>
-                      <Text style={styles.editCardBtnText}>⚡ 빠른 결과 입력</Text>
-                    </TouchableOpacity>
-                  </View>
+                  <IntramuralCard
+                    key={match.id}
+                    match={match}
+                    teamA={teamA}
+                    teamB={teamB}
+                    note={note}
+                    teamIcon={currentTeamIcon}
+                    onOpenScoreboard={() => router.push({ pathname: '/scoreboard', params: { matchId: match.id } })}
+                    onOpenReport={() => {
+                      setReportTargetMatch(match);
+                      setReportModalVisible(true);
+                    }}
+                    onOpenComment={() => openCommentModal(match)}
+                    onOpenQuickResult={() => openIntraModal(match)}
+                  />
                 );
               })
             )}
@@ -1189,64 +1146,32 @@ export default function IntramuralScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: Colors.background },
-  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 20, paddingVertical: 14, backgroundColor: Colors.surface, borderBottomWidth: 1, borderBottomColor: Colors.border },
-  backBtn: { width: 32, height: 32, justifyContent: 'center' },
-  backText: { fontSize: 32, color: Colors.text, lineHeight: 32 },
-  headerTitle: { fontSize: 18, fontWeight: '800', color: Colors.text },
+  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 12, backgroundColor: Colors.surface, borderBottomWidth: 1, borderBottomColor: Colors.border },
+  backBtn: { width: 28, height: 28, justifyContent: 'center', alignItems: 'center' },
+  backText: { fontSize: 28, color: Colors.text, lineHeight: 28, includeFontPadding: false },
+  headerTitle: { fontSize: 17, fontWeight: '800', color: Colors.text, lineHeight: 22, includeFontPadding: false },
   
-  addBtn: { backgroundColor: '#F3E8FF', paddingHorizontal: 12, paddingVertical: 8, borderRadius: 8, borderWidth: 1, borderColor: '#D8B4FE' },
-  addBtnText: { color: '#7E22CE', fontWeight: '800', fontSize: 13 },
+  addBtn: { height: 36, paddingHorizontal: 14, borderRadius: 8, backgroundColor: '#F3E8FF', borderWidth: 1, borderColor: '#D8B4FE', justifyContent: 'center', alignItems: 'center' },
+  addBtnText: { color: '#7E22CE', fontWeight: '600', fontSize: 14, lineHeight: 18, includeFontPadding: false },
 
-  teamSwiperBar: { backgroundColor: '#F1F5F9', paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: '#CBD5E1' },
-  teamSwiperChip: { paddingHorizontal: 14, paddingVertical: 7, borderRadius: 20, backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#CBD5E1' },
+  teamSwiperBar: { backgroundColor: '#F1F5F9', paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: '#CBD5E1' },
+  teamSwiperChip: { height: 32, paddingHorizontal: 14, borderRadius: 16, backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#CBD5E1', justifyContent: 'center', alignItems: 'center' },
   teamSwiperChipActive: { backgroundColor: '#7E22CE', borderColor: '#6B21A8' },
-  teamSwiperChipText: { fontSize: 13, fontWeight: '700', color: '#475569' },
-  teamSwiperChipTextActive: { color: '#FFFFFF', fontWeight: '900' },
+  teamSwiperChipText: { fontSize: 13, fontWeight: '600', color: '#475569', lineHeight: 16, includeFontPadding: false },
+  teamSwiperChipTextActive: { color: '#FFFFFF', fontWeight: '600' },
 
-  segmentedContainer: { flexDirection: 'row', backgroundColor: Colors.surface, padding: 4, marginHorizontal: 14, marginTop: 8, borderRadius: 10, borderWidth: 1, borderColor: Colors.border },
-  segmentBtn: { flex: 1, paddingVertical: 9, alignItems: 'center', borderRadius: 8 },
+  segmentedContainer: { flexDirection: 'row', alignItems: 'center', backgroundColor: Colors.surface, padding: 2, marginHorizontal: 14, marginTop: 8, marginBottom: 8, borderRadius: 16, borderWidth: 1, borderColor: Colors.border, height: 36 },
+  segmentBtn: { flex: 1, height: 32, alignItems: 'center', justifyContent: 'center', borderRadius: 16 },
   segmentBtnActive: { backgroundColor: '#FAF5FF', borderWidth: 1, borderColor: '#D8B4FE' },
-  segmentText: { fontSize: 13, fontWeight: '700', color: '#64748B' },
-  segmentTextActive: { color: '#6B21A8', fontWeight: '800' },
+  segmentText: { fontSize: 13, fontWeight: '600', color: '#64748B', lineHeight: 16, includeFontPadding: false },
+  segmentTextActive: { color: '#6B21A8', fontWeight: '600' },
 
-  monthSelectorBar: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: '#F8FAFC', paddingHorizontal: 20, paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: '#E2E8F0' },
-  monthSelectorBtn: { paddingHorizontal: 16, paddingVertical: 4, backgroundColor: '#FFFFFF', borderRadius: 8, borderWidth: 1, borderColor: '#CBD5E1' },
-  monthSelectorArrow: { fontSize: 18, fontWeight: '800', color: Colors.primary },
-  monthSelectorText: { fontSize: 16, fontWeight: '800', color: Colors.text },
+  monthSelectorBar: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: '#F8FAFC', paddingHorizontal: 16, height: 44, borderBottomWidth: 1, borderBottomColor: '#E2E8F0', gap: 8 },
+  monthSelectorBtn: { height: 32, paddingHorizontal: 14, borderRadius: 16, backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#CBD5E1', justifyContent: 'center', alignItems: 'center' },
+  monthSelectorArrow: { fontSize: 16, fontWeight: '600', color: Colors.primary, lineHeight: 18, includeFontPadding: false },
+  monthSelectorText: { fontSize: 13, fontWeight: '600', color: Colors.text, lineHeight: 16, includeFontPadding: false },
 
   content: { padding: 14, gap: 10, paddingBottom: 40 },
-  matchCard: { backgroundColor: Colors.surface, borderRadius: 16, padding: 16, borderWidth: 1, borderColor: '#D8B4FE', elevation: 2 },
-  cardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 },
-  cardHeaderLeft: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 6, marginRight: 8 },
-  cardTeamTitle: { fontSize: 15, fontWeight: '800', color: '#6B21A8' },
-  vsSubChip: { backgroundColor: '#FAF5FF', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4, borderWidth: 1, borderColor: '#E9D5FF' },
-  vsSubChipText: { fontSize: 10.5, fontWeight: '700', color: '#7E22CE' },
-  statusBadge: { paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8, borderWidth: 1, backgroundColor: '#F3E8FF', borderColor: '#D8B4FE' },
-  statusText: { fontSize: 11, fontWeight: '700', color: '#7E22CE' },
-  
-  matchDetailsRow: { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 8 },
-  detailText: { fontSize: 12.5, color: Colors.text, fontWeight: '600' },
-  noteTagText: { fontSize: 12, color: '#B45309', fontWeight: '700' },
-
-  scoreBanner: { backgroundColor: '#FAF5FF', paddingVertical: 10, paddingHorizontal: 12, borderRadius: 10, alignItems: 'center', borderWidth: 1, borderColor: '#E9D5FF' },
-  scoreBannerResultRow: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'center', gap: 6 },
-  scoreBannerWinner: { color: '#6B21A8', fontSize: 14, fontWeight: '900' },
-  drawSetScoreBadge: { backgroundColor: '#DBEAFE', borderWidth: 1, borderColor: '#3B82F6', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 8 },
-  drawSetScoreBadgeText: { fontSize: 12, fontWeight: '900', color: '#1D4ED8' },
-  scoreBannerSetText: { fontSize: 13, fontWeight: '900', color: '#1D4ED8', marginTop: 4, textAlign: 'center' },
-
-  scoreboardLiveBtn: { backgroundColor: '#0F172A', borderRadius: 10, paddingVertical: 10, alignItems: 'center', marginTop: 8 },
-  scoreboardLiveBtnText: { color: '#38BDF8', fontSize: 12.5, fontWeight: '900' },
-
-  /* 💡 [신규] 분석 리포트 확인 버튼 스타일 */
-  reportBarBtn: { backgroundColor: '#FEFCE8', borderRadius: 10, paddingVertical: 10, alignItems: 'center', marginTop: 6, borderWidth: 1, borderColor: '#FDE047' },
-  reportBarBtnText: { color: '#A16207', fontSize: 12.5, fontWeight: '900' },
-
-  commentBarBtn: { backgroundColor: '#FAF5FF', borderRadius: 10, paddingVertical: 10, alignItems: 'center', marginTop: 6, borderWidth: 1, borderColor: '#E9D5FF' },
-  commentBarBtnText: { color: '#7E22CE', fontSize: 12.5, fontWeight: '800' },
-
-  editCardBtn: { backgroundColor: '#6B21A8', borderRadius: 8, paddingVertical: 10, alignItems: 'center', marginTop: 10 },
-  editCardBtnText: { color: '#FFFFFF', fontSize: 12.5, fontWeight: '800' },
 
   emptyCard: { padding: 30, alignItems: 'center', backgroundColor: Colors.surface, borderRadius: 14, borderWidth: 1, borderColor: Colors.border, marginTop: 10 },
   emptyEmoji: { fontSize: 32, marginBottom: 8 },
@@ -1257,8 +1182,8 @@ const styles = StyleSheet.create({
   ruleTitle: { fontSize: 13, fontWeight: '800', color: '#6B21A8' },
   ruleText: { fontSize: 11.5, color: '#7E22CE', lineHeight: 16, marginTop: 4 },
 
-  seasonPickerBtn: { backgroundColor: '#EFF6FF', borderWidth: 1, borderColor: '#BFDBFE', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6 },
-  seasonPickerBtnText: { fontSize: 11, fontWeight: '800', color: '#1D4ED8' },
+  seasonPickerBtn: { height: 32, paddingHorizontal: 12, borderRadius: 16, backgroundColor: '#EFF6FF', borderWidth: 1, borderColor: '#BFDBFE', justifyContent: 'center', alignItems: 'center' },
+  seasonPickerBtnText: { fontSize: 13, fontWeight: '600', color: '#1D4ED8', lineHeight: 16, includeFontPadding: false },
 
   seasonOptionBtn: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#F8FAFC', borderRadius: 10, padding: 12, borderWidth: 1, borderColor: '#E2E8F0' },
   seasonOptionBtnActive: { backgroundColor: '#EFF6FF', borderColor: '#3B82F6' },

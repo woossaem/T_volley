@@ -134,7 +134,7 @@ export default function UserProfileModal({
         const chunk = matchIds.slice(i, i + 80);
         const { data: evRows } = await supabase
           .from('match_events')
-          .select('match_id, player_id, event_type, is_canceled, set_index, host_score, away_score')
+          .select('match_id, player_id, player_name, event_type, is_canceled, set_index, host_score, away_score, team_type')
           .in('match_id', chunk)
           .eq('player_id', userId);
         (evRows || []).forEach((e: any) => {
@@ -146,7 +146,7 @@ export default function UserProfileModal({
 
       const career = emptyPlayerCareerStats();
       (allMatches || []).forEach((m: any) => {
-        addMatchPlayerStats(career, userId, m, eventByMatch.get(m.id) || []);
+        addMatchPlayerStats(career, userId, m, eventByMatch.get(m.id) || m.match_events || [], prof?.full_name);
       });
 
       setStats({

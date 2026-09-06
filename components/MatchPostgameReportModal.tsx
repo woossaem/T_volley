@@ -8,12 +8,14 @@ import {
   ScrollView,
   ActivityIndicator,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { supabase } from '../lib/supabase';
 import { Colors } from '../constants/Colors';
 import ScoreTimeline, { MatchEvent } from './ScoreTimeline';
-import { ANONYMOUS_PLAYER_NAME, isAnonymousSlotId, parseRosterUserIds, parseSetRosterMap, safeIncludes } from '../lib/roster';
+import { parseRosterUserIds, parseSetRosterMap, safeIncludes } from '../lib/roster';
 import { isPersonalFault, isPersonalKill } from '../lib/playerStats';
 import { resolveTeamName } from '../lib/nameUtils';
+import { formatPlayerDisplayName } from '../lib/tempPlayer';
 
 interface MatchPostgameReportModalProps {
   visible: boolean;
@@ -200,6 +202,7 @@ export default function MatchPostgameReportModal({
   match,
   initialEvents,
 }: MatchPostgameReportModalProps) {
+  const insets = useSafeAreaInsets();
   const [loading, setLoading] = useState(false);
   const [events, setEvents] = useState<MatchEvent[]>(initialEvents || []);
   const [activeTab, setActiveTab] = useState<ReportTab>('card');
@@ -230,7 +233,23 @@ export default function MatchPostgameReportModal({
         .select('*')
         .eq('match_id', match.id)
         .order('created_at', { ascending: true });
-      if (data) setEvents(data);
+      if (data && data.length > 0) {
+        setEvents(data);
+      } else {
+        const logs = Array.isArray(match?.score_logs) ? match.score_logs : [];
+        setEvents(logs.map((log: any, idx: number) => ({
+          id: String(log.id || `log-${idx}`),
+          match_id: match.id,
+          set_index: Number(log.set_index ?? ((Number(log.set_number) || 1) - 1)),
+          event_type: log.event_type,
+          team_type: log.team_type,
+          player_id: log.player_id,
+          player_name: formatPlayerDisplayName(log.player_id, log.player_name),
+          host_score: log.host_score,
+          away_score: log.away_score,
+          is_canceled: !!log.is_canceled,
+        })));
+      }
     } catch (e) {
       console.error(e);
     } finally {
@@ -293,14 +312,13 @@ export default function MatchPostgameReportModal({
 
     const playerMap = new Map<string, PlayerStat>();
     const bump = (team: 'host' | 'away', e: MatchEvent, field: 'points' | 'faults') => {
-      if (!e.player_id || isAnonymousSlotId(e.player_id)) return;
-      if (!e.player_name || e.player_name === ANONYMOUS_PLAYER_NAME) return;
-      const key = `${team}:${e.player_id || e.player_name}`;
+      const displayName = formatPlayerDisplayName(e.player_id, e.player_name);
+      const key = `${team}:${e.player_id || displayName}`;
       const prev = playerMap.get(key);
       if (prev) prev[field] += 1;
       else {
         playerMap.set(key, {
-          name: e.player_name || '무기명',
+          name: displayName,
           playerId: e.player_id || null,
           team,
           points: field === 'points' ? 1 : 0,
@@ -352,13 +370,13 @@ export default function MatchPostgameReportModal({
 
       const setPlayerMap = new Map<string, PlayerStat>();
       setScores.forEach((e) => {
-        if (!isPersonalKill(e.event_type) || !e.player_id || isAnonymousSlotId(e.player_id)) return;
-        if (!e.player_name || e.player_name === ANONYMOUS_PLAYER_NAME) return;
+        if (!isPersonalKill(e.event_type)) return;
         const team = resolveTeam(e);
-        const key = `${team}:${e.player_id || e.player_name}`;
+        const displayName = formatPlayerDisplayName(e.player_id, e.player_name);
+        const key = `${team}:${e.player_id || displayName}`;
         const prev = setPlayerMap.get(key);
         if (prev) prev.points += 1;
-        else setPlayerMap.set(key, { name: e.player_name, playerId: e.player_id || null, team, points: 1, faults: 0 });
+        else setPlayerMap.set(key, { name: displayName, playerId: e.player_id || null, team, points: 1, faults: 0 });
       });
       const setPlayers = Array.from(setPlayerMap.values());
       const setMvp = setPlayers.sort((a, b) => b.points - a.points)[0] || null;
@@ -370,9 +388,7 @@ export default function MatchPostgameReportModal({
         setIndex: idx,
         hostScore,
         awayScore,
-        clutchName: (lastScore?.player_id && !isAnonymousSlotId(lastScore.player_id) && lastScore.player_name && lastScore.player_name !== ANONYMOUS_PLAYER_NAME)
-          ? lastScore.player_name
-          : null,
+        clutchName: lastScore ? formatPlayerDisplayName(lastScore.player_id, lastScore.player_name) : null,
         clutchTeam: lastScore?.team_type || null,
         mvp: setMvp,
         mvpLine: setMvpLine,
@@ -510,7 +526,7 @@ export default function MatchPostgameReportModal({
           {players.map((p) => (
             <View key={`${p.team}-${p.playerId || p.name}`} style={styles.playerCell}>
               <Text style={styles.playerCellText} numberOfLines={1}>
-                {p.name} {p.points}({p.faults})
+                {formatPlayerDisplayName(p.playerId, p.name)} {p.points}({p.faults})
               </Text>
             </View>
           ))}
@@ -671,7 +687,7 @@ export default function MatchPostgameReportModal({
             </ScrollView>
           )}
 
-          <TouchableOpacity style={styles.closeBtn} onPress={onClose} activeOpacity={0.8}>
+          <TouchableOpacity style={[styles.closeBtn, { marginBottom: Math.min(insets.bottom, 8) }]} onPress={onClose} activeOpacity={0.8} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
             <Text style={styles.closeBtnText}>닫기</Text>
           </TouchableOpacity>
         </View>
@@ -792,6 +808,6 @@ const styles = StyleSheet.create({
   momentumEmpty: { fontSize: 11, color: Colors.textMuted, fontWeight: '600', textAlign: 'center', marginBottom: 6 },
   expandPlayersBtn: { backgroundColor: '#EFF6FF', borderRadius: 8, paddingVertical: 8, paddingHorizontal: 10, alignItems: 'center', borderWidth: 1, borderColor: '#BFDBFE', gap: 2 },
   expandPlayersText: { fontSize: 12, fontWeight: '800', color: '#1D4ED8' },
-  closeBtn: { backgroundColor: '#F1F5F9', borderRadius: 10, paddingVertical: 12, alignItems: 'center', marginTop: 8 },
-  closeBtnText: { color: Colors.text, fontSize: 14, fontWeight: '800' },
+  closeBtn: { backgroundColor: '#F1F5F9', borderRadius: 10, paddingVertical: 12, alignItems: 'center', marginTop: 8, minHeight: 44, justifyContent: 'center' },
+  closeBtnText: { color: Colors.text, fontSize: 14, fontWeight: '800', lineHeight: 20, includeFontPadding: false },
 });

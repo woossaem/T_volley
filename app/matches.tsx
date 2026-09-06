@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useMemo } from 'react';
+import React, { useEffect, useState, useMemo, useCallback } from 'react';
 import {
   View,
   Text,
@@ -13,7 +13,7 @@ import {
   Linking,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useRouter, useLocalSearchParams } from 'expo-router';
+import { useRouter, useLocalSearchParams, useFocusEffect } from 'expo-router';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
 import { Colors } from '../constants/Colors';
@@ -21,16 +21,18 @@ import { sendNotificationToTeam } from '../lib/notificationService';
 import UserProfileModal from '../components/UserProfileModal';
 import StickyAdBanner from '../components/StickyAdBanner';
 
-import MatchResultModal from '../components/MatchResultModal';
+import QuickResultModal from '../components/QuickResultModal';
+import MatchRosterModal from '../components/MatchRosterModal';
 import PastMatchRegisterModal from '../components/PastMatchRegisterModal';
 import MatchEvaluationModal from '../components/MatchEvaluationModal';
 import MatchCommentModal from '../components/MatchCommentModal';
 import MatchPostgameReportModal from '../components/MatchPostgameReportModal'; // 💡 경기 결과 분석 리포트 모달 추가
 import MatchCard, { MatchData, ApplicationData } from '../components/MatchCard';
 import { buildTeamStatusByName, isActiveTeamStatus } from '../lib/teamStatus';
-import { parseSetFormationMap, parseSetRosterMap, safeIncludes, safeNameText, seedNextSetFormation, teamsInclude, nameIncludesQuery, type SetFormation } from '../lib/roster';
+import { parseSetFormation, parseSetFormationMap, parseSetRosterMap, safeIncludes, safeNameText, seedNextSetFormation, teamsInclude, nameIncludesQuery, ensureTempIdsInCourt, type SetFormation } from '../lib/roster';
 import { resolveTeamName, resolveTeamNameOrNull, collectTeamNameAliases } from '../lib/nameUtils';
 import { insertMatchIgnoringUnknownColumns, updateMatchIgnoringUnknownColumns } from '../lib/matchWrite';
+import { approveRetroTeamClaim, bindTempPlayerIds, collectTempReplacements, findTeamByName, requestRetroTeamClaim } from '../lib/retroactiveBinding';
 import {
   dynamicScoresFromSets,
   fetchMatchSets,
@@ -39,6 +41,7 @@ import {
   recordsFromDynamicScores,
   rosterMapFromSets,
   upsertMatchSets,
+  carrySet1LineupsToEmptySet2And3,
 } from '../lib/matchSets';
 
 interface MemberInfo {
@@ -116,6 +119,7 @@ export default function MatchesScreen() {
   const [mercenaryContactInput, setMercenaryContactInput] = useState('');
 
   const [resultModalVisible, setResultModalVisible] = useState(false);
+  const [rosterReplaceVisible, setRosterReplaceVisible] = useState(false);
   const [isRosterOnlyMode, setIsRosterOnlyMode] = useState(false);
   const [selectedMatchForResult, setSelectedMatchForResult] = useState<MatchData | null>(null);
   const [selectedWinner, setSelectedWinner] = useState<string>('');
@@ -265,7 +269,7 @@ export default function MatchesScreen() {
     }
   };
 
-  useEffect(() => { fetchData(); }, [session, searchParams?.matchId]);
+  useFocusEffect(useCallback(() => { fetchData(); }, [session, searchParams?.matchId]));
   const onRefresh = () => { setRefreshing(true); fetchData(); };
 
   const openCommentModal = async (match: MatchData) => {
@@ -746,6 +750,7 @@ export default function MatchesScreen() {
       : selectedMatchForResult.host_team_name;
 
     const formattedScores = convertScoresToString(dynamicScores);
+    const { hostRosters, awayRosters } = carrySet1LineupsToEmptySet2And3(hostSetRosters, awaySetRosters);
 
     setActionLoading(true);
     try {
@@ -754,8 +759,8 @@ export default function MatchesScreen() {
         winner_team: selectedWinner,
         result_submitter_team: myTeamInMatch,
         set_scores: formattedScores,
-        host_roster: JSON.stringify(hostSetRosters),
-        away_roster: JSON.stringify(awaySetRosters),
+        host_roster: JSON.stringify(hostRosters),
+        away_roster: JSON.stringify(awayRosters),
         host_youtube_url: hostYoutube.trim() || null,
         away_youtube_url: awayYoutube.trim() || null,
       };
@@ -764,7 +769,7 @@ export default function MatchesScreen() {
       if (updateError) throw updateError;
       await upsertMatchSets(
         selectedMatchForResult.id,
-        recordsFromDynamicScores(dynamicScores, hostSetRosters, awaySetRosters, true),
+        recordsFromDynamicScores(dynamicScores, hostRosters, awayRosters, true),
       );
       setMatches(prev => prev.map(m => m.id === selectedMatchForResult.id ? { ...m, ...updateData } : m));
 
@@ -795,9 +800,10 @@ export default function MatchesScreen() {
 
     setActionLoading(true);
     try {
+      const { hostRosters, awayRosters } = carrySet1LineupsToEmptySet2And3(hostSetRosters, awaySetRosters);
       const updateData = {
-        host_roster: JSON.stringify(hostSetRosters),
-        away_roster: JSON.stringify(awaySetRosters),
+        host_roster: JSON.stringify(hostRosters),
+        away_roster: JSON.stringify(awayRosters),
         roster_updated_by_name: currentUserName,
         roster_updated_at: nowTimeStr,
       };
@@ -807,8 +813,8 @@ export default function MatchesScreen() {
         selectedMatchForResult.id,
         recordsFromDynamicScores(
           dynamicScores.length > 0 ? dynamicScores : [{ hostScore: 0, awayScore: 0 }],
-          hostSetRosters,
-          awaySetRosters,
+          hostRosters,
+          awayRosters,
           false,
         ),
       );
@@ -860,13 +866,27 @@ export default function MatchesScreen() {
 
   const handlePersistFormation = async (isHost: boolean, setIndex: number, formation: SetFormation) => {
     if (!selectedMatchForResult) return;
+    const before = parseSetFormation(isHost ? selectedMatchForResult.host_roster : selectedMatchForResult.away_roster, setIndex).court || [];
+    const filled: SetFormation = {
+      ...formation,
+      court: ensureTempIdsInCourt(formation.court, {
+        side: isHost ? 'host' : 'away',
+        setIndex,
+        frontCount: formation.frontCount,
+        middleCount: formation.middleCount,
+        backCount: formation.backCount,
+      }),
+    };
+    const members = isHost ? hostMembers : awayMembers;
+    const replacements = collectTempReplacements(before, filled.court, (id) => members.find((m) => m.user_id === id)?.full_name);
     const formMap = parseSetFormationMap(isHost ? selectedMatchForResult.host_roster : selectedMatchForResult.away_roster);
-    formMap[setIndex] = formation;
+    formMap[setIndex] = filled;
     const carried = seedNextSetFormation(formMap, setIndex);
     const payload = isHost
       ? { host_roster: JSON.stringify(carried) }
       : { away_roster: JSON.stringify(carried) };
     await supabase.from('matches').update(payload).eq('id', selectedMatchForResult.id);
+    if (replacements.length > 0) await bindTempPlayerIds(selectedMatchForResult.id, replacements);
     setSelectedMatchForResult((prev) => prev ? { ...prev, ...payload } : prev);
     setMatches((prev) => prev.map((m) => m.id === selectedMatchForResult.id ? { ...m, ...payload } : m));
     const teamName = isHost
@@ -886,7 +906,44 @@ export default function MatchesScreen() {
     setSelectedMatchForResult(match);
     setIsRosterOnlyMode(true);
     await hydrateResultFromSsot(match, [{ hostScore: 0, awayScore: 0 }]);
-    setResultModalVisible(true);
+    setRosterReplaceVisible(true);
+  };
+
+  const handleClaimRetroMatch = async (match: MatchData) => {
+    const teamName = myTeams.find((t) => t === resolveTeamName(match.away_team_name) || t === match.away_team_name);
+    if (!teamName || !currentUserId) return Alert.alert('알림', '상대 팀명과 일치하는 내 팀이 없습니다.');
+    setActionLoading(true);
+    try {
+      const result = await requestRetroTeamClaim({
+        matchId: match.id,
+        claimingTeamName: teamName,
+        claimingUserId: currentUserId,
+        claimingUserName: currentUserName,
+      });
+      if (result.error) return Alert.alert('알림', result.error.message);
+      setMatches((prev) => prev.map((m) => m.id === match.id ? { ...m, retro_claim_status: 'pending', retro_claim_team_name: teamName } : m));
+      Alert.alert('소급 신청 완료', '원본 경기 주최자에게 승인 요청을 보냈습니다.');
+    } catch (err: any) {
+      Alert.alert('오류', err.message);
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const handleApproveRetroClaim = async (match: MatchData, approved: boolean) => {
+    setActionLoading(true);
+    try {
+      const result = await approveRetroTeamClaim({ matchId: match.id, approved });
+      if (result.error) return Alert.alert('알림', result.error.message);
+      setMatches((prev) => prev.map((m) => m.id === match.id
+        ? { ...m, is_official: approved, status: 'completed', retro_claim_status: approved ? 'approved' : 'rejected' }
+        : m));
+      Alert.alert(approved ? '소급 승인 완료' : '거절 완료', approved ? '과거 교류전이 공식 랭킹에 반영됩니다.' : '소급 신청을 거절했습니다.');
+    } catch (err: any) {
+      Alert.alert('오류', err.message);
+    } finally {
+      setActionLoading(false);
+    }
   };
 
   const openResultModal = async (match: MatchData) => {
@@ -962,12 +1019,16 @@ export default function MatchesScreen() {
       const hostName = resolveTeamName(pastHostTeam, '');
       const awayName = resolveTeamName(pastAwayTeam, '');
       const isRegisteredTeam = allTeams.includes(awayName);
-      const matchStatus = isRegisteredTeam ? 'pending_result' : 'friendly';
+      const matchStatus = isRegisteredTeam ? 'pending_result' : 'completed';
+      const hostTeam = await findTeamByName(hostName);
       
       const { data: newMatch, error } = await insertMatchIgnoringUnknownColumns({
         host_user_id: currentUserId,
         host_team_name: hostName,
+        host_team_id: hostTeam?.id || null,
         away_team_name: awayName,
+        away_team_id: null,
+        is_official: isRegisteredTeam,
         match_date: pastMatchDate,
         match_time: '이전 경기 수동 입력',
         location: isRegisteredTeam ? '공식 수동 기록' : '비공식 친선 경기',
@@ -1080,18 +1141,21 @@ export default function MatchesScreen() {
           <TouchableOpacity 
             style={[styles.filterChip, matchFilterType === 'all' && styles.filterChipActive]}
             onPress={() => setMatchFilterType('all')}
+            hitSlop={8}
           >
             <Text style={[styles.filterChipText, matchFilterType === 'all' && styles.filterChipTextActive]}>🌐 전체</Text>
           </TouchableOpacity>
           <TouchableOpacity 
             style={[styles.filterChip, matchFilterType === 'teamOnly' && styles.filterChipActive]}
             onPress={() => setMatchFilterType('teamOnly')}
+            hitSlop={8}
           >
             <Text style={[styles.filterChipText, matchFilterType === 'teamOnly' && styles.filterChipTextActive]}>🛡️ 팀 매칭</Text>
           </TouchableOpacity>
           <TouchableOpacity 
             style={[styles.filterChip, matchFilterType === 'mercenary' && styles.filterChipActiveMercenary]}
             onPress={() => setMatchFilterType('mercenary')}
+            hitSlop={8}
           >
             <Text style={[styles.filterChipText, matchFilterType === 'mercenary' && styles.filterChipTextActiveMercenary]}>🙋‍♂️ 용병 모집중</Text>
           </TouchableOpacity>
@@ -1103,12 +1167,14 @@ export default function MatchesScreen() {
           <TouchableOpacity 
             style={[styles.subFilterChip, completedFilter === 'all' && styles.subFilterChipActive]}
             onPress={() => setCompletedFilter('all')}
+            hitSlop={8}
           >
             <Text style={[styles.subFilterText, completedFilter === 'all' && styles.subFilterTextActive]}>🌐 전체 경기</Text>
           </TouchableOpacity>
           <TouchableOpacity 
             style={[styles.subFilterChip, completedFilter === 'myTeam' && styles.subFilterChipActive]}
             onPress={() => setCompletedFilter('myTeam')}
+            hitSlop={8}
           >
             <Text style={[styles.subFilterText, completedFilter === 'myTeam' && styles.subFilterTextActive]}>🛡️ 내 소속팀 경기</Text>
           </TouchableOpacity>
@@ -1181,6 +1247,8 @@ export default function MatchesScreen() {
               onOpenMercenaryModal={handleOpenMercenaryModal}
               onApplyMatch={handleApplyMatch}
               onOpenReportModal={openReportModal} // 💡 분석 리포트 모달 콜백 전달
+              onClaimRetroMatch={handleClaimRetroMatch}
+              onApproveRetroClaim={handleApproveRetroClaim}
               teamStatusByName={teamStatusByName}
               teamTypeByName={teamTypeByName}
             />
@@ -1202,7 +1270,18 @@ export default function MatchesScreen() {
         />
       )}
 
-      <MatchResultModal
+      <MatchRosterModal
+        visible={rosterReplaceVisible}
+        matchId={selectedMatchForResult?.id}
+        hostTeamName={selectedMatchForResult?.host_team_name}
+        awayTeamName={selectedMatchForResult?.away_team_name}
+        hostMembers={hostMembers}
+        awayMembers={awayMembers}
+        onClose={() => setRosterReplaceVisible(false)}
+        onSaved={() => { void fetchData(); }}
+      />
+
+      <QuickResultModal
         visible={resultModalVisible}
         onClose={() => setResultModalVisible(false)}
         match={selectedMatchForResult}
@@ -1435,39 +1514,39 @@ const styles = StyleSheet.create({
   },
   headerLeftGroup: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   backBtn: { width: 28, height: 28, justifyContent: 'center', alignItems: 'center' },
-  backText: { fontSize: 28, color: '#0F172A', lineHeight: 28 },
-  headerTitle: { fontSize: 17, fontWeight: '800', color: '#0F172A' },
-  headerActions: { flexDirection: 'row', gap: 6 },
-  pastRecordBtn: { backgroundColor: '#FEF3C7', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8, borderWidth: 1, borderColor: '#FDE68A' },
-  pastRecordBtnText: { color: '#B45309', fontWeight: '800', fontSize: 12 },
-  addBtn: { backgroundColor: Colors.primary, paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8 },
-  addBtnText: { color: '#FFFFFF', fontWeight: '800', fontSize: 12 },
+  backText: { fontSize: 28, color: '#0F172A', lineHeight: 28, includeFontPadding: false },
+  headerTitle: { fontSize: 17, fontWeight: '800', color: '#0F172A', lineHeight: 22, includeFontPadding: false },
+  headerActions: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  pastRecordBtn: { height: 36, paddingHorizontal: 14, borderRadius: 8, backgroundColor: '#FEF3C7', borderWidth: 1, borderColor: '#FDE68A', justifyContent: 'center', alignItems: 'center' },
+  pastRecordBtnText: { color: '#B45309', fontWeight: '600', fontSize: 14, lineHeight: 18, includeFontPadding: false },
+  addBtn: { height: 36, paddingHorizontal: 14, borderRadius: 8, backgroundColor: Colors.primary, justifyContent: 'center', alignItems: 'center' },
+  addBtnText: { color: '#FFFFFF', fontWeight: '600', fontSize: 14, lineHeight: 18, includeFontPadding: false },
 
-  topControlPanel: { backgroundColor: '#FFFFFF', paddingHorizontal: 16, paddingTop: 8, paddingBottom: 10, borderBottomWidth: 1, borderBottomColor: '#E2E8F0' },
-  monthPillBar: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: '#F1F5F9', borderRadius: 20, paddingHorizontal: 12, paddingVertical: 6, marginBottom: 8 },
-  monthNavBtn: { width: 28, height: 28, borderRadius: 14, backgroundColor: '#FFFFFF', justifyContent: 'center', alignItems: 'center', elevation: 1 },
-  monthNavArrow: { fontSize: 18, fontWeight: '800', color: Colors.primary },
-  monthPillTitle: { fontSize: 14, fontWeight: '800', color: '#1E293B' },
+  topControlPanel: { backgroundColor: '#FFFFFF', paddingHorizontal: 16, paddingTop: 8, paddingBottom: 10, borderBottomWidth: 1, borderBottomColor: '#E2E8F0', gap: 8 },
+  monthPillBar: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: '#F1F5F9', height: 32, borderRadius: 16, paddingHorizontal: 12, marginBottom: 0 },
+  monthNavBtn: { width: 24, height: 24, borderRadius: 12, backgroundColor: '#FFFFFF', justifyContent: 'center', alignItems: 'center' },
+  monthNavArrow: { fontSize: 16, fontWeight: '600', color: Colors.primary, lineHeight: 18, includeFontPadding: false },
+  monthPillTitle: { fontSize: 13, fontWeight: '600', color: '#1E293B', lineHeight: 16, includeFontPadding: false },
 
-  segmentedTabContainer: { flexDirection: 'row', backgroundColor: '#F1F5F9', borderRadius: 12, padding: 4 },
-  segmentedTab: { flex: 1, paddingVertical: 8, alignItems: 'center', borderRadius: 9 },
+  segmentedTabContainer: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#F1F5F9', borderRadius: 16, padding: 2, height: 36 },
+  segmentedTab: { flex: 1, height: 32, alignItems: 'center', justifyContent: 'center', borderRadius: 16 },
   segmentedTabActive: { backgroundColor: '#FFFFFF', elevation: 2, shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.08, shadowRadius: 2 },
-  segmentedTabText: { fontSize: 13, fontWeight: '700', color: '#64748B' },
-  segmentedTabTextActive: { color: Colors.primary, fontWeight: '900' },
+  segmentedTabText: { fontSize: 13, fontWeight: '600', color: '#64748B', lineHeight: 16, includeFontPadding: false },
+  segmentedTabTextActive: { color: Colors.primary, fontWeight: '600' },
 
-  filterChipRow: { flexDirection: 'row', paddingHorizontal: 16, marginTop: 10, gap: 6 },
-  filterChip: { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 16, backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#E2E8F0' },
+  filterChipRow: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, marginTop: 8, marginBottom: 8, gap: 8 },
+  filterChip: { height: 32, paddingHorizontal: 12, borderRadius: 16, backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#E2E8F0', justifyContent: 'center', alignItems: 'center' },
   filterChipActive: { backgroundColor: '#EFF6FF', borderColor: '#3B82F6' },
   filterChipActiveMercenary: { backgroundColor: '#FEF3C7', borderColor: '#F59E0B' },
-  filterChipText: { fontSize: 12, fontWeight: '700', color: '#64748B' },
-  filterChipTextActive: { color: '#1D4ED8', fontWeight: '800' },
-  filterChipTextActiveMercenary: { color: '#B45309', fontWeight: '800' },
+  filterChipText: { fontSize: 13, fontWeight: '600', color: '#64748B', lineHeight: 16, includeFontPadding: false },
+  filterChipTextActive: { color: '#1D4ED8', fontWeight: '600' },
+  filterChipTextActiveMercenary: { color: '#B45309', fontWeight: '600' },
 
-  subFilterContainer: { flexDirection: 'row', paddingHorizontal: 16, marginTop: 10, gap: 6 },
-  subFilterChip: { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 16, backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#E2E8F0' },
+  subFilterContainer: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, marginTop: 8, marginBottom: 8, gap: 8 },
+  subFilterChip: { height: 32, paddingHorizontal: 12, borderRadius: 16, backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#E2E8F0', justifyContent: 'center', alignItems: 'center' },
   subFilterChipActive: { backgroundColor: '#EFF6FF', borderColor: '#3B82F6' },
-  subFilterText: { fontSize: 12, fontWeight: '700', color: '#64748B' },
-  subFilterTextActive: { color: '#1D4ED8', fontWeight: '800' },
+  subFilterText: { fontSize: 13, fontWeight: '600', color: '#64748B', lineHeight: 16, includeFontPadding: false },
+  subFilterTextActive: { color: '#1D4ED8', fontWeight: '600' },
 
   searchContainer: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#FFFFFF', marginHorizontal: 16, marginTop: 10, marginBottom: 8, paddingHorizontal: 12, paddingVertical: 8, borderRadius: 12, borderWidth: 1, borderColor: '#E2E8F0' },
   searchIcon: { fontSize: 14, marginRight: 6 },
@@ -1475,10 +1554,10 @@ const styles = StyleSheet.create({
   
   regionTabsContainer: { paddingHorizontal: 16, paddingBottom: 8 },
   regionScroll: { gap: 6 },
-  regionTab: { paddingHorizontal: 12, paddingVertical: 5, borderRadius: 14, backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#E2E8F0' },
+  regionTab: { height: 32, paddingHorizontal: 12, borderRadius: 16, backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#E2E8F0', justifyContent: 'center', alignItems: 'center' },
   regionTabActive: { backgroundColor: Colors.primary, borderColor: Colors.primary },
-  regionTabText: { fontSize: 12, fontWeight: '700', color: '#64748B' },
-  regionTabTextActive: { color: '#FFFFFF', fontWeight: '800' },
+  regionTabText: { fontSize: 13, fontWeight: '600', color: '#64748B', lineHeight: 16, includeFontPadding: false },
+  regionTabTextActive: { color: '#FFFFFF', fontWeight: '600' },
   
   content: { paddingHorizontal: 16, paddingTop: 4, paddingBottom: 40, gap: 12 },
   emptyBox: { padding: 40, alignItems: 'center', backgroundColor: '#FFFFFF', borderRadius: 16, borderWidth: 1, borderColor: '#E2E8F0', marginTop: 10 },

@@ -17,6 +17,7 @@ import * as Clipboard from 'expo-clipboard';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
 import { parseRosterUserIds, safeIncludes, safeNameText } from '../lib/roster';
+import { isOfficialMatch } from '../lib/officialMatch';
 import { addMatchPlayerStats, emptyPlayerCareerStats } from '../lib/playerStats';
 import { hydrateMatchesWithSetScores } from '../lib/matchSets';
 import { Colors } from '../constants/Colors';
@@ -53,6 +54,9 @@ interface RawMatchData {
   match_date?: string;
   created_at?: string;
   format?: string;
+  score_logs?: unknown;
+  match_events?: unknown;
+  match_sets?: unknown;
 }
 
 interface PersonalMatch {
@@ -511,7 +515,7 @@ export default function ProfileScreen() {
     const teamData = myTeamsList.find(t => t.name === teamName);
 
     const targetMatches = rawMatches.filter(m => {
-      if (m.status !== 'completed') return false;
+      if (!isOfficialMatch(m)) return false;
       if (selectedSeason !== 'all') {
         const targetYear = Number(selectedSeason);
         const { year } = parseMatchDate(m.match_date || m.created_at);
@@ -656,7 +660,7 @@ export default function ProfileScreen() {
       const isWin = m.winner_team === teamName;
 
       if (currentUserId) {
-        addMatchPlayerStats(career, currentUserId, m, []);
+        addMatchPlayerStats(career, currentUserId, m, (m.match_events as any[]) || [], profilesMap[currentUserId]);
       }
 
       if (isWin && myRoster.length > 0) {

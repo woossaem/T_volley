@@ -1,5 +1,6 @@
 import { listMatchSetRows } from './matchSets';
-import { isAnonymousSlotId, listHasUser, parseRosterUserIds, parseSetRosterMap, safeIncludes } from './roster';
+import { resolvePlayerSetPlay, setLineupsAreEmpty, type ScoreLogLike } from './rankingService';
+import { isAnonymousSlotId, listHasUser, parseRosterUserIds, safeIncludes } from './roster';
 
 export interface PlayerCareerStats {
   points: number;
@@ -19,7 +20,7 @@ export interface PlayerCareerStats {
 export type SetSide = 'host' | 'away';
 export type SetOutcome = 'win' | 'loss' | 'draw';
 
-export type PlayerEventLike = {
+export type PlayerEventLike = ScoreLogLike & {
   match_id?: string;
   player_id?: string | null;
   event_type?: string;
@@ -91,6 +92,7 @@ export function addMatchPlayerStats(
   userId: string,
   match: any,
   events: PlayerEventLike[],
+  playerName?: string | null,
 ): PlayerCareerStats {
   if (!userId || !match) return acc;
 
@@ -99,36 +101,42 @@ export function addMatchPlayerStats(
   const inHostMerc = listHasUser(parseRosterUserIds(match.host_mercenary_roster), userId) || safeIncludes(match.host_mercenary_roster, userId);
   const inAwayMerc = listHasUser(parseRosterUserIds(match.away_mercenary_roster), userId) || safeIncludes(match.away_mercenary_roster, userId);
 
-  if (!inHost && !inAway && !inHostMerc && !inAwayMerc) return acc;
-
-  const hostMap = parseSetRosterMap(match.host_roster);
-  const awayMap = parseSetRosterMap(match.away_roster);
   const setRows = readMatchSets(match, events);
+  const hasSetPlay = setRows.some((set) =>
+    resolvePlayerSetPlay(match, set.set_number, userId, playerName, events).played,
+  );
+
+  if (!inHost && !inAway && !inHostMerc && !inAwayMerc && !hasSetPlay) return acc;
 
   let playedThisMatch = false;
   let setWinsThisMatch = 0;
   let setLossesThisMatch = 0;
 
   setRows.forEach((set) => {
-    const idx = Math.max(0, set.set_number - 1);
-    const hostLine = hostMap[idx] || hostMap[0] || [];
-    const awayLine = awayMap[idx] || awayMap[0] || [];
-    const onHost = listHasUser(hostLine, userId) || ((inHost || inHostMerc) && hostLine.length === 0);
-    const onAway = listHasUser(awayLine, userId) || ((inAway || inAwayMerc) && awayLine.length === 0);
-    if (!onHost && !onAway) return;
+    const appearance = resolvePlayerSetPlay(match, set.set_number, userId, playerName, events);
+    let playedAs = appearance.side;
+
+    if (!appearance.played) {
+      if (!setLineupsAreEmpty(match, set.set_number)) return;
+      if (inHost || inHostMerc) playedAs = 'host';
+      else if (inAway || inAwayMerc) playedAs = 'away';
+      else return;
+    } else if (!playedAs) {
+      playedAs = inAway || inAwayMerc ? 'away' : 'host';
+    }
 
     playedThisMatch = true;
     acc.setsPlayed += 1;
 
-    const myScore = onHost ? set.host_score : set.away_score;
-    const oppScore = onHost ? set.away_score : set.host_score;
+    const myScore = playedAs === 'host' ? set.host_score : set.away_score;
+    const oppScore = playedAs === 'host' ? set.away_score : set.host_score;
     if (myScore > oppScore) {
       acc.setWins += 1;
       setWinsThisMatch += 1;
     } else if (myScore < oppScore) {
       acc.setLosses += 1;
       setLossesThisMatch += 1;
-    } else if (myScore === oppScore) {
+    } else {
       acc.setDraws += 1;
     }
   });

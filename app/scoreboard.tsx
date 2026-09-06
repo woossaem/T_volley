@@ -26,7 +26,9 @@ import PlayerActionModal, { Member, ScoreKind } from '../components/PlayerAction
 import MatchPostgameReportModal from '../components/MatchPostgameReportModal';
 import FormationModal from '../components/FormationModal';
 import { MomentumLevelBar } from '../components/SetFlowGauges';
-import { ANONYMOUS_PLAYER_NAME, clampLineCount, DEFAULT_LINE_COUNT, isAnonymousPlayer, isAnonymousSlotId, listHasUser, makeAnonSlotId, parseSetFormation, parseSetFormationMap, parseSetRosterMap, persistCourtSlots, resolveFormationForSet, resolveFormationFromSources, safeIncludes, safeNameText, seedNextSetFormation, teamsInclude, type SetFormation } from '../lib/roster';
+import { ANONYMOUS_PLAYER_NAME, clampLineCount, DEFAULT_LINE_COUNT, displaySlotPlayerName, ensureTempIdsInCourt, isAnonymousPlayer, isRegisteredUserId, isTempSlotId, listHasUser, makeDeterministicTempSlotId, parseSetFormation, parseSetFormationMap, parseSetRosterMap, persistCourtSlots, positionKeyFromCourtIndex, resolveFormationForSet, resolveFormationFromSources, safeIncludes, safeNameText, seedNextSetFormation, teamsInclude, type SetFormation } from '../lib/roster';
+import { appendMatchScoreLog } from '../lib/retroactiveBinding';
+import { updateMatchIgnoringUnknownColumns } from '../lib/matchWrite';
 import { resolveTeamName } from '../lib/nameUtils';
 import {
   MAX_SETS,
@@ -37,6 +39,8 @@ import {
   normalizeSetRecords,
   parseRosterJson,
   upsertMatchSets,
+  lastScoreForSetFromEvents,
+  syncSetScoreFromRemainingEvents,
   type MatchSetRecord,
 } from '../lib/matchSets';
 
@@ -197,20 +201,34 @@ export default function ScoreboardScreen() {
 
   const recalcScores = useCallback((allEvents: MatchEvent[], cIndex: number) => {
     const idx = Number(cIndex);
-    const validScores = allEvents.filter((e) => Number(e.set_index) === idx && !e.is_canceled && e.event_type !== 'sub');
-    if (validScores.length > 0) {
-      const last = validScores[validScores.length - 1];
-      setCurrentScores({ host: last.host_score, away: last.away_score });
-    } else {
-      const currentHistory = setHistoryRef.current;
-      if (currentHistory[idx]) {
-        const [h, a] = currentHistory[idx].split(':').map(Number);
-        setCurrentScores({ host: h || 0, away: a || 0 });
-      } else {
-        setCurrentScores({ host: 0, away: 0 });
-      }
-    }
+    const next = lastScoreForSetFromEvents(allEvents, idx);
+    setCurrentScores({ host: next.host, away: next.away });
   }, []);
+
+  const persistRecalculatedSetScore = async (allEvents: MatchEvent[], setIndex: number) => {
+    if (!matchId) return lastScoreForSetFromEvents(allEvents, setIndex);
+    const score = await syncSetScoreFromRemainingEvents(matchId, allEvents, setIndex).catch(() => (
+      lastScoreForSetFromEvents(allEvents, setIndex)
+    ));
+    setCurrentScores((prev) => (setIndex === currentSetIndexRef.current ? { host: score.host, away: score.away } : prev));
+    setMatchSets((prev) => prev.map((s) => (
+      s.setNumber === setIndex + 1 ? { ...s, hostScore: score.host, awayScore: score.away } : s
+    )));
+    setMatch((prev) => {
+      if (!prev) return prev;
+      const parts = String(prev.set_scores || '').split(',').map((c) => c.trim()).filter(Boolean);
+      while (parts.length <= setIndex) parts.push('0:0');
+      parts[setIndex] = `${score.host}:${score.away}`;
+      return { ...prev, set_scores: parts.join(', ') };
+    });
+    if (setIndex < setHistoryRef.current.length) {
+      const nextHistory = [...setHistoryRef.current];
+      nextHistory[setIndex] = `${score.host}:${score.away}`;
+      setSetScoresHistory(nextHistory);
+      setHistoryRef.current = nextHistory;
+    }
+    return score;
+  };
 
   const fetchMatchDetails = useCallback(async () => {
     if (!matchId || !currentUserId) return;
@@ -285,10 +303,13 @@ export default function ScoreboardScreen() {
         const updated = payload.new as MatchRecord;
         setMatch(updated);
 
-        if (updated.set_scores) {
-          const sets = String(updated.set_scores).split(', ').filter(Boolean);
-          setSetScoresHistory(sets);
-          setHistoryRef.current = sets;
+        if (updated.set_scores != null) {
+          const parts = String(updated.set_scores).split(',').map((c) => c.trim()).filter(Boolean);
+          const closedCount = setHistoryRef.current.length;
+          if (parts.length <= closedCount) {
+            setSetScoresHistory(parts);
+            setHistoryRef.current = parts;
+          }
         }
 
         if (updated.recorder_host_id) {
@@ -390,9 +411,9 @@ export default function ScoreboardScreen() {
     
     if (actionMode === 'edit' && editingEventId) {
       const eventType = kind === 'fault' ? 'fault' : 'score';
-      const registered = player && !isAnonymousPlayer(player);
-      const savedPlayerId = registered ? player.user_id : null;
-      const savedPlayerName = registered ? player.full_name : ANONYMOUS_PLAYER_NAME;
+      const keepId = player?.user_id && (isRegisteredUserId(player.user_id) || isTempSlotId(player.user_id)) ? player.user_id : null;
+      const savedPlayerId = keepId;
+      const savedPlayerName = isRegisteredUserId(keepId) ? (player?.full_name || ANONYMOUS_PLAYER_NAME) : displaySlotPlayerName(keepId, ANONYMOUS_PLAYER_NAME);
       setEvents(prev => prev.map(e => e.id === editingEventId ? { ...e, player_id: savedPlayerId, player_name: savedPlayerName, event_type: eventType } : e));
       await supabase.from('match_events').update({
         player_id: savedPlayerId,
@@ -406,9 +427,9 @@ export default function ScoreboardScreen() {
     const newHostScore = scoringTeam === 'host' ? currentScores.host + 1 : currentScores.host;
     const newAwayScore = scoringTeam === 'away' ? currentScores.away + 1 : currentScores.away;
     const eventType = kind === 'fault' ? 'fault' : 'score';
-    const registered = player && !isAnonymousPlayer(player);
-    const savedPlayerId = registered ? player.user_id : null;
-    const savedPlayerName = registered ? player.full_name : ANONYMOUS_PLAYER_NAME;
+    const keepId = player?.user_id && (isRegisteredUserId(player.user_id) || isTempSlotId(player.user_id)) ? player.user_id : null;
+    const savedPlayerId = keepId;
+    const savedPlayerName = isRegisteredUserId(keepId) ? (player?.full_name || ANONYMOUS_PLAYER_NAME) : displaySlotPlayerName(keepId, ANONYMOUS_PLAYER_NAME);
 
     setCurrentScores({ host: newHostScore, away: newAwayScore });
     
@@ -426,16 +447,20 @@ export default function ScoreboardScreen() {
     };
     setEvents(prev => [...prev, tempEvent]);
 
-    await supabase.from('match_events').insert({
+    const scoreLog = {
       match_id: matchId,
       set_index: currentSetIndex,
+      set_number: currentSetIndex + 1,
       event_type: eventType,
       team_type: scoringTeam,
       player_id: savedPlayerId,
       player_name: savedPlayerName,
       host_score: newHostScore,
-      away_score: newAwayScore
-    });
+      away_score: newAwayScore,
+      is_canceled: false,
+    };
+    await supabase.from('match_events').insert(scoreLog);
+    if (matchId) await appendMatchScoreLog(matchId, scoreLog);
     if (currentSetIndex >= setHistory.length) {
       await persistSetsFromHistory(setHistory, { host: newHostScore, away: newAwayScore });
     }
@@ -725,15 +750,21 @@ export default function ScoreboardScreen() {
   const handleConfirmDeleteEvent = async () => {
     const target = pendingDeleteEvent;
     setPendingDeleteEvent(null);
-    if (!target || String(target.id).startsWith('temp-')) {
-      if (target) setEvents((prev) => prev.filter((e) => e.id !== target.id));
+    if (!target) return;
+    if (String(target.id).startsWith('temp-')) {
+      const nextEvents = events.filter((e) => e.id !== target.id);
+      setEvents(nextEvents);
+      recalcScores(nextEvents, currentSetIndex);
+      await persistRecalculatedSetScore(nextEvents, Math.max(0, Number(target.set_index) || 0));
       return;
     }
     const nextEvents = events.filter((e) => e.id !== target.id);
     setEvents(nextEvents);
+    const targetSetIndex = Math.max(0, Number(target.set_index) || 0);
     recalcScores(nextEvents, currentSetIndex);
     resetSetUiState();
     await supabase.from('match_events').delete().eq('id', target.id);
+    await persistRecalculatedSetScore(nextEvents, targetSetIndex);
   };
 
   const handleUndoEvent = async () => {
@@ -752,6 +783,7 @@ export default function ScoreboardScreen() {
           setEvents(newEvents);
           recalcScores(newEvents, currentSetIndex);
           await supabase.from('match_events').update({ is_canceled: true }).eq('id', lastEvent.id);
+          await persistRecalculatedSetScore(newEvents, currentSetIndex);
         }
       }
     ]);
@@ -789,6 +821,21 @@ export default function ScoreboardScreen() {
                 undefined,
                 { host: hostCarried, away: awayCarried },
               );
+              if (matchId) {
+                const scoreLogs = events.map((e) => ({
+                  id: e.id,
+                  set_index: e.set_index,
+                  set_number: Number(e.set_index) + 1,
+                  event_type: e.event_type,
+                  team_type: e.team_type,
+                  player_id: e.player_id,
+                  player_name: e.player_name,
+                  host_score: e.host_score,
+                  away_score: e.away_score,
+                  is_canceled: e.is_canceled,
+                }));
+                await updateMatchIgnoringUnknownColumns(matchId, { score_logs: scoreLogs });
+              }
 
               setSetScoresHistory(updatedHistory);
               setHistoryRef.current = updatedHistory;
@@ -980,11 +1027,18 @@ export default function ScoreboardScreen() {
     }
 
     const slots = [...rawCourt];
-    while (slots.length < slotTotal) slots.push(makeAnonSlotId(slots.length));
+    while (slots.length < slotTotal) {
+      const idx = slots.length;
+      const pos = positionKeyFromCourtIndex(idx, frontCount, middleCount, backCount);
+      slots.push(makeDeterministicTempSlotId(pos, side, currentSetIndex, idx));
+    }
     const court = slots.slice(0, slotTotal).map((id, idx) => {
       const real = baseMembers.find((m) => m.user_id === id || listHasUser([id], m.user_id) || safeIncludes(id, m.user_id));
       if (real) return real;
-      return { user_id: `${side}:${isAnonymousSlotId(id) ? id : makeAnonSlotId(idx)}`, full_name: ANONYMOUS_PLAYER_NAME };
+      const kept = isTempSlotId(id) ? id : null;
+      const pos = positionKeyFromCourtIndex(idx, frontCount, middleCount, backCount);
+      const tempId = kept || makeDeterministicTempSlotId(pos, side, currentSetIndex, idx);
+      return { user_id: tempId, full_name: displaySlotPlayerName(tempId, ANONYMOUS_PLAYER_NAME) };
     });
     const courtRealIds = court.filter((m) => !isAnonymousPlayer(m)).map((m) => m.user_id);
     const bench = baseMembers.filter((m) => listHasUser(benchIds, m.user_id) || (!listHasUser(courtRealIds, m.user_id) && !listHasUser(lateIds, m.user_id)));
@@ -998,8 +1052,19 @@ export default function ScoreboardScreen() {
 
   const handleSaveFormation = async (formation: SetFormation) => {
     const isHost = formationTeam === 'host';
+    const side = isHost ? 'host' : 'away';
+    const filled: SetFormation = {
+      ...formation,
+      court: ensureTempIdsInCourt(formation.court, {
+        side,
+        setIndex: currentSetIndex,
+        frontCount: formation.frontCount,
+        middleCount: formation.middleCount,
+        backCount: formation.backCount,
+      }),
+    };
     const formMap = parseSetFormationMap(isHost ? match?.host_roster : match?.away_roster);
-    formMap[currentSetIndex] = formation;
+    formMap[currentSetIndex] = filled;
     const carried = seedNextSetFormation(formMap, currentSetIndex, true);
     const updatedRosterJson = JSON.stringify(carried);
     const updatePayload = isHost ? { host_roster: updatedRosterJson } : { away_roster: updatedRosterJson };
@@ -1032,13 +1097,33 @@ export default function ScoreboardScreen() {
   };
 
   const handleSaveDualFormation = async (hostFormation: SetFormation, awayFormation: SetFormation) => {
+    const filledHost: SetFormation = {
+      ...hostFormation,
+      court: ensureTempIdsInCourt(hostFormation.court, {
+        side: 'host',
+        setIndex: currentSetIndex,
+        frontCount: hostFormation.frontCount,
+        middleCount: hostFormation.middleCount,
+        backCount: hostFormation.backCount,
+      }),
+    };
+    const filledAway: SetFormation = {
+      ...awayFormation,
+      court: ensureTempIdsInCourt(awayFormation.court, {
+        side: 'away',
+        setIndex: currentSetIndex,
+        frontCount: awayFormation.frontCount,
+        middleCount: awayFormation.middleCount,
+        backCount: awayFormation.backCount,
+      }),
+    };
     const hostCarried = seedNextSetFormation(
-      { ...parseSetFormationMap(match?.host_roster), [currentSetIndex]: hostFormation },
+      { ...parseSetFormationMap(match?.host_roster), [currentSetIndex]: filledHost },
       currentSetIndex,
       true,
     );
     const awayCarried = seedNextSetFormation(
-      { ...parseSetFormationMap(match?.away_roster), [currentSetIndex]: awayFormation },
+      { ...parseSetFormationMap(match?.away_roster), [currentSetIndex]: filledAway },
       currentSetIndex,
       true,
     );
@@ -1238,13 +1323,13 @@ export default function ScoreboardScreen() {
           </Text>
           {leftTeamData.canControl && (
             <View style={[styles.stackedUtilityBtns, styles.floatBtnsA]}>
-              <TouchableOpacity style={styles.glassBtnCompact} onPress={() => handleOpenEditModal()}>
+              <TouchableOpacity style={styles.glassBtnCompact} onPress={() => handleOpenEditModal()} hitSlop={8}>
                 <Text style={styles.glassBtnText}>✏️ 점수 보정</Text>
               </TouchableOpacity>
-              <TouchableOpacity style={styles.glassBtnCompact} onPress={openFormation}>
+              <TouchableOpacity style={styles.glassBtnCompact} onPress={openFormation} hitSlop={8}>
                 <Text style={styles.glassBtnText}>📐 포메이션</Text>
               </TouchableOpacity>
-              <TouchableOpacity style={styles.glassBtnCompact} onPress={() => openActionModal(leftTeamData.key, 'sub')}>
+              <TouchableOpacity style={styles.glassBtnCompact} onPress={() => openActionModal(leftTeamData.key, 'sub')} hitSlop={8}>
                 <Text style={styles.glassBtnText}>🔄 선수 교체</Text>
               </TouchableOpacity>
             </View>
@@ -1269,13 +1354,13 @@ export default function ScoreboardScreen() {
         <View style={[styles.teamCourtHalf, rightTeamData.isHost ? styles.hostCourtBg : styles.awayCourtBg]}>
           {rightTeamData.canControl && (
             <View style={[styles.stackedUtilityBtns, styles.floatBtnsB]}>
-              <TouchableOpacity style={styles.glassBtnCompact} onPress={() => handleOpenEditModal()}>
+              <TouchableOpacity style={styles.glassBtnCompact} onPress={() => handleOpenEditModal()} hitSlop={8}>
                 <Text style={styles.glassBtnText}>✏️ 점수 보정</Text>
               </TouchableOpacity>
-              <TouchableOpacity style={styles.glassBtnCompact} onPress={openFormation}>
+              <TouchableOpacity style={styles.glassBtnCompact} onPress={openFormation} hitSlop={8}>
                 <Text style={styles.glassBtnText}>📐 포메이션</Text>
               </TouchableOpacity>
-              <TouchableOpacity style={styles.glassBtnCompact} onPress={() => openActionModal(rightTeamData.key, 'sub')}>
+              <TouchableOpacity style={styles.glassBtnCompact} onPress={() => openActionModal(rightTeamData.key, 'sub')} hitSlop={8}>
                 <Text style={styles.glassBtnText}>🔄 선수 교체</Text>
               </TouchableOpacity>
             </View>
@@ -1571,8 +1656,8 @@ const styles = StyleSheet.create({
   stackedUtilityBtns: { flexDirection: 'column', gap: 3, justifyContent: 'flex-start', flexShrink: 0, zIndex: 12 },
   floatBtnsA: { position: 'absolute', top: 8, right: 8, alignItems: 'flex-end' },
   floatBtnsB: { position: 'absolute', top: 8, left: 8, alignItems: 'flex-start' },
-  glassBtnCompact: { backgroundColor: 'rgba(0, 0, 0, 0.25)', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 8, borderWidth: 1, borderColor: 'rgba(255, 255, 255, 0.2)', alignItems: 'center', flexShrink: 0 },
-  glassBtnText: { color: '#FFFFFF', fontSize: 11, fontWeight: '800' },
+  glassBtnCompact: { backgroundColor: 'rgba(0, 0, 0, 0.25)', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 8, borderWidth: 1, borderColor: 'rgba(255, 255, 255, 0.2)', alignItems: 'center', justifyContent: 'center', flexShrink: 0, minHeight: 36 },
+  glassBtnText: { color: '#FFFFFF', fontSize: 11, fontWeight: '800', lineHeight: 16, includeFontPadding: false },
   bigScoreTouchArea: { flex: 1, width: '100%', padding: 0, margin: 0, justifyContent: 'center', alignItems: 'center' },
   scoreCenterWrap: { flex: 1, justifyContent: 'center', alignItems: 'center', margin: 0, padding: 0 },
   bigScoreNumber: {

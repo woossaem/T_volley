@@ -5,6 +5,8 @@ import {
   assignedUserId,
   clampLineCount,
   DEFAULT_LINE_COUNT,
+  displaySlotPlayerName,
+  isTempSlotId,
   lineSlotLabels,
   type CourtRow,
 } from '../lib/roster';
@@ -104,7 +106,9 @@ export default function CourtGrid({
     const empty = isEmptySlot(player);
     const selected = !!selectedId && selectedId === player.user_id;
     const highlighted = highlightIndex === idx;
-    const name = empty ? ANONYMOUS_PLAYER_NAME : (player.full_name || ANONYMOUS_PLAYER_NAME);
+    const name = isTempSlotId(player.user_id)
+      ? displaySlotPlayerName(player.user_id, player.full_name, label)
+      : (empty ? ANONYMOUS_PLAYER_NAME : (player.full_name || ANONYMOUS_PLAYER_NAME));
     const emptyText = emptySlotLabel ?? (compact ? '👤' : ANONYMOUS_PLAYER_NAME);
     return (
       <TouchableOpacity

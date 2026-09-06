@@ -25,6 +25,7 @@ import StickyAdBanner from '../components/StickyAdBanner';
 import BadgeCollectionModal from '../components/BadgeCollectionModal';
 import { getCurrentSeasonInfo, getSeasonOptions } from '../lib/season';
 import { getAllBadgesWithStatus } from '../lib/badgeUtils';
+import { isOfficialMatch } from '../lib/officialMatch';
 
 interface TeamRankingData {
   team_id: string;
@@ -230,20 +231,21 @@ export default function RankingScreen() {
 
       setDbActiveRegions(Array.from(regionsSet));
 
+      const officialMatches = (allMatches || []).filter((m: any) => isOfficialMatch(m));
       const careerWinsMap = new Map<string, number>();
-      (allMatches || []).forEach((m: any) => {
+      officialMatches.forEach((m: any) => {
         const wName = resolveTeamNameOrNull(m.winner_team);
         if (wName && wName !== 'draw' && wName !== '무승부') {
           careerWinsMap.set(wName, (careerWinsMap.get(wName) || 0) + 1);
         }
       });
 
-      const targetMatches = (allMatches || []).filter((m: any) => {
+      const targetMatches = officialMatches.filter((m: any) => {
         if (selectedPeriod === 'hall_of_fame') return true;
         const mSeasonCode = getMatchSeasonCode(m.match_date || m.created_at);
         return mSeasonCode === selectedPeriod;
       });
-      const personalTargetMatches = [...allMatches, ...intraMatches].filter((m: any) => {
+      const personalTargetMatches = [...officialMatches, ...intraMatches].filter((m: any) => {
         if (selectedPeriod === 'hall_of_fame') return true;
         const mSeasonCode = getMatchSeasonCode(m.match_date || m.created_at);
         return mSeasonCode === selectedPeriod;
@@ -323,7 +325,7 @@ export default function RankingScreen() {
         const chunk = targetMatchIds.slice(i, i + 80);
         const { data: evRows } = await supabase
           .from('match_events')
-          .select('match_id, player_id, event_type, is_canceled, set_index, host_score, away_score')
+          .select('match_id, player_id, player_name, event_type, is_canceled, set_index, host_score, away_score, team_type')
           .in('match_id', chunk)
           .eq('is_canceled', false);
         (evRows || []).forEach((e: any) => {
@@ -336,7 +338,7 @@ export default function RankingScreen() {
       const pRanks: PersonalRankingData[] = (allProfiles || []).map((p: any) => {
         const career = emptyPlayerCareerStats();
         personalTargetMatches.forEach((m: any) => {
-          addMatchPlayerStats(career, p.id, m, eventsByMatch.get(m.id) || []);
+          addMatchPlayerStats(career, p.id, m, eventsByMatch.get(m.id) || [], p.full_name);
         });
 
         let userRegion = userSchoolRegionMap.get(p.id);
@@ -410,7 +412,7 @@ export default function RankingScreen() {
     const teamData = qualifiedTeamRanks.find(t => t.team_name === teamName) || pendingTeamRanks.find(t => t.team_name === teamName);
 
     const targetMatches = (rawMatches || []).filter((m: any) => {
-      if (m.status !== 'completed' && m.status !== 'friendly') return false;
+      if (!isOfficialMatch(m)) return false;
       if (selectedPeriod !== 'hall_of_fame') {
         return getMatchSeasonCode(m.match_date || m.created_at) === selectedPeriod;
       }

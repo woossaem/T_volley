@@ -128,9 +128,9 @@ const styles = StyleSheet.create({
   dot: { width: 5, height: 5, borderRadius: 3, backgroundColor: '#334155' },
   dotActive: { backgroundColor: '#38BDF8' },
   momentumTrack: {
-    height: 18,
+    height: 14,
     flexDirection: 'row',
-    borderRadius: 9,
+    borderRadius: 7,
     overflow: 'hidden',
     backgroundColor: '#1E293B',
     borderWidth: 1,
@@ -138,7 +138,7 @@ const styles = StyleSheet.create({
   },
   momentumTick: { flex: 1, minWidth: 3, height: '100%' },
   momentumEmpty: { flex: 1, alignItems: 'center', justifyContent: 'center' },
-  momentumEmptyText: { fontSize: 9, fontWeight: '700', color: '#64748B' },
+  momentumEmptyText: { fontSize: 8, fontWeight: '700', color: '#64748B', includeFontPadding: false },
 });
 
 /** 현재 세트 득점 흐름을 16~20px 수평 레벨바로 표시 */

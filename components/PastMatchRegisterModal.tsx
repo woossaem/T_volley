@@ -145,7 +145,7 @@ export default function PastMatchRegisterModal({
             <Text style={styles.infoNoticeTitle}>💡 미등록 경기 기록 안내</Text>
             <Text style={styles.infoNoticeText}>
               • 앱 출시 이전 경기나 미등록 팀과의 전적을 수동으로 기록합니다.{'\n'}
-              • 미등록 팀은 친선 전적으로 저장되며 승인 시 공식 반영됩니다.
+              • 미등록 팀은 비공식(랭킹 제외)으로 저장되며, 상대 팀 가입 후 소급 신청·주최자 승인 시 공식 반영됩니다.
             </Text>
           </View>
 

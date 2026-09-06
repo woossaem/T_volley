@@ -18,6 +18,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
 import { Colors } from '../constants/Colors';
 import { parseRosterUserIds, safeIncludes } from '../lib/roster';
+import { isOfficialMatch } from '../lib/officialMatch';
 import { addMatchPlayerStats, emptyPlayerCareerStats } from '../lib/playerStats';
 import { hydrateMatchesWithSetScores } from '../lib/matchSets';
 
@@ -259,7 +260,7 @@ export default function MyTeamDetailScreen() {
       memList.forEach(mUser => {
         const career = emptyPlayerCareerStats();
         intraMatches.forEach((m: any) => {
-          addMatchPlayerStats(career, mUser.id, m, []);
+          addMatchPlayerStats(career, mUser.id, m, m.match_events || m.score_logs || [], mUser.full_name);
         });
         rankMap[mUser.id].total = career.setsPlayed;
         rankMap[mUser.id].wins = career.setWins;
@@ -290,7 +291,7 @@ export default function MyTeamDetailScreen() {
       let tWins = 0, tDraws = 0, tLosses = 0;
       const currentYear = new Date().getFullYear().toString();
 
-      (matches || []).forEach((m) => {
+      (matches || []).filter((m) => isOfficialMatch(m)).forEach((m) => {
         const isWin = m.winner_team === teamName;
         const isDraw = m.winner_team === 'draw' || m.winner_team === '무승부';
         const isCurrentSeason = m.match_date && m.match_date.includes(currentYear);

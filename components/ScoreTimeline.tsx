@@ -1,5 +1,6 @@
 import React, { useRef, useEffect, useMemo } from 'react';
 import { View, Text, ScrollView, TouchableOpacity, StyleSheet } from 'react-native';
+import { formatPlayerDisplayName } from '../lib/tempPlayer';
 
 export interface MatchEvent {
   id: string;
@@ -67,7 +68,11 @@ export default function ScoreTimeline({
       disabled={!canControl}
       activeOpacity={0.7}
     >
-      <Text style={[styles.text, compact && styles.textCompact, isHost ? styles.hostText : styles.awayText, isCanceled && styles.canceledText]}>
+      <Text
+        style={[styles.text, compact && styles.textCompact, isHost ? styles.hostText : styles.awayText, isCanceled && styles.canceledText]}
+        numberOfLines={1}
+        ellipsizeMode="tail"
+      >
         {content}
       </Text>
     </TouchableOpacity>
@@ -76,7 +81,7 @@ export default function ScoreTimeline({
   return (
     <ScrollView
       ref={scrollViewRef}
-      horizontal
+      horizontal={true}
       showsHorizontalScrollIndicator={false}
       style={[styles.scroller, compact && styles.scrollerCompact]}
       contentContainerStyle={[styles.scroll, compact && styles.scrollCompact]}
@@ -90,9 +95,7 @@ export default function ScoreTimeline({
           {currentSetEvents.map((ev, index) => {
             const isHost = ev.team_type === 'host';
             const isCanceled = ev.is_canceled;
-            const name = ev.player_name
-              ? (ev.player_name.length > 3 ? ev.player_name.substring(0, 3) : ev.player_name)
-              : '무기명';
+            const name = formatPlayerDisplayName(ev.player_id, ev.player_name);
             let content = '';
             if (ev.event_type === 'score') content = `${isHost ? ev.host_score : ev.away_score} (${name})`;
             else if (ev.event_type === 'fault') content = `${isHost ? ev.host_score : ev.away_score} ⚠${name}`;
@@ -114,9 +117,7 @@ export default function ScoreTimeline({
           {currentSetEvents.map((ev, index) => {
             const isHost = ev.team_type === 'host';
             const isCanceled = ev.is_canceled;
-            const name = ev.player_name
-              ? (ev.player_name.length > 3 ? ev.player_name.substring(0, 3) : ev.player_name)
-              : '무기명';
+            const name = formatPlayerDisplayName(ev.player_id, ev.player_name);
 
             let content = '';
             if (ev.event_type === 'score') {
@@ -140,7 +141,11 @@ export default function ScoreTimeline({
                 disabled={!canControl}
                 activeOpacity={0.7}
               >
-                <Text style={[styles.text, isHost ? styles.hostText : styles.awayText, isCanceled && styles.canceledText]}>
+                <Text
+                  style={[styles.text, isHost ? styles.hostText : styles.awayText, isCanceled && styles.canceledText]}
+                  numberOfLines={1}
+                  ellipsizeMode="tail"
+                >
                   {content}
                 </Text>
               </TouchableOpacity>
@@ -167,7 +172,7 @@ export default function ScoreTimeline({
 const styles = StyleSheet.create({
   scroller: { flex: 1, overflow: 'hidden' },
   scroll: { paddingLeft: 4, paddingRight: 28, paddingVertical: 4, alignItems: 'center', minHeight: 88 },
-  emptyText: { color: '#475569', fontSize: 12, fontWeight: '700' },
+  emptyText: { color: '#475569', fontSize: 12, fontWeight: '700', lineHeight: 16, includeFontPadding: false },
   trackContainer: { flexDirection: 'row', alignItems: 'center', position: 'relative', height: 84 },
   horizontalLine: { position: 'absolute', top: '50%', marginTop: -1, left: 0, right: 0, height: 2, backgroundColor: '#334155' },
   eventColumn: { width: 82, alignItems: 'center', height: '100%', justifyContent: 'center' },
@@ -181,14 +186,14 @@ const styles = StyleSheet.create({
   hostBg: { backgroundColor: '#0C4A6E', borderColor: '#0284C7' },
   awayBg: { backgroundColor: '#4C0519', borderColor: '#BE123C' },
   canceledBg: { backgroundColor: '#1E293B', borderColor: '#334155' },
-  text: { fontSize: 11, fontWeight: '800' },
+  text: { fontSize: 11, fontWeight: '800', lineHeight: 16, includeFontPadding: false },
   hostText: { color: '#BAE6FD' },
   awayText: { color: '#FECDD3' },
   canceledText: { color: '#64748B', textDecorationLine: 'line-through' },
-  scrollerCompact: { flexGrow: 0, flexShrink: 1, maxHeight: 40 },
-  scrollCompact: { minHeight: 32, paddingVertical: 2, paddingRight: 12, alignItems: 'center' },
+  scrollerCompact: { flexGrow: 1, flexShrink: 1, height: 44, maxHeight: 44 },
+  scrollCompact: { minHeight: 40, paddingVertical: 2, paddingRight: 12, alignItems: 'center' },
   compactRow: { flexDirection: 'row', alignItems: 'center' },
   compactChipWrap: { marginRight: 4 },
   chipCompact: { minWidth: 56, paddingHorizontal: 6, paddingVertical: 3 },
-  textCompact: { fontSize: 10 },
+  textCompact: { fontSize: 10, lineHeight: 16, includeFontPadding: false },
 });

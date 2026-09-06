@@ -1,6 +1,6 @@
 import React from 'react';
 import { View, Text, StyleSheet } from 'react-native';
-import { formatSetScoreDisplay, formatSetScoresString, listMatchSetRows } from '../lib/matchSets';
+import { listMatchSetRows } from '../lib/matchSets';
 
 interface SetScoreStripProps {
   match?: any;
@@ -10,10 +10,8 @@ interface SetScoreStripProps {
 
 export default function SetScoreStrip({ match, setScores, sets }: SetScoreStripProps) {
   const rows = listMatchSetRows(match || { set_scores: setScores, sets, match_sets: sets });
-  if (rows.length === 0) return null;
-  const summary = formatSetScoreDisplay(
-    formatSetScoresString(rows.map((s) => ({ hostScore: s.host_score, awayScore: s.away_score }))),
-  );
+  const hasMeaningfulScore = rows.some((s) => (Number(s.host_score) || 0) > 0 || (Number(s.away_score) || 0) > 0);
+  if (!hasMeaningfulScore) return null;
 
   return (
     <View style={styles.wrap}>
@@ -25,7 +23,6 @@ export default function SetScoreStrip({ match, setScores, sets }: SetScoreStripP
           </View>
         ))}
       </View>
-      {summary ? <Text style={styles.summary}>{summary}</Text> : null}
     </View>
   );
 }
@@ -33,11 +30,11 @@ export default function SetScoreStrip({ match, setScores, sets }: SetScoreStripP
 const styles = StyleSheet.create({
   wrap: {
     backgroundColor: '#EFF6FF',
-    borderWidth: 2,
-    borderColor: '#1D4ED8',
+    borderWidth: 1,
+    borderColor: '#93C5FD',
     borderRadius: 12,
-    paddingVertical: 10,
-    paddingHorizontal: 10,
+    paddingVertical: 8,
+    paddingHorizontal: 8,
     marginTop: 8,
   },
   pillsRow: {
@@ -50,8 +47,8 @@ const styles = StyleSheet.create({
     backgroundColor: '#FFFFFF',
     borderRadius: 10,
     paddingHorizontal: 12,
-    paddingVertical: 6,
-    minWidth: 78,
+    paddingVertical: 5,
+    minWidth: 72,
     alignItems: 'center',
     borderWidth: 1,
     borderColor: '#93C5FD',
@@ -60,18 +57,13 @@ const styles = StyleSheet.create({
     fontSize: 10,
     fontWeight: '800',
     color: '#64748B',
+    lineHeight: 13,
   },
   pillScore: {
-    fontSize: 18,
-    fontWeight: '900',
+    fontSize: 15,
+    fontWeight: '700',
     color: '#1D4ED8',
     marginTop: 1,
-  },
-  summary: {
-    marginTop: 6,
-    textAlign: 'center',
-    fontSize: 13,
-    fontWeight: '900',
-    color: '#1E3A8A',
+    lineHeight: 20,
   },
 });

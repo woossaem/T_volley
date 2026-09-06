@@ -53,6 +53,7 @@ interface MatchResultModalProps {
   onSaveResult: () => void;
   onSaveRosterOnly: () => void;
   onPersistFormation?: (isHost: boolean, setIndex: number, formation: SetFormation) => void;
+  onOpenRosterReplace?: () => void;
   actionLoading: boolean;
 }
 
@@ -93,6 +94,7 @@ export default function MatchResultModal({
   onSaveResult,
   onSaveRosterOnly,
   onPersistFormation,
+  onOpenRosterReplace,
   actionLoading,
 }: MatchResultModalProps) {
   const [activeSetTab, setActiveSetTab] = useState<number>(0);
@@ -317,6 +319,16 @@ export default function MatchResultModal({
           <Text style={styles.modalSub}>
             터치 1번(🔵 코트) ➔ 터치 2번(⚪ 벤치) ➔ 터치 3번(🪑 미참석) 순으로 전환됩니다.
           </Text>
+          {onOpenRosterReplace ? (
+            <TouchableOpacity
+              style={styles.rosterReplaceBtn}
+              onPress={onOpenRosterReplace}
+              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+              activeOpacity={0.85}
+            >
+              <Text style={styles.rosterReplaceBtnText} numberOfLines={1}>선수 명단 수정</Text>
+            </TouchableOpacity>
+          ) : null}
 
           <ScrollView style={{ maxHeight: 440, marginVertical: 8 }} showsVerticalScrollIndicator={false}>
             {!isRosterOnlyMode && (
@@ -542,6 +554,8 @@ const styles = StyleSheet.create({
 
   formationOpenBtn: { backgroundColor: '#0F172A', borderRadius: 8, paddingHorizontal: 8, paddingVertical: 5 },
   formationOpenText: { fontSize: 10, fontWeight: '800', color: '#38BDF8' },
+  rosterReplaceBtn: { minHeight: 44, marginTop: 8, borderRadius: 10, backgroundColor: '#0F172A', alignItems: 'center', justifyContent: 'center' },
+  rosterReplaceBtnText: { fontSize: 13, fontWeight: '800', color: '#38BDF8', lineHeight: 18, includeFontPadding: false },
   lateArrivalBox: { backgroundColor: '#FEFCE8', borderRadius: 8, padding: 8, borderWidth: 1, borderColor: '#FDE68A', marginTop: 6 },
   lateArrivalTitle: { fontSize: 10, fontWeight: '800', color: '#B45309', marginBottom: 4 },
   searchInput: { backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#FCD34D', borderRadius: 6, paddingHorizontal: 8, paddingVertical: 4, fontSize: 11, marginBottom: 6 },

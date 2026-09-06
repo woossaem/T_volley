@@ -5,7 +5,9 @@ import {
   assignedUserId,
   clampLineCount,
   DEFAULT_LINE_COUNT,
+  displaySlotPlayerName,
   isAnonymousSlotId,
+  isTempSlotId,
   LINE_MAX,
   LINE_MIN,
   lineSlotLabels,
@@ -176,6 +178,7 @@ export default function FormationModal({
   const nameOf = (side: SideKey, id: string | null) => {
     const real = assignedUserId(id);
     if (!real) return '';
+    if (isTempSlotId(real)) return displaySlotPlayerName(real);
     const map = side === 'host' ? hostMemberMap : awayMemberMap;
     return map.get(real)?.full_name || hostMemberMap.get(real)?.full_name || awayMemberMap.get(real)?.full_name || '선수';
   };

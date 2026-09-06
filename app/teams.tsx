@@ -22,6 +22,7 @@ import TeamReportModal, { TeamReportAnalytics } from '../components/TeamReportMo
 import StickyAdBanner from '../components/StickyAdBanner';
 import BatchProposalModal from '../components/BatchProposalModal';
 import { isActiveTeamStatus, isActiveMembership } from '../lib/teamStatus';
+import { isOfficialMatch } from '../lib/officialMatch';
 import {
   resolveTeamName,
   resolveTeamNameOrNull,
@@ -610,7 +611,7 @@ export default function AllTeamsListScreen() {
     const teamName = resolveTeamName(selectedTeamForReport);
     const region = cleanRegionName(selectedTeamForReport.region);
 
-    const teamMatches = allMatches.filter((m: any) => isSameName(m.host_team_name, teamName) || isSameName(m.away_team_name, teamName));
+    const teamMatches = allMatches.filter((m: any) => isOfficialMatch(m) && (isSameName(m.host_team_name, teamName) || isSameName(m.away_team_name, teamName)));
 
     const careerStats = calcStatsForMatches(teamMatches, teamName);
 

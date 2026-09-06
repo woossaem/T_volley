@@ -24,6 +24,7 @@ import { resolveTeamName, extractRow } from '../lib/nameUtils';
 import { isActiveMembership, isActiveTeamStatus } from '../lib/teamStatus';
 import { APP_VERSION } from '../constants/Version'; // 💡 공통 버전 변수 Import
 import { safeIncludes, teamsInclude } from '../lib/roster';
+import { approveRetroTeamClaim, parseRetroClaimPayload } from '../lib/retroactiveBinding';
 
 const MENU_ITEMS = [
   { id: 'matches', emoji: '📅', label: '경기 목록', route: '/matches' },
@@ -699,12 +700,17 @@ export default function HomeScreen() {
               ) : (
                 notifications.map((noti) => {
                   const dateStr = new Date(noti.created_at).toLocaleDateString('ko-KR', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+                  const retroClaim = parseRetroClaimPayload(noti.message);
+                  const displayMessage = retroClaim
+                    ? (noti.message.split('\n').slice(1).join('\n') || noti.message)
+                    : noti.message;
                   
                   const handleNotiClick = () => {
+                    if (retroClaim) return;
                     setShowNotiModal(false);
                     if (noti.title.includes('가입')) {
                       router.push('/teams');
-                    } else if (noti.title.includes('교류전')) {
+                    } else if (noti.title.includes('교류전') || noti.title.includes('소급')) {
                       router.push('/matches');
                     } else if (noti.title.includes('내전')) {
                       router.push('/intramural');
@@ -721,8 +727,38 @@ export default function HomeScreen() {
                       activeOpacity={0.7}
                     >
                       <Text style={styles.notiItemTitle}>{noti.title}</Text>
-                      <Text style={styles.notiItemDesc}>{noti.message}</Text>
+                      <Text style={styles.notiItemDesc}>{displayMessage}</Text>
                       <Text style={styles.notiItemDate}>{dateStr}</Text>
+                      {retroClaim ? (
+                        <View style={styles.retroBtnRow}>
+                          <TouchableOpacity
+                            style={styles.retroApproveBtn}
+                            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                            onPress={async () => {
+                              const result = await approveRetroTeamClaim({ matchId: retroClaim.matchId, approved: true });
+                              if (result.error) {
+                                Alert.alert('알림', result.error.message);
+                                return;
+                              }
+                              Alert.alert('승인 완료', '과거 교류전이 공식 승인되어 랭킹이 업데이트되었습니다.');
+                              setShowNotiModal(false);
+                              router.push('/matches');
+                            }}
+                          >
+                            <Text style={styles.retroApproveText}>승인</Text>
+                          </TouchableOpacity>
+                          <TouchableOpacity
+                            style={styles.retroRejectBtn}
+                            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                            onPress={async () => {
+                              await approveRetroTeamClaim({ matchId: retroClaim.matchId, approved: false });
+                              Alert.alert('거절 완료', '소급 신청을 거절했습니다.');
+                            }}
+                          >
+                            <Text style={styles.retroRejectText}>거절</Text>
+                          </TouchableOpacity>
+                        </View>
+                      ) : null}
                     </TouchableOpacity>
                   );
                 })
@@ -893,6 +929,11 @@ const styles = StyleSheet.create({
   notiItemTitle: { fontSize: 14, fontWeight: '700', color: Colors.text, marginBottom: 4 },
   notiItemDesc: { fontSize: 12, color: '#475569', lineHeight: 16, marginBottom: 4 },
   notiItemDate: { fontSize: 10, color: '#94A3B8', fontWeight: '500', textAlign: 'right' },
+  retroBtnRow: { flexDirection: 'row', justifyContent: 'space-between', gap: 8, marginTop: 8 },
+  retroApproveBtn: { flex: 1, minHeight: 44, borderRadius: 8, backgroundColor: '#16A34A', alignItems: 'center', justifyContent: 'center' },
+  retroApproveText: { color: '#FFFFFF', fontSize: 13, fontWeight: '800', lineHeight: 18, includeFontPadding: false },
+  retroRejectBtn: { flex: 1, minHeight: 44, borderRadius: 8, backgroundColor: '#FEE2E2', alignItems: 'center', justifyContent: 'center' },
+  retroRejectText: { color: '#B91C1C', fontSize: 13, fontWeight: '800', lineHeight: 18, includeFontPadding: false },
   closeBtn: { backgroundColor: '#F1F5F9', paddingVertical: 12, borderRadius: 10, alignItems: 'center', marginTop: 8 },
   closeBtnText: { color: '#475569', fontSize: 14, fontWeight: '700' },
 });
