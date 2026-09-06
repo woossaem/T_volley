@@ -9,9 +9,11 @@ import {
   Alert,
   Modal,
   AppState,
+  StatusBar,
   Platform,
+  ScrollView,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter, useLocalSearchParams, useFocusEffect } from 'expo-router';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
@@ -24,14 +26,15 @@ import PlayerActionModal, { Member, ScoreKind } from '../components/PlayerAction
 import MatchPostgameReportModal from '../components/MatchPostgameReportModal';
 import FormationModal from '../components/FormationModal';
 import { MomentumLevelBar } from '../components/SetFlowGauges';
-import { ANONYMOUS_PLAYER_NAME, clampLineCount, DEFAULT_LINE_COUNT, isAnonymousPlayer, isAnonymousSlotId, listHasUser, makeAnonSlotId, parseSetFormation, parseSetFormationMap, parseSetRosterMap, resolveFormationForSet, safeIncludes, safeNameText, seedNextSetFormation, teamsInclude, type SetFormation } from '../lib/roster';
+import { ANONYMOUS_PLAYER_NAME, clampLineCount, DEFAULT_LINE_COUNT, isAnonymousPlayer, isAnonymousSlotId, listHasUser, makeAnonSlotId, parseSetFormation, parseSetFormationMap, parseSetRosterMap, persistCourtSlots, resolveFormationForSet, resolveFormationFromSources, safeIncludes, safeNameText, seedNextSetFormation, teamsInclude, type SetFormation } from '../lib/roster';
 import { resolveTeamName } from '../lib/nameUtils';
 import {
   MAX_SETS,
   collectClosedSetScores,
   deleteSetAndReindex,
   fetchMatchSets,
-  isBestOfFiveDecided,
+  makeInitialLiveSet,
+  normalizeSetRecords,
   parseRosterJson,
   upsertMatchSets,
   type MatchSetRecord,
@@ -57,6 +60,7 @@ export default function ScoreboardScreen() {
   const matchId = params.matchId;
 
   const { session } = useAuth();
+  const insets = useSafeAreaInsets();
   const currentUserId = session?.user?.id;
   const [currentUserName, setCurrentUserName] = useState<string>('선생님');
 
@@ -96,7 +100,7 @@ export default function ScoreboardScreen() {
   const [pendingDeleteSet, setPendingDeleteSet] = useState<number | null>(null);
   const [pendingDeleteEvent, setPendingDeleteEvent] = useState<MatchEvent | null>(null);
   const [formationVisible, setFormationVisible] = useState(false);
-  const [formationTeam, setFormationTeam] = useState<'host' | 'away'>('host');
+  const [formationTeam] = useState<'host' | 'away'>('host');
 
   const isInitialLoadRef = useRef(true);
   const matchClosedRef = useRef(false);
@@ -244,8 +248,9 @@ export default function ScoreboardScreen() {
         } else setAwayRecorderName('공석');
 
         const snapshot = await fetchMatchSets(matchId);
-        setMatchSets(snapshot.sets);
-        const closed = snapshot.sets.filter((s) => s.isClosed);
+        const loadedSets = normalizeSetRecords(snapshot.sets.length > 0 ? snapshot.sets : [makeInitialLiveSet()]);
+        setMatchSets(loadedSets);
+        const closed = loadedSets.filter((s) => s.isClosed);
         const closedStrs = closed.map((s) => `${s.hostScore}:${s.awayScore}`);
         setSetScoresHistory(closedStrs);
         setHistoryRef.current = closedStrs;
@@ -279,7 +284,7 @@ export default function ScoreboardScreen() {
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'matches', filter: `id=eq.${matchId}` }, async (payload) => {
         const updated = payload.new as MatchRecord;
         setMatch(updated);
-        
+
         if (updated.set_scores) {
           const sets = String(updated.set_scores).split(', ').filter(Boolean);
           setSetScoresHistory(sets);
@@ -397,9 +402,9 @@ export default function ScoreboardScreen() {
       return;
     }
 
-    const isHost = actionTeam === 'host';
-    const newHostScore = isHost ? currentScores.host + 1 : currentScores.host;
-    const newAwayScore = !isHost ? currentScores.away + 1 : currentScores.away;
+    const scoringTeam = actionTeam;
+    const newHostScore = scoringTeam === 'host' ? currentScores.host + 1 : currentScores.host;
+    const newAwayScore = scoringTeam === 'away' ? currentScores.away + 1 : currentScores.away;
     const eventType = kind === 'fault' ? 'fault' : 'score';
     const registered = player && !isAnonymousPlayer(player);
     const savedPlayerId = registered ? player.user_id : null;
@@ -412,7 +417,7 @@ export default function ScoreboardScreen() {
       match_id: matchId,
       set_index: currentSetIndex,
       event_type: eventType,
-      team_type: actionTeam,
+      team_type: scoringTeam,
       player_id: savedPlayerId,
       player_name: savedPlayerName,
       host_score: newHostScore,
@@ -425,7 +430,7 @@ export default function ScoreboardScreen() {
       match_id: matchId,
       set_index: currentSetIndex,
       event_type: eventType,
-      team_type: actionTeam,
+      team_type: scoringTeam,
       player_id: savedPlayerId,
       player_name: savedPlayerName,
       host_score: newHostScore,
@@ -525,8 +530,8 @@ export default function ScoreboardScreen() {
         setNumber: idx + 1,
         hostScore: h || 0,
         awayScore: a || 0,
-        hostLineup: hostF.court.length > 0 ? hostF.court : (hostRoster[idx] || []),
-        awayLineup: awayF.court.length > 0 ? awayF.court : (awayRoster[idx] || []),
+        hostLineup: hostF.court.length > 0 ? persistCourtSlots(hostF.court) : (hostRoster[idx] || []),
+        awayLineup: awayF.court.length > 0 ? persistCourtSlots(awayF.court) : (awayRoster[idx] || []),
         hostBench: hostF.bench || [],
         hostLate: hostF.late || [],
         awayBench: awayF.bench || [],
@@ -549,8 +554,8 @@ export default function ScoreboardScreen() {
           setNumber: liveIdx + 1,
           hostScore: extraLive.host,
           awayScore: extraLive.away,
-          hostLineup: hostF.court.length > 0 ? hostF.court : (hostRoster[liveIdx] || hostRoster[0] || []),
-          awayLineup: awayF.court.length > 0 ? awayF.court : (awayRoster[liveIdx] || awayRoster[0] || []),
+          hostLineup: hostF.court.length > 0 ? persistCourtSlots(hostF.court) : (hostRoster[liveIdx] || hostRoster[0] || []),
+          awayLineup: awayF.court.length > 0 ? persistCourtSlots(awayF.court) : (awayRoster[liveIdx] || awayRoster[0] || []),
           hostBench: hostF.bench || [],
           hostLate: hostF.late || [],
           awayBench: awayF.bench || [],
@@ -565,8 +570,14 @@ export default function ScoreboardScreen() {
         });
       }
     }
-    await upsertMatchSets(matchId, records);
-    setMatchSets(records);
+    const already = records.length;
+    matchSets.slice(already).forEach((s, i) => {
+      if (already + i >= MAX_SETS) return;
+      records.push({ ...s, setNumber: already + i + 1 });
+    });
+    const synced = normalizeSetRecords(records);
+    await upsertMatchSets(matchId, synced);
+    setMatchSets(synced);
   };
 
   const closeLiveSetIntoHistory = (history: string[]) => {
@@ -591,35 +602,85 @@ export default function ScoreboardScreen() {
     recalcScores(events.filter((e) => Number(e.set_index) === idx), idx);
   };
 
-  const visibleSetCount = useMemo(() => {
-    const decided = isBestOfFiveDecided(
-      setHistory.map((s) => {
-        const [h, a] = String(s).split(':').map(Number);
-        return { hostScore: h || 0, awayScore: a || 0 };
-      })
-    );
-    return decided
-      ? Math.max(1, setHistory.length)
-      : Math.min(Math.max(setHistory.length + 1, 1), MAX_SETS);
-  }, [setHistory]);
+  const visibleSets = useMemo(() => {
+    const rows = matchSets.length > 0 ? matchSets : [makeInitialLiveSet()];
+    return normalizeSetRecords(rows).slice(0, MAX_SETS);
+  }, [matchSets]);
 
-  const handleRequestDeleteSet = (idx: number) => {
+  const handleAddSet = async () => {
+    if (myRole === 'spectator' || !matchId) return;
+    const normalized = normalizeSetRecords(matchSets.length > 0 ? matchSets : [makeInitialLiveSet()]);
+    if (normalized.length >= MAX_SETS) {
+      Alert.alert('알림', `최대 ${MAX_SETS}세트까지 추가할 수 있습니다.`);
+      return;
+    }
+    setActionLoading(true);
+    try {
+      const fromIdx = Math.max(0, normalized.length - 1);
+      const hostCarried = seedNextSetFormation(parseSetFormationMap(match?.host_roster), fromIdx, true);
+      const awayCarried = seedNextSetFormation(parseSetFormationMap(match?.away_roster), fromIdx, true);
+      const nextIdx = normalized.length;
+      const hostF = resolveFormationForSet(hostCarried, nextIdx);
+      const awayF = resolveFormationForSet(awayCarried, nextIdx);
+      const nextSet: MatchSetRecord = {
+        setNumber: nextIdx + 1,
+        hostScore: 0,
+        awayScore: 0,
+        hostLineup: hostF.court.length > 0 ? persistCourtSlots(hostF.court) : [],
+        awayLineup: awayF.court.length > 0 ? persistCourtSlots(awayF.court) : [],
+        hostBench: hostF.bench || [],
+        hostLate: hostF.late || [],
+        awayBench: awayF.bench || [],
+        awayLate: awayF.late || [],
+        hostFrontCount: hostF.frontCount,
+        hostMiddleCount: hostF.middleCount,
+        hostBackCount: hostF.backCount,
+        awayFrontCount: awayF.frontCount,
+        awayMiddleCount: awayF.middleCount,
+        awayBackCount: awayF.backCount,
+        isClosed: false,
+      };
+      const nextSets = [...normalized, nextSet];
+      setMatch((prev) => prev ? {
+        ...prev,
+        host_roster: JSON.stringify(hostCarried),
+        away_roster: JSON.stringify(awayCarried),
+      } : prev);
+      setMatchSets(nextSets);
+      await upsertMatchSets(matchId, nextSets);
+      setCurrentSetIndex(nextIdx);
+      currentSetIndexRef.current = nextIdx;
+      setCurrentScores({ host: 0, away: 0 });
+      resetSetUiState();
+    } catch (e: any) {
+      Alert.alert('오류', e?.message || '세트 추가에 실패했습니다.');
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const handleRequestDeleteSet = (targetSetNumber: number) => {
     if (myRole === 'spectator') return;
-    setPendingDeleteSet(idx);
+    setPendingDeleteSet(targetSetNumber);
   };
 
   const handleConfirmDeleteSet = async () => {
-    const idx = pendingDeleteSet;
+    const targetSetNumber = pendingDeleteSet;
     setPendingDeleteSet(null);
-    if (idx == null || !matchId) return;
+    if (targetSetNumber == null || !matchId) return;
     setActionLoading(true);
     try {
-      const remainingSets = await deleteSetAndReindex(matchId, idx);
-      setMatchSets(remainingSets);
-      const nextHistory = remainingSets.filter((s) => s.isClosed).map((s) => `${s.hostScore}:${s.awayScore}`);
+      const remainingSets = await deleteSetAndReindex(matchId, targetSetNumber);
+      const updatedSets = normalizeSetRecords(
+        remainingSets.length > 0 ? remainingSets : [makeInitialLiveSet()]
+      );
+      setMatchSets(updatedSets);
+      await upsertMatchSets(matchId, updatedSets);
+      const nextHistory = updatedSets.filter((s) => s.isClosed).map((s) => `${s.hostScore}:${s.awayScore}`);
+      const removedIndex = targetSetNumber - 1;
       const remainingEvents = events
-        .filter((e) => Number(e.set_index) !== idx)
-        .map((e) => Number(e.set_index) > idx ? { ...e, set_index: Number(e.set_index) - 1 } : e);
+        .filter((e) => Number(e.set_index) !== removedIndex)
+        .map((e) => Number(e.set_index) > removedIndex ? { ...e, set_index: Number(e.set_index) - 1 } : e);
       setEvents(remainingEvents);
       setSetScoresHistory(nextHistory);
       setHistoryRef.current = nextHistory;
@@ -630,8 +691,8 @@ export default function ScoreboardScreen() {
         const next: { [k: number]: SetFormation } = {};
         Object.keys(form).forEach((key) => {
           const n = Number(key);
-          if (n === idx) return;
-          next[n > idx ? n - 1 : n] = form[n];
+          if (n === removedIndex) return;
+          next[n > removedIndex ? n - 1 : n] = form[n];
         });
         return next;
       };
@@ -644,7 +705,7 @@ export default function ScoreboardScreen() {
         away_roster: JSON.stringify(nextAwayForm),
       } : prev);
 
-      const nextIdx = Math.max(0, Math.min(idx > 0 ? idx - 1 : 0, Math.max(0, remainingSets.length - 1)));
+      const nextIdx = Math.max(0, Math.min(removedIndex > 0 ? removedIndex - 1 : 0, Math.max(0, updatedSets.length - 1)));
       setCurrentSetIndex(nextIdx);
       currentSetIndexRef.current = nextIdx;
       recalcScores(remainingEvents, nextIdx);
@@ -707,22 +768,14 @@ export default function ScoreboardScreen() {
           text: '세트 마감', onPress: async () => {
             setActionLoading(true);
             try {
-              const parseHistory = (rows: string[]) => rows.map((s) => {
-                const [h, a] = String(s).split(':').map(Number);
-                return { hostScore: h || 0, awayScore: a || 0 };
-              });
-
               let updatedHistory = [...setHistory];
               if (currentSetIndex < updatedHistory.length) {
                 updatedHistory[currentSetIndex] = `${currentScores.host}:${currentScores.away}`;
-              } else if (!isBestOfFiveDecided(parseHistory(updatedHistory))) {
-                updatedHistory.push(`${currentScores.host}:${currentScores.away}`);
               } else {
-                return;
+                updatedHistory.push(`${currentScores.host}:${currentScores.away}`);
               }
 
-              const decided = isBestOfFiveDecided(parseHistory(updatedHistory));
-              const canAdvance = !decided && updatedHistory.length < MAX_SETS;
+              const canAdvance = updatedHistory.length < MAX_SETS;
               const hostCarried = seedNextSetFormation(parseSetFormationMap(match?.host_roster), currentSetIndex, true);
               const awayCarried = seedNextSetFormation(parseSetFormationMap(match?.away_roster), currentSetIndex, true);
               setMatch((prev) => prev ? {
@@ -904,14 +957,20 @@ export default function ScoreboardScreen() {
     const rosterRaw = isHost ? match?.host_roster : match?.away_roster;
     const side = isHost ? 'host' : 'away';
     const baseMembers = isHost || isIntramural ? hostMembers : awayMembers;
-    const formation = parseSetFormation(rosterRaw, currentSetIndex);
+    const setRow = matchSets[currentSetIndex];
+    const formation = resolveFormationFromSources(
+      rosterRaw,
+      currentSetIndex,
+      isHost ? setRow?.hostLineup : setRow?.awayLineup,
+      isHost
+        ? { bench: setRow?.hostBench, late: setRow?.hostLate, frontCount: setRow?.hostFrontCount, middleCount: setRow?.hostMiddleCount, backCount: setRow?.hostBackCount }
+        : { bench: setRow?.awayBench, late: setRow?.awayLate, frontCount: setRow?.awayFrontCount, middleCount: setRow?.awayMiddleCount, backCount: setRow?.awayBackCount },
+    );
     const frontCount = clampLineCount(formation.frontCount, DEFAULT_LINE_COUNT);
     const middleCount = clampLineCount(formation.middleCount, DEFAULT_LINE_COUNT);
     const backCount = clampLineCount(formation.backCount, DEFAULT_LINE_COUNT);
     const slotTotal = frontCount + middleCount + backCount;
-    const rawCourt = formation.court.length > 0
-      ? formation.court
-      : (parseSetRosterMap(rosterRaw)[currentSetIndex] || parseSetRosterMap(rosterRaw)[0] || []);
+    const rawCourt = formation.court || [];
     const benchIds = formation.bench || [];
     const lateIds = formation.late || [];
 
@@ -932,9 +991,8 @@ export default function ScoreboardScreen() {
     return { court, bench, late: baseMembers.filter((m) => listHasUser(lateIds, m.user_id)), formation };
   };
 
-  const openFormation = (team: 'host' | 'away') => {
+  const openFormation = () => {
     if (myRole === 'spectator') return;
-    setFormationTeam(team);
     setFormationVisible(true);
   };
 
@@ -973,6 +1031,42 @@ export default function ScoreboardScreen() {
     }
   };
 
+  const handleSaveDualFormation = async (hostFormation: SetFormation, awayFormation: SetFormation) => {
+    const hostCarried = seedNextSetFormation(
+      { ...parseSetFormationMap(match?.host_roster), [currentSetIndex]: hostFormation },
+      currentSetIndex,
+      true,
+    );
+    const awayCarried = seedNextSetFormation(
+      { ...parseSetFormationMap(match?.away_roster), [currentSetIndex]: awayFormation },
+      currentSetIndex,
+      true,
+    );
+    const hostJson = JSON.stringify(hostCarried);
+    const awayJson = JSON.stringify(awayCarried);
+    setMatch((prev) => prev ? { ...prev, host_roster: hostJson, away_roster: awayJson } : prev);
+    setFormationVisible(false);
+    await supabase.from('matches').update({ host_roster: hostJson, away_roster: awayJson }).eq('id', matchId);
+    await persistSetsFromHistory(
+      setHistory,
+      currentSetIndex >= setHistory.length ? { host: currentScores.host, away: currentScores.away } : null,
+      {
+        host: parseRosterJson(hostJson),
+        away: parseRosterJson(awayJson),
+      },
+      { host: hostCarried, away: awayCarried },
+    );
+    const notifyTeam = resolveTeamName(match?.host_team_name, displayHostName);
+    if (notifyTeam) {
+      await sendNotificationToTeam(
+        notifyTeam,
+        '[팀 라인업 작성]',
+        `'${currentUserName} 선생님'이 라인업을 등록했습니다`,
+        currentUserId,
+      );
+    }
+  };
+
   const isHostMaster = match?.recorder_host_id && !match?.recorder_away_id;
   const isAwayMaster = !match?.recorder_host_id && match?.recorder_away_id;
   const masterName = isHostMaster ? hostRecorderName : awayRecorderName;
@@ -990,9 +1084,22 @@ export default function ScoreboardScreen() {
   const actionRoster = actionTeam === 'host' ? hostRosterView : awayRosterView;
   const opponentRoster = actionTeam === 'host' ? awayRosterView : hostRosterView;
   const liveSetEvents = events.filter((e) => Number(e.set_index) === currentSetIndex);
+  const currentSetRow = matchSets[currentSetIndex];
+  const hostFormationInitial = resolveFormationFromSources(
+    match?.host_roster,
+    currentSetIndex,
+    currentSetRow?.hostLineup,
+    { bench: currentSetRow?.hostBench, late: currentSetRow?.hostLate, frontCount: currentSetRow?.hostFrontCount, middleCount: currentSetRow?.hostMiddleCount, backCount: currentSetRow?.hostBackCount },
+  );
+  const awayFormationInitial = resolveFormationFromSources(
+    match?.away_roster,
+    currentSetIndex,
+    currentSetRow?.awayLineup,
+    { bench: currentSetRow?.awayBench, late: currentSetRow?.awayLate, frontCount: currentSetRow?.awayFrontCount, middleCount: currentSetRow?.awayMiddleCount, backCount: currentSetRow?.awayBackCount },
+  );
 
   return (
-    <SafeAreaView style={styles.container} edges={['top', 'left', 'right', 'bottom']}>
+    <SafeAreaView style={styles.container} edges={['bottom']}>
       <Modal visible={roleModalVisible && myRole === null} animationType="fade" transparent={true}>
         <View style={styles.modalOverlay}>
           <View style={styles.roleModalContent}>
@@ -1057,32 +1164,38 @@ export default function ScoreboardScreen() {
         </View>
       </Modal>
 
-      <View style={styles.headerBlock}>
+      <View style={[styles.headerBlock, { paddingLeft: Math.max(insets.left, 8), paddingRight: Math.max(insets.right, 8) }]}>
         <View style={styles.headerSlim}>
           <View style={styles.headerSlimLeft}>
             <TouchableOpacity style={styles.backBtnSlim} onPress={() => router.back()} hitSlop={10}>
               <Text style={styles.backTextSlim}>‹</Text>
             </TouchableOpacity>
 
-            <View style={styles.setTabNavRow}>
-              {Array.from({ length: visibleSetCount }).map((_, idx) => {
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              style={styles.setTabScroll}
+              contentContainerStyle={styles.setTabNavRow}
+            >
+              {visibleSets.map((setRow, mapIdx) => {
+                const idx = mapIdx;
                 const isCurrent = idx === currentSetIndex;
                 return (
-                  <View key={idx} style={[styles.setNavPill, isCurrent && styles.setNavPillActive]}>
+                  <View key={`set-tab-${idx}`} style={[styles.setNavPill, isCurrent && styles.setNavPillActive]}>
                     <TouchableOpacity
                       onPress={() => changeCurrentSet(idx)}
-                      onLongPress={() => handleRequestDeleteSet(idx)}
+                      onLongPress={() => handleRequestDeleteSet(idx + 1)}
                       delayLongPress={380}
                       style={styles.setNavPillHit}
                     >
                       <Text style={[styles.setNavPillText, isCurrent && styles.setNavPillTextActive]}>
-                        {idx + 1}세트 {isCurrent ? '(LIVE)' : ''}
+                        {idx + 1}세트
                       </Text>
                     </TouchableOpacity>
                     {myRole !== 'spectator' ? (
                       <TouchableOpacity
                         style={styles.setNavClose}
-                        onPress={() => handleRequestDeleteSet(idx)}
+                        onPress={() => handleRequestDeleteSet(idx + 1)}
                         hitSlop={8}
                       >
                         <Text style={styles.setNavCloseText}>×</Text>
@@ -1091,129 +1204,135 @@ export default function ScoreboardScreen() {
                   </View>
                 );
               })}
-            </View>
+              {myRole !== 'spectator' && visibleSets.length < MAX_SETS ? (
+                <TouchableOpacity style={styles.setNavAdd} onPress={handleAddSet} disabled={actionLoading}>
+                  <Text style={styles.setNavAddText}>+</Text>
+                </TouchableOpacity>
+              ) : null}
+            </ScrollView>
           </View>
 
           <View style={styles.headerSlimRight}>
-            {events.length > 0 && (
-              <TouchableOpacity style={styles.reportBtnSlim} onPress={() => setReportModalVisible(true)}>
-                <Text style={styles.reportBtnTextSlim}>📊</Text>
-              </TouchableOpacity>
-            )}
-
+            <Text style={styles.recorderLine} numberOfLines={1}>{recorderLine}</Text>
             {myRole !== 'spectator' && (
               <TouchableOpacity style={styles.leaveRoleBtnSlim} onPress={handleLeaveRole}>
                 <Text style={styles.leaveRoleBtnTextSlim}>반납</Text>
               </TouchableOpacity>
             )}
+            {events.length > 0 && (
+              <TouchableOpacity style={styles.reportBtnSlim} onPress={() => setReportModalVisible(true)}>
+                <Text style={styles.reportBtnTextSlim}>📊 경기 리포트</Text>
+              </TouchableOpacity>
+            )}
             <TouchableOpacity style={styles.switchCourtBtnSlim} onPress={() => setIsSwapped(prev => !prev)}>
-              <Text style={styles.switchCourtBtnTextSlim}>🔄</Text>
+              <Text style={styles.switchCourtBtnTextSlim}>🔄 코트 변경</Text>
             </TouchableOpacity>
-            <Text style={styles.recorderLine} numberOfLines={1}>{recorderLine}</Text>
           </View>
         </View>
       </View>
 
       <View style={styles.scoreboardMainGrid}>
         <View style={[styles.teamCourtHalf, leftTeamData.isHost ? styles.hostCourtBg : styles.awayCourtBg]}>
-          <View style={styles.courtTopRow}>
-            <Text style={styles.courtTeamName} numberOfLines={1}>{leftTeamData.name}</Text>
-            {leftTeamData.canControl && (
-              <View style={styles.stackedUtilityBtns}>
-                <TouchableOpacity style={styles.glassBtnCompact} onPress={() => handleOpenEditModal()}>
-                  <Text style={styles.glassBtnText}>✏️ 점수 보정</Text>
-                </TouchableOpacity>
-                <TouchableOpacity style={styles.glassBtnCompact} onPress={() => openFormation(leftTeamData.key)}>
-                  <Text style={styles.glassBtnText}>📐 포메이션</Text>
-                </TouchableOpacity>
-                <TouchableOpacity style={styles.glassBtnCompact} onPress={() => openActionModal(leftTeamData.key, 'sub')}>
-                  <Text style={styles.glassBtnText}>🔄 선수 교체</Text>
-                </TouchableOpacity>
-              </View>
-            )}
-          </View>
+          <Text style={[styles.courtTeamName, { left: Math.max(insets.left + 8, 12) }]} numberOfLines={1}>
+            {leftTeamData.name}
+          </Text>
+          {leftTeamData.canControl && (
+            <View style={[styles.stackedUtilityBtns, styles.floatBtnsA]}>
+              <TouchableOpacity style={styles.glassBtnCompact} onPress={() => handleOpenEditModal()}>
+                <Text style={styles.glassBtnText}>✏️ 점수 보정</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.glassBtnCompact} onPress={openFormation}>
+                <Text style={styles.glassBtnText}>📐 포메이션</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.glassBtnCompact} onPress={() => openActionModal(leftTeamData.key, 'sub')}>
+                <Text style={styles.glassBtnText}>🔄 선수 교체</Text>
+              </TouchableOpacity>
+            </View>
+          )}
           <TouchableOpacity 
             style={styles.bigScoreTouchArea} 
             onPress={() => { if (leftTeamData.canControl) openActionModal(leftTeamData.key, 'score'); }} 
             disabled={!leftTeamData.canControl}
             activeOpacity={0.8}
           >
-            <Text style={styles.bigScoreNumber}>{leftTeamData.score}</Text>
-            {leftTeamData.canControl ? (
-              <Text style={styles.editHintText}>터치하여 +1점 득점</Text>
-            ) : (
-              <Text style={styles.spectatorHintText}>👁️ 관전 모드 (점수 확인)</Text>
-            )}
+            <View style={styles.scoreCenterWrap}>
+              <Text style={styles.bigScoreNumber}>{leftTeamData.score}</Text>
+              {leftTeamData.canControl ? (
+                <Text style={styles.editHintText}>터치하여 +1점 득점</Text>
+              ) : (
+                <Text style={styles.spectatorHintText}>👁️ 관전 모드 (점수 확인)</Text>
+              )}
+            </View>
           </TouchableOpacity>
         </View>
 
-        <View style={styles.centerDividerLine} />
-
         <View style={[styles.teamCourtHalf, rightTeamData.isHost ? styles.hostCourtBg : styles.awayCourtBg]}>
-          <View style={styles.courtTopRow}>
-            <Text style={styles.courtTeamName} numberOfLines={1}>{rightTeamData.name}</Text>
-            {rightTeamData.canControl && (
-              <View style={styles.stackedUtilityBtns}>
-                <TouchableOpacity style={styles.glassBtnCompact} onPress={() => handleOpenEditModal()}>
-                  <Text style={styles.glassBtnText}>✏️ 점수 보정</Text>
-                </TouchableOpacity>
-                <TouchableOpacity style={styles.glassBtnCompact} onPress={() => openFormation(rightTeamData.key)}>
-                  <Text style={styles.glassBtnText}>📐 포메이션</Text>
-                </TouchableOpacity>
-                <TouchableOpacity style={styles.glassBtnCompact} onPress={() => openActionModal(rightTeamData.key, 'sub')}>
-                  <Text style={styles.glassBtnText}>🔄 선수 교체</Text>
-                </TouchableOpacity>
-              </View>
-            )}
-          </View>
+          {rightTeamData.canControl && (
+            <View style={[styles.stackedUtilityBtns, styles.floatBtnsB]}>
+              <TouchableOpacity style={styles.glassBtnCompact} onPress={() => handleOpenEditModal()}>
+                <Text style={styles.glassBtnText}>✏️ 점수 보정</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.glassBtnCompact} onPress={openFormation}>
+                <Text style={styles.glassBtnText}>📐 포메이션</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.glassBtnCompact} onPress={() => openActionModal(rightTeamData.key, 'sub')}>
+                <Text style={styles.glassBtnText}>🔄 선수 교체</Text>
+              </TouchableOpacity>
+            </View>
+          )}
+          <Text style={[styles.courtTeamName, { right: Math.max(insets.right + 8, 12) }]} numberOfLines={1}>
+            {rightTeamData.name}
+          </Text>
           <TouchableOpacity 
             style={styles.bigScoreTouchArea} 
             onPress={() => { if (rightTeamData.canControl) openActionModal(rightTeamData.key, 'score'); }} 
             disabled={!rightTeamData.canControl}
             activeOpacity={0.8}
           >
-            <Text style={styles.bigScoreNumber}>{rightTeamData.score}</Text>
-            {rightTeamData.canControl ? (
-              <Text style={styles.editHintText}>터치하여 +1점 득점</Text>
-            ) : (
-              <Text style={styles.spectatorHintText}>👁️ 관전 모드 (점수 확인)</Text>
-            )}
+            <View style={styles.scoreCenterWrap}>
+              <Text style={styles.bigScoreNumber}>{rightTeamData.score}</Text>
+              {rightTeamData.canControl ? (
+                <Text style={styles.editHintText}>터치하여 +1점 득점</Text>
+              ) : (
+                <Text style={styles.spectatorHintText}>👁️ 관전 모드 (점수 확인)</Text>
+              )}
+            </View>
           </TouchableOpacity>
         </View>
       </View>
 
-      <View style={styles.bottomControlBar}>
-        <View style={styles.bottomFlowCol}>
-          <View style={styles.momentumRow}>
-            <MomentumLevelBar events={liveSetEvents} />
-          </View>
-          <View style={styles.timelineChipRow}>
-            <ScoreTimeline
-              key={`live-set-${currentSetIndex}-${timelineEpoch}`}
-              events={liveSetEvents}
-              canControl={myRole !== 'spectator'}
-              displayHostName={displayHostName}
-              displayAwayName={displayAwayName}
-              currentSetIndex={currentSetIndex}
-              compact
-              onPressEvent={handlePressTimelineEvent}
-            />
-          </View>
+      <View style={styles.footerStack}>
+      <View style={[styles.momentumRow, { paddingLeft: Math.max(insets.left, 8), paddingRight: Math.max(insets.right, 8) }]}>
+        <MomentumLevelBar events={liveSetEvents} />
+      </View>
+
+      <View style={[styles.bottomControlBar, { paddingLeft: Math.max(insets.left, 8), paddingRight: Math.max(insets.right, 8) }]}>
+        <View style={styles.timelineChipRow}>
+          <ScoreTimeline
+            key={`live-set-${currentSetIndex}-${timelineEpoch}`}
+            events={liveSetEvents}
+            canControl={myRole !== 'spectator'}
+            displayHostName={displayHostName}
+            displayAwayName={displayAwayName}
+            currentSetIndex={currentSetIndex}
+            onPressEvent={handlePressTimelineEvent}
+          />
         </View>
 
         {myRole !== 'spectator' && (
           <View style={styles.actionButtonsArea}>
             <TouchableOpacity style={styles.undoBtn} onPress={handleUndoEvent}>
-              <Text style={styles.undoBtnText} numberOfLines={1}>↺ 취소</Text>
+              <Text style={styles.undoBtnText} numberOfLines={1}>취소</Text>
             </TouchableOpacity>
             <TouchableOpacity style={styles.finishSetBtn} onPress={handleFinishSet}>
-              <Text style={styles.finishSetBtnText} numberOfLines={1}>🏁 세트마감</Text>
+              <Text style={styles.finishSetBtnText} numberOfLines={1}>세트마감</Text>
             </TouchableOpacity>
             <TouchableOpacity style={styles.finishMatchBtn} onPress={handleOpenFinishMatch}>
-              <Text style={styles.finishMatchBtnText} numberOfLines={1}>🏆 경기종료</Text>
+              <Text style={styles.finishMatchBtnText} numberOfLines={1}>경기종료</Text>
             </TouchableOpacity>
           </View>
         )}
+      </View>
       </View>
 
       <PlayerActionModal
@@ -1221,6 +1340,7 @@ export default function ScoreboardScreen() {
         mode={actionMode}
         teamName={actionTeam === 'host' ? displayHostName : displayAwayName}
         opponentTeamName={actionTeam === 'host' ? displayAwayName : displayHostName}
+        boardSide={actionTeam === leftTeamData.key ? 'left' : 'right'}
         courtMembers={actionRoster.court}
         benchMembers={actionRoster.bench}
         opponentCourtMembers={opponentRoster.court}
@@ -1243,9 +1363,23 @@ export default function ScoreboardScreen() {
         visible={formationVisible}
         teamName={formationTeam === 'host' ? displayHostName : displayAwayName}
         members={formationTeam === 'host' || isIntramural ? hostMembers : awayMembers}
-        initial={parseSetFormation(formationTeam === 'host' ? match?.host_roster : match?.away_roster, currentSetIndex)}
+        initial={formationTeam === 'host' ? hostFormationInitial : awayFormationInitial}
         onClose={() => setFormationVisible(false)}
         onSave={handleSaveFormation}
+        isSingleRecorder={isSingleRecorderMode}
+        hostSide={{
+          teamName: displayHostName,
+          members: hostMembers,
+          initial: hostFormationInitial,
+          canEdit: canControlHost && myRole !== 'spectator',
+        }}
+        awaySide={{
+          teamName: displayAwayName,
+          members: isIntramural ? hostMembers : awayMembers,
+          initial: awayFormationInitial,
+          canEdit: canControlAway && myRole !== 'spectator',
+        }}
+        onSaveDual={handleSaveDualFormation}
       />
 
       <Modal visible={editModalVisible} animationType="fade" transparent={true}>
@@ -1308,7 +1442,7 @@ export default function ScoreboardScreen() {
           <View style={styles.modalContent}>
             <Text style={styles.modalTitle}>세트 삭제</Text>
             <Text style={styles.modalSub}>
-              {pendingDeleteSet !== null ? `${pendingDeleteSet + 1}세트를 삭제하시겠습니까?` : ''}
+              {pendingDeleteSet !== null ? `${pendingDeleteSet}세트를 삭제하시겠습니까?` : ''}
             </Text>
             <Text style={styles.modalWarn}>해당 세트의 타임라인 기록이 함께 삭제되고, 이후 세트 번호가 당겨집니다.</Text>
             <View style={styles.modalBtnRow}>
@@ -1383,15 +1517,23 @@ export default function ScoreboardScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#020617' },
+  container: {
+    flex: 1,
+    backgroundColor: '#020617',
+    overflow: 'hidden',
+    paddingTop: Platform.OS === 'android' ? (StatusBar.currentHeight || 0) + 2 : 0,
+  },
   loadingContainer: { flex: 1, backgroundColor: '#020617', justifyContent: 'center', alignItems: 'center' },
   loadingText: { color: '#94A3B8', marginTop: 12, fontSize: 13, fontWeight: '700' },
-  headerBlock: { backgroundColor: '#0F172A', borderBottomWidth: 1, borderBottomColor: '#1E293B' },
-  headerSlim: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 10, paddingTop: 1, paddingBottom: 1 },
+  headerBlock: { height: 38, flexShrink: 0, backgroundColor: '#0F172A', borderBottomWidth: 1, borderBottomColor: '#1E293B' },
+  headerSlim: { height: 38, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 10, paddingTop: 0, paddingBottom: 0 },
   headerSlimLeft: { flexDirection: 'row', alignItems: 'center', gap: 6, flex: 1, minWidth: 0 },
   backBtnSlim: { width: 24, height: 24, justifyContent: 'center', alignItems: 'center' },
   backTextSlim: { fontSize: 26, color: '#FFFFFF', lineHeight: 26 },
-  setTabNavRow: { flexDirection: 'row', gap: 4, alignItems: 'center' },
+  setTabScroll: { flexGrow: 0, flexShrink: 1 },
+  setTabNavRow: { flexDirection: 'row', gap: 4, alignItems: 'center', paddingRight: 4 },
+  setNavAdd: { width: 22, height: 22, borderRadius: 4, backgroundColor: '#1E293B', borderWidth: 1, borderColor: '#38BDF8', alignItems: 'center', justifyContent: 'center' },
+  setNavAddText: { color: '#38BDF8', fontSize: 15, fontWeight: '900', lineHeight: 16 },
   setNavPill: { flexDirection: 'row', alignItems: 'center', paddingLeft: 6, paddingRight: 2, paddingVertical: 2, borderRadius: 4, backgroundColor: '#1E293B' },
   setNavPillActive: { backgroundColor: '#2563EB' },
   setNavPillHit: { paddingVertical: 2, paddingRight: 2 },
@@ -1399,39 +1541,63 @@ const styles = StyleSheet.create({
   setNavPillTextActive: { color: '#FFFFFF', fontWeight: '900' },
   setNavClose: { width: 16, height: 16, borderRadius: 8, alignItems: 'center', justifyContent: 'center', marginLeft: 2 },
   setNavCloseText: { color: '#FCA5A5', fontSize: 13, fontWeight: '900', lineHeight: 14 },
-  recorderLine: { fontSize: 11, color: '#E2E8F0', fontWeight: '800', textAlign: 'right', marginLeft: 6, flexShrink: 1 },
-  headerSlimRight: { flexDirection: 'row', gap: 4, flexShrink: 0, justifyContent: 'flex-end', alignItems: 'center', paddingVertical: 0 },
-  reportBtnSlim: { backgroundColor: '#FEFCE8', paddingHorizontal: 6, paddingVertical: 4, borderRadius: 6, borderWidth: 1, borderColor: '#FDE047' },
+  recorderLine: { fontSize: 11, color: '#E2E8F0', fontWeight: '800', textAlign: 'left', marginRight: 6, flexShrink: 1 },
+  headerSlimRight: { flexDirection: 'row', gap: 4, flexShrink: 1, minWidth: 0, justifyContent: 'flex-end', alignItems: 'center', paddingVertical: 0 },
+  reportBtnSlim: { backgroundColor: '#FEFCE8', paddingHorizontal: 6, paddingVertical: 3, borderRadius: 6, borderWidth: 1, borderColor: '#FDE047' },
   reportBtnTextSlim: { color: '#A16207', fontWeight: '800', fontSize: 10.5 },
-  leaveRoleBtnSlim: { backgroundColor: '#FEF2F2', paddingHorizontal: 6, paddingVertical: 4, borderRadius: 6, borderWidth: 1, borderColor: '#FECACA' },
+  leaveRoleBtnSlim: { backgroundColor: '#FEF2F2', paddingHorizontal: 6, paddingVertical: 3, borderRadius: 6, borderWidth: 1, borderColor: '#FECACA' },
   leaveRoleBtnTextSlim: { color: '#DC2626', fontWeight: '800', fontSize: 10.5 },
-  switchCourtBtnSlim: { backgroundColor: '#1E293B', paddingHorizontal: 6, paddingVertical: 4, borderRadius: 6, borderWidth: 1, borderColor: '#334155' },
-  switchCourtBtnTextSlim: { color: '#38BDF8', fontWeight: '800', fontSize: 10.5 },
-  scoreboardMainGrid: { flex: 1, flexDirection: 'row', backgroundColor: '#020617' },
-  teamCourtHalf: { flex: 1, paddingHorizontal: 12, paddingTop: 14, paddingBottom: 10, justifyContent: 'space-between' },
+  switchCourtBtnSlim: { paddingHorizontal: 10, paddingVertical: 6, backgroundColor: '#F1F5F9', borderRadius: 8 },
+  switchCourtBtnTextSlim: { color: '#334155', fontWeight: '800', fontSize: 11 },
+  scoreboardMainGrid: { flex: 1, minHeight: 160, flexDirection: 'row', width: '100%', backgroundColor: '#020617' },
+  teamCourtHalf: { flex: 1, minWidth: 0, position: 'relative', padding: 0, margin: 0 },
   hostCourtBg: { backgroundColor: '#0284C7' },
   awayCourtBg: { backgroundColor: '#BE123C' },
-  centerDividerLine: { width: 2, backgroundColor: '#1E293B' },
-  courtTopRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', width: '100%', zIndex: 10 },
-  courtTeamName: { fontSize: 22, fontWeight: '900', color: '#FFFFFF', letterSpacing: -0.5, marginTop: 2 },
-  stackedUtilityBtns: { flexDirection: 'column', gap: 4, alignItems: 'flex-end' },
-  glassBtnCompact: { backgroundColor: 'rgba(0, 0, 0, 0.25)', paddingHorizontal: 10, paddingVertical: 5, borderRadius: 12, borderWidth: 1, borderColor: 'rgba(255, 255, 255, 0.2)', alignItems: 'center' },
+  courtTeamName: {
+    position: 'absolute',
+    top: 8,
+    zIndex: 12,
+    maxWidth: '42%',
+    fontSize: 16,
+    fontWeight: '900',
+    color: '#FFFFFF',
+    letterSpacing: -0.5,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 8,
+    backgroundColor: 'rgba(0, 0, 0, 0.22)',
+    overflow: 'hidden',
+  },
+  stackedUtilityBtns: { flexDirection: 'column', gap: 3, justifyContent: 'flex-start', flexShrink: 0, zIndex: 12 },
+  floatBtnsA: { position: 'absolute', top: 8, right: 8, alignItems: 'flex-end' },
+  floatBtnsB: { position: 'absolute', top: 8, left: 8, alignItems: 'flex-start' },
+  glassBtnCompact: { backgroundColor: 'rgba(0, 0, 0, 0.25)', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 8, borderWidth: 1, borderColor: 'rgba(255, 255, 255, 0.2)', alignItems: 'center', flexShrink: 0 },
   glassBtnText: { color: '#FFFFFF', fontSize: 11, fontWeight: '800' },
-  bigScoreTouchArea: { flex: 1, justifyContent: 'center', alignItems: 'center', paddingTop: Platform.OS === 'ios' ? 18 : 10, width: '100%' },
-  bigScoreNumber: { fontSize: 148, fontWeight: '900', color: '#FFFFFF', letterSpacing: -5, lineHeight: 152, includeFontPadding: false },
-  editHintText: { fontSize: 12, color: 'rgba(255, 255, 255, 0.85)', fontWeight: '800', marginTop: -5 },
-  spectatorHintText: { fontSize: 11, color: 'rgba(255, 255, 255, 0.5)', fontWeight: '700', marginTop: -5 },
-  bottomControlBar: { flexDirection: 'row', paddingHorizontal: 8, paddingVertical: 6, backgroundColor: '#0F172A', borderTopWidth: 1, borderTopColor: '#1E293B', alignItems: 'stretch', flexShrink: 0 },
-  bottomFlowCol: { flex: 1, minWidth: 0, justifyContent: 'center', gap: 4 },
-  momentumRow: { height: 18, flexShrink: 0 },
-  timelineChipRow: { height: 36, flexShrink: 0, overflow: 'hidden' },
-  actionButtonsArea: { flexDirection: 'column', gap: 6, flexShrink: 0, flexGrow: 0, justifyContent: 'center', paddingHorizontal: 10, paddingLeft: 10, borderLeftWidth: 1, borderLeftColor: '#1E293B', backgroundColor: '#0F172A', zIndex: 4 },
-  undoBtn: { backgroundColor: '#334155', paddingHorizontal: 12, paddingVertical: 8, borderRadius: 8, alignItems: 'center', borderWidth: 1, borderColor: '#475569', flexShrink: 0 },
-  undoBtnText: { color: '#F8FAFC', fontSize: 12, fontWeight: '800' },
-  finishSetBtn: { backgroundColor: '#2563EB', paddingHorizontal: 12, paddingVertical: 8, borderRadius: 8, alignItems: 'center', flexShrink: 0 },
-  finishSetBtnText: { color: '#FFFFFF', fontSize: 12, fontWeight: '900' },
-  finishMatchBtn: { backgroundColor: '#9333EA', paddingHorizontal: 12, paddingVertical: 8, borderRadius: 8, alignItems: 'center', flexShrink: 0 },
-  finishMatchBtnText: { color: '#FFFFFF', fontSize: 12, fontWeight: '900' },
+  bigScoreTouchArea: { flex: 1, width: '100%', padding: 0, margin: 0, justifyContent: 'center', alignItems: 'center' },
+  scoreCenterWrap: { flex: 1, justifyContent: 'center', alignItems: 'center', margin: 0, padding: 0 },
+  bigScoreNumber: {
+    fontSize: 160,
+    lineHeight: 165,
+    fontWeight: '900',
+    color: '#FFFFFF',
+    letterSpacing: -2,
+    textAlign: 'center',
+    textAlignVertical: 'center',
+    ...(Platform.OS === 'android' ? { includeFontPadding: false } : {}),
+  },
+  editHintText: { fontSize: 11, color: '#FFFFFF', fontWeight: '800', marginTop: 4, opacity: 0.8 },
+  spectatorHintText: { fontSize: 11, color: '#FFFFFF', fontWeight: '700', marginTop: 4, opacity: 0.8 },
+  footerStack: { flexShrink: 0, backgroundColor: '#0F172A' },
+  momentumRow: { height: 14, flexShrink: 0, backgroundColor: '#0F172A', justifyContent: 'center' },
+  bottomControlBar: { height: 88, flexShrink: 0, flexDirection: 'row', paddingVertical: 0, backgroundColor: '#0F172A', borderTopWidth: 1, borderTopColor: '#1E293B', alignItems: 'center' },
+  timelineChipRow: { flex: 1, height: 88, minWidth: 0, overflow: 'hidden' },
+  actionButtonsArea: { flexDirection: 'row', gap: 4, flexShrink: 0, flexGrow: 0, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 6, paddingLeft: 8, borderLeftWidth: 1, borderLeftColor: '#1E293B', backgroundColor: '#0F172A', zIndex: 4 },
+  undoBtn: { backgroundColor: '#334155', paddingHorizontal: 8, paddingVertical: 6, borderRadius: 6, alignItems: 'center', borderWidth: 1, borderColor: '#475569', flexShrink: 0 },
+  undoBtnText: { color: '#F8FAFC', fontSize: 11, fontWeight: '800' },
+  finishSetBtn: { backgroundColor: '#2563EB', paddingHorizontal: 8, paddingVertical: 6, borderRadius: 6, alignItems: 'center', flexShrink: 0 },
+  finishSetBtnText: { color: '#FFFFFF', fontSize: 11, fontWeight: '900' },
+  finishMatchBtn: { backgroundColor: '#9333EA', paddingHorizontal: 8, paddingVertical: 6, borderRadius: 6, alignItems: 'center', flexShrink: 0 },
+  finishMatchBtnText: { color: '#FFFFFF', fontSize: 11, fontWeight: '900' },
   modalWarn: { fontSize: 12, color: '#FCA5A5', fontWeight: '700', marginBottom: 12, lineHeight: 16 },
   finishChoiceBtn: { width: '100%', paddingVertical: 14, borderRadius: 10, alignItems: 'center', justifyContent: 'center', flexGrow: 0, flexShrink: 0 },
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.7)', justifyContent: 'center', alignItems: 'center', padding: 20 },

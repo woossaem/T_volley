@@ -1,5 +1,5 @@
 import { supabase } from './supabase';
-import { parseSetFormationMap, parseSetRosterMap, type SetFormation, type SetRosterMap } from './roster';
+import { parseSetFormationMap, parseSetRosterMap, persistCourtSlots, type SetFormation, type SetRosterMap } from './roster';
 
 export type { SetRosterMap };
 
@@ -37,16 +37,34 @@ export interface MatchEventLike {
 }
 
 const BEST_OF_FIVE_WINS = 3;
-export const MAX_SETS = 5;
+export const MAX_SETS = 12;
+export const DEFAULT_WINNING_SCORE = 21;
+export const DEFAULT_LOSING_SCORE = 19;
+
+export function makeDefaultQuickSetScore(): { hostScore: number; awayScore: number } {
+  return { hostScore: DEFAULT_WINNING_SCORE, awayScore: DEFAULT_LOSING_SCORE };
+}
+
+export function normalizeSetRecords(sets: MatchSetRecord[]): MatchSetRecord[] {
+  return [...sets]
+    .sort((a, b) => (Number(a.setNumber) || 0) - (Number(b.setNumber) || 0))
+    .map((s, i) => ({ ...s, setNumber: i + 1 }));
+}
 
 let matchSetsTableAvailable = true;
 
 function asStringArray(value: unknown): string[] {
-  if (Array.isArray(value)) return value.map(String).filter(Boolean);
+  const toSlot = (item: unknown) => {
+    if (item == null || item === '') return '';
+    const s = String(item).trim();
+    if (!s || s === 'null' || s === 'undefined') return '';
+    return s;
+  };
+  if (Array.isArray(value)) return value.map(toSlot);
   if (typeof value === 'string') {
     try {
       const parsed = JSON.parse(value);
-      if (Array.isArray(parsed)) return parsed.map(String).filter(Boolean);
+      if (Array.isArray(parsed)) return parsed.map(toSlot);
     } catch {
       return value.split(',').map((s) => s.trim()).filter(Boolean);
     }
@@ -360,7 +378,62 @@ function liveIndexFromSets(sets: MatchSetRecord[], matchFinished: boolean): numb
   }
   const openIdx = sets.findIndex((s) => !s.isClosed);
   if (openIdx >= 0) return openIdx;
-  return Math.min(Math.max(0, sets.length - 1), MAX_SETS - 1);
+  return Math.max(0, sets.length - 1);
+}
+
+function pushEmptySet(
+  sets: MatchSetRecord[],
+  idx: number,
+  closed: boolean,
+  hostRoster: SetRosterMap,
+  awayRoster: SetRosterMap,
+) {
+  if (idx >= MAX_SETS) return;
+  if (sets.some((s, i) => (s.setNumber || i + 1) === idx + 1)) return;
+  sets.push({
+    setNumber: idx + 1,
+    hostScore: 0,
+    awayScore: 0,
+    hostLineup: hostRoster[idx] || hostRoster[0] || [],
+    awayLineup: awayRoster[idx] || awayRoster[0] || [],
+    isClosed: closed,
+  });
+}
+
+/** 미진행(점수·이벤트 없는) 트레일링 세트를 걷어내 1세트만 남기거나, 세트마감으로 연 라이브 세트 1개만 유지 */
+export function trimUnplayedTrailingSets(
+  sets: MatchSetRecord[],
+  events: MatchEventLike[],
+  matchFinished: boolean,
+): MatchSetRecord[] {
+  if (matchFinished || sets.length <= 1) {
+    return sets.length === 0 ? sets : sets.map((s, i) => ({ ...s, setNumber: i + 1 }));
+  }
+  const next = [...sets];
+  while (next.length > 1) {
+    const last = next[next.length - 1];
+    const idx = next.length - 1;
+    const hasEvents = events.some((e) => !e.is_canceled && (e.set_index ?? 0) === idx);
+    const hasScore = last.hostScore > 0 || last.awayScore > 0;
+    const liveCount = next.filter((s) => !s.isClosed).length;
+    if (!hasEvents && !hasScore && (last.isClosed || liveCount > 1)) {
+      next.pop();
+      continue;
+    }
+    break;
+  }
+  return next.map((s, i) => ({ ...s, setNumber: i + 1 }));
+}
+
+export function makeInitialLiveSet(hostRoster: SetRosterMap = {}, awayRoster: SetRosterMap = {}): MatchSetRecord {
+  return {
+    setNumber: 1,
+    hostScore: 0,
+    awayScore: 0,
+    hostLineup: hostRoster[0] || [],
+    awayLineup: awayRoster[0] || [],
+    isClosed: false,
+  };
 }
 
 function appendLiveSetsFromEvents(
@@ -372,49 +445,25 @@ function appendLiveSetsFromEvents(
 ): MatchSetRecord[] {
   const finished = isMatchRecordingFinished(match);
   const decided = isBestOfFiveDecided(sets.filter((s) => s.isClosed));
+  const closedAll = finished || decided;
 
   const eventSetIndexes = events
     .filter((e) => !e.is_canceled)
     .map((e) => e.set_index ?? 0);
   const maxEventSet = eventSetIndexes.length > 0 ? Math.max(...eventSetIndexes) : -1;
 
-  const pushSet = (idx: number, closed: boolean) => {
-    if (idx >= MAX_SETS) return;
-    if (sets.some((s) => s.setNumber === idx + 1)) return;
-    sets.push({
-      setNumber: idx + 1,
-      hostScore: 0,
-      awayScore: 0,
-      hostLineup: hostRoster[idx] || hostRoster[0] || [],
-      awayLineup: awayRoster[idx] || awayRoster[0] || [],
-      isClosed: closed,
-    });
-  };
-
   if (maxEventSet >= 0) {
     for (let idx = 0; idx <= Math.min(maxEventSet, MAX_SETS - 1); idx += 1) {
-      pushSet(idx, finished || decided);
+      const hasEvents = events.some((e) => !e.is_canceled && (e.set_index ?? 0) === idx);
+      if (hasEvents) pushEmptySet(sets, idx, closedAll, hostRoster, awayRoster);
     }
-    if (finished || decided) return sets;
-  } else if (finished || decided) {
-    return sets;
   }
 
   if (sets.length === 0) {
-    pushSet(0, false);
-  } else if (maxEventSet >= sets.length) {
-    for (let idx = sets.length; idx <= Math.min(maxEventSet, MAX_SETS - 1); idx += 1) {
-      pushSet(idx, false);
-    }
-  } else if (maxEventSet === sets.length - 1) {
-    sets[sets.length - 1] = { ...sets[sets.length - 1], isClosed: false };
-  } else if (match?.status === 'intramural' && !match?.winner_team && maxEventSet < 0) {
-    sets[sets.length - 1] = { ...sets[sets.length - 1], isClosed: false };
-  } else if (!sets.some((s) => !s.isClosed) && sets.length < MAX_SETS) {
-    pushSet(sets.length, false);
+    pushEmptySet(sets, 0, closedAll, hostRoster, awayRoster);
   }
 
-  return sets;
+  return trimUnplayedTrailingSets(sets, events, closedAll);
 }
 
 function snapshotFromLegacy(match: any, events: MatchEventLike[]): MatchSetsSnapshot {
@@ -444,8 +493,8 @@ function snapshotFromLegacy(match: any, events: MatchEventLike[]): MatchSetsSnap
     isClosed: true,
   }));
 
-  appendLiveSetsFromEvents(sets, match, events, hostRoster, awayRoster);
-  const overlayed = overlayLiveScoresFromEvents(sets, events);
+  const normalized = normalizeSetRecords(appendLiveSetsFromEvents(sets, match, events, hostRoster, awayRoster));
+  const overlayed = overlayLiveScoresFromEvents(normalized, events);
   return {
     match,
     sets: overlayed,
@@ -499,19 +548,21 @@ export async function fetchMatchSets(matchId: string): Promise<MatchSetsSnapshot
           isClosed: !!row.is_closed,
         };
       });
-      appendLiveSetsFromEvents(sets, match, events, hostRoster, awayRoster);
+      const normalized = normalizeSetRecords(appendLiveSetsFromEvents(sets, match, events, hostRoster, awayRoster));
       const finished = isMatchRecordingFinished(match);
-      const overlayed = overlayLiveScoresFromEvents(sets, events);
+      const overlayed = overlayLiveScoresFromEvents(normalized, events);
       const repaired = finished && setsNeedEventRepair(overlayed, events)
         ? overlayed.map((s) => ({ ...s, isClosed: true }))
         : overlayed;
-      if (repaired !== overlayed) {
-        await upsertMatchSets(matchId, repaired);
+      const synced = normalizeSetRecords(repaired);
+      const needsRenumber = sets.some((s, i) => s.setNumber !== i + 1);
+      if (repaired !== overlayed || needsRenumber) {
+        await upsertMatchSets(matchId, synced);
       }
       return {
         match,
-        sets: repaired,
-        liveSetIndex: liveIndexFromSets(repaired, finished),
+        sets: synced,
+        liveSetIndex: liveIndexFromSets(synced, finished),
       };
     }
   }
@@ -526,12 +577,12 @@ export async function fetchMatchSets(matchId: string): Promise<MatchSetsSnapshot
 }
 
 export async function upsertMatchSets(matchId: string, sets: MatchSetRecord[]): Promise<void> {
-  const closed = sets.filter((s) => s.isClosed);
-  const scored = sets.filter((s) => s.isClosed || s.hostScore > 0 || s.awayScore > 0);
+  const normalized = normalizeSetRecords(sets);
+  const closed = normalized.filter((s) => s.isClosed);
   const payload = {
-    set_scores: formatSetScoresString(closed.length > 0 ? closed : scored),
-    host_roster: JSON.stringify(formationMapFromSets(sets, 'host')),
-    away_roster: JSON.stringify(formationMapFromSets(sets, 'away')),
+    set_scores: formatSetScoresString(closed),
+    host_roster: JSON.stringify(formationMapFromSets(normalized, 'host')),
+    away_roster: JSON.stringify(formationMapFromSets(normalized, 'away')),
   };
 
   await supabase.from('matches').update(payload).eq('id', matchId);
@@ -539,16 +590,11 @@ export async function upsertMatchSets(matchId: string, sets: MatchSetRecord[]): 
   if (!matchSetsTableAvailable) return;
 
   try {
-    const maxSet = Math.max(0, ...sets.map((s) => s.setNumber));
-    if (maxSet > 0) {
-      await supabase.from('match_sets').delete().eq('match_id', matchId).gt('set_number', maxSet);
-    } else {
-      await supabase.from('match_sets').delete().eq('match_id', matchId);
-    }
+    await supabase.from('match_sets').delete().eq('match_id', matchId);
 
-    if (sets.length === 0) return;
+    if (normalized.length === 0) return;
 
-    const rows = sets.map((s) => ({
+    const rows = normalized.map((s) => ({
       match_id: matchId,
       set_number: s.setNumber,
       host_score: s.hostScore,
@@ -559,7 +605,7 @@ export async function upsertMatchSets(matchId: string, sets: MatchSetRecord[]): 
       updated_at: new Date().toISOString(),
     }));
 
-    const { error } = await supabase.from('match_sets').upsert(rows, { onConflict: 'match_id,set_number' });
+    const { error } = await supabase.from('match_sets').insert(rows);
     if (error) matchSetsTableAvailable = false;
   } catch {
     matchSetsTableAvailable = false;
@@ -592,8 +638,10 @@ function shiftFormationMap<T>(map: { [idx: number]: T }, removedIndex: number): 
   return next;
 }
 
-/** 세트 삭제 후 남은 세트를 1부터 재인덱싱하고 match_sets / events / matches 캐시를 동기화 */
-export async function deleteSetAndReindex(matchId: string, setIndex: number): Promise<MatchSetRecord[]> {
+/** 세트 삭제 후 남은 세트를 1부터 재인덱싱하고 match_sets / events / matches 캐시를 동기화.
+ *  targetSetNumber 는 1-based set_number (배열 index 아님). */
+export async function deleteSetAndReindex(matchId: string, targetSetNumber: number): Promise<MatchSetRecord[]> {
+  const setIndex = Math.max(0, targetSetNumber - 1);
   const { data: eventRows } = await supabase
     .from('match_events')
     .select('id, set_index')
@@ -601,20 +649,43 @@ export async function deleteSetAndReindex(matchId: string, setIndex: number): Pr
 
   const events = eventRows || [];
   const toDelete = events.filter((e) => Number(e.set_index) === setIndex).map((e) => e.id);
-  const toShift = events.filter((e) => Number(e.set_index) > setIndex);
+  const toShift = events
+    .filter((e) => Number(e.set_index) > setIndex)
+    .sort((a, b) => Number(a.set_index) - Number(b.set_index));
 
   if (toDelete.length > 0) {
     await supabase.from('match_events').delete().in('id', toDelete);
   }
-  await Promise.all(
-    toShift.map((e) =>
-      supabase.from('match_events').update({ set_index: Number(e.set_index) - 1 }).eq('id', e.id)
-    )
-  );
+  for (const e of toShift) {
+    await supabase.from('match_events').update({ set_index: Number(e.set_index) - 1 }).eq('id', e.id);
+  }
 
   const { data: match } = await supabase.from('matches').select('*').eq('id', matchId).maybeSingle();
   const hostForm = shiftFormationMap(parseSetFormationMap(match?.host_roster), setIndex);
   const awayForm = shiftFormationMap(parseSetFormationMap(match?.away_roster), setIndex);
+
+  const toRecord = (row: any, i: number): MatchSetRecord => ({
+    setNumber: i + 1,
+    hostScore: Number(row.host_score ?? row.hostScore ?? row.host) || 0,
+    awayScore: Number(row.away_score ?? row.awayScore ?? row.away) || 0,
+    hostLineup: asStringArray(row.host_lineup ?? row.hostLineup).length > 0
+      ? asStringArray(row.host_lineup ?? row.hostLineup)
+      : persistCourtSlots(hostForm[i]?.court),
+    awayLineup: asStringArray(row.away_lineup ?? row.awayLineup).length > 0
+      ? asStringArray(row.away_lineup ?? row.awayLineup)
+      : persistCourtSlots(awayForm[i]?.court),
+    hostBench: hostForm[i]?.bench || [],
+    hostLate: hostForm[i]?.late || [],
+    awayBench: awayForm[i]?.bench || [],
+    awayLate: awayForm[i]?.late || [],
+    hostFrontCount: hostForm[i]?.frontCount,
+    hostMiddleCount: hostForm[i]?.middleCount,
+    hostBackCount: hostForm[i]?.backCount,
+    awayFrontCount: awayForm[i]?.frontCount,
+    awayMiddleCount: awayForm[i]?.middleCount,
+    awayBackCount: awayForm[i]?.backCount,
+    isClosed: row.is_closed ?? row.isClosed ?? true,
+  });
 
   let remaining: MatchSetRecord[] = [];
   let loadedFromTable = false;
@@ -628,47 +699,13 @@ export async function deleteSetAndReindex(matchId: string, setIndex: number): Pr
 
     if (setError) {
       matchSetsTableAvailable = false;
-    } else if (setRows) {
-      loadedFromTable = setRows.length > 0;
-      const kept = setRows.filter((row: any) => Number(row.set_number) !== setIndex + 1);
-      remaining = kept.map((row: any, i: number) => {
-        const formIdx = i;
-        return {
-          setNumber: i + 1,
-          hostScore: row.host_score || 0,
-          awayScore: row.away_score || 0,
-          hostLineup: asStringArray(row.host_lineup).length > 0 ? asStringArray(row.host_lineup) : (hostForm[formIdx]?.court || []),
-          awayLineup: asStringArray(row.away_lineup).length > 0 ? asStringArray(row.away_lineup) : (awayForm[formIdx]?.court || []),
-          hostBench: hostForm[formIdx]?.bench || [],
-          hostLate: hostForm[formIdx]?.late || [],
-          awayBench: awayForm[formIdx]?.bench || [],
-          awayLate: awayForm[formIdx]?.late || [],
-          hostFrontCount: hostForm[formIdx]?.frontCount,
-          hostMiddleCount: hostForm[formIdx]?.middleCount,
-          hostBackCount: hostForm[formIdx]?.backCount,
-          awayFrontCount: awayForm[formIdx]?.frontCount,
-          awayMiddleCount: awayForm[formIdx]?.middleCount,
-          awayBackCount: awayForm[formIdx]?.backCount,
-          isClosed: !!row.is_closed,
-        };
-      });
-
-      await supabase.from('match_sets').delete().eq('match_id', matchId);
-      if (remaining.length > 0) {
-        const { error: insertError } = await supabase.from('match_sets').insert(
-          remaining.map((s) => ({
-            match_id: matchId,
-            set_number: s.setNumber,
-            host_score: s.hostScore,
-            away_score: s.awayScore,
-            host_lineup: s.hostLineup,
-            away_lineup: s.awayLineup,
-            is_closed: s.isClosed,
-            updated_at: new Date().toISOString(),
-          }))
-        );
-        if (insertError) matchSetsTableAvailable = false;
-      }
+    } else if (setRows && setRows.length > 0) {
+      loadedFromTable = true;
+      const sorted = [...setRows].sort(
+        (a: any, b: any) => (Number(a.set_number) || 0) - (Number(b.set_number) || 0)
+      );
+      const kept = sorted.filter((_, i) => i !== setIndex);
+      remaining = normalizeSetRecords(kept.map((row: any, i: number) => toRecord(row, i)));
     }
   }
 
@@ -676,29 +713,31 @@ export async function deleteSetAndReindex(matchId: string, setIndex: number): Pr
     const parsed = parseSetScoresString(match?.set_scores);
     remaining = parsed
       .filter((_, i) => i !== setIndex)
-      .map((s, i) => ({
-        setNumber: i + 1,
-        hostScore: s.host,
-        awayScore: s.away,
-        hostLineup: hostForm[i]?.court || [],
-        awayLineup: awayForm[i]?.court || [],
-        hostBench: hostForm[i]?.bench || [],
-        hostLate: hostForm[i]?.late || [],
-        awayBench: awayForm[i]?.bench || [],
-        awayLate: awayForm[i]?.late || [],
-        hostFrontCount: hostForm[i]?.frontCount,
-        hostMiddleCount: hostForm[i]?.middleCount,
-        hostBackCount: hostForm[i]?.backCount,
-        awayFrontCount: awayForm[i]?.frontCount,
-        awayMiddleCount: awayForm[i]?.middleCount,
-        awayBackCount: awayForm[i]?.backCount,
-        isClosed: true,
-      }));
+      .map((s, i) => toRecord({ host: s.host, away: s.away, isClosed: true }, i));
+  }
+
+  remaining = normalizeSetRecords(remaining);
+
+  await supabase.from('match_sets').delete().eq('match_id', matchId);
+  if (remaining.length > 0 && matchSetsTableAvailable) {
+    const { error: insertError } = await supabase.from('match_sets').insert(
+      remaining.map((s) => ({
+        match_id: matchId,
+        set_number: s.setNumber,
+        host_score: s.hostScore,
+        away_score: s.awayScore,
+        host_lineup: s.hostLineup,
+        away_lineup: s.awayLineup,
+        is_closed: s.isClosed,
+        updated_at: new Date().toISOString(),
+      }))
+    );
+    if (insertError) matchSetsTableAvailable = false;
   }
 
   const closed = remaining.filter((s) => s.isClosed);
   await supabase.from('matches').update({
-    set_scores: formatSetScoresString(closed.length > 0 ? closed : remaining),
+    set_scores: formatSetScoresString(closed),
     host_roster: JSON.stringify(hostForm),
     away_roster: JSON.stringify(awayForm),
   }).eq('id', matchId);
