@@ -31,6 +31,7 @@ import {
   upsertMatchSets,
   hydrateMatchesWithSetScores,
   listMatchSetRows,
+  makeDefaultQuickSetScore,
 } from '../lib/matchSets';
 import SetScoreStrip from '../components/SetScoreStrip';
 
@@ -444,7 +445,7 @@ export default function IntramuralScreen() {
 
   const addIntraDynamicSet = () => {
     if (intraDynamicScores.length >= 7) return Alert.alert('알림', '최대 7세트까지만 입력 가능합니다.');
-    setIntraDynamicScores(prev => [...prev, { hostScore: 25, awayScore: 21 }]);
+    setIntraDynamicScores(prev => [...prev, makeDefaultQuickSetScore()]);
   };
   const removeIntraDynamicSet = (index: number) => {
     setIntraDynamicScores(prev => prev.filter((_, i) => i !== index));

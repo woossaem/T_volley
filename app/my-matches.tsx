@@ -35,6 +35,7 @@ import {
   dynamicScoresFromSets,
   fetchMatchSets,
   hydrateMatchesWithSetScores,
+  makeDefaultQuickSetScore,
   recordsFromDynamicScores,
   rosterMapFromSets,
   upsertMatchSets,
@@ -838,7 +839,7 @@ export default function MyMatchesScreen() {
     setSelectedMatchForResult(match);
     setIsRosterOnlyMode(false);
     setSelectedWinner(match.winner_team || '');
-    await hydrateResultFromSsot(match, [{ hostScore: 25, awayScore: 21 }]);
+    await hydrateResultFromSsot(match, [makeDefaultQuickSetScore()]);
     setHostYoutube(match.host_youtube_url || '');
     setAwayYoutube(match.away_youtube_url || '');
     setResultModalVisible(true);
@@ -1098,7 +1099,7 @@ export default function MyMatchesScreen() {
         awayYoutube={awayYoutube}
         onChangeAwayYoutube={setAwayYoutube}
         dynamicScores={dynamicScores}
-        onAddSet={() => setDynamicScores(prev => [...prev, { hostScore: 25, awayScore: 21 }])}
+        onAddSet={() => setDynamicScores(prev => [...prev, makeDefaultQuickSetScore()])}
         onRemoveSet={(idx) => setDynamicScores(prev => prev.filter((_, i) => i !== idx))}
         onUpdateScore={(idx, isHost, delta) => {
           setDynamicScores(prev => {
@@ -1145,7 +1146,7 @@ export default function MyMatchesScreen() {
         pastDynamicScores={pastDynamicScores}
         onAddPastSet={() => {
           if (pastDynamicScores.length >= 7) return Alert.alert('알림', '최대 7세트까지만 가능합니다.');
-          setPastDynamicScores(prev => [...prev, { hostScore: 25, awayScore: 21 }]);
+          setPastDynamicScores(prev => [...prev, makeDefaultQuickSetScore()]);
         }}
         onRemovePastSet={(idx) => setPastDynamicScores(prev => prev.filter((_, i) => i !== idx))}
         onUpdatePastScore={(idx, isHost, delta) => {
