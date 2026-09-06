@@ -15,7 +15,7 @@ import ScoreTimeline, { MatchEvent } from './ScoreTimeline';
 import { parseRosterUserIds, parseSetRosterMap, safeIncludes } from '../lib/roster';
 import { isPersonalFault, isPersonalKill } from '../lib/playerStats';
 import { resolveTeamName } from '../lib/nameUtils';
-import { formatPlayerDisplayName } from '../lib/tempPlayer';
+import { formatPlayerDisplayName, isAwardEligiblePlayer } from '../lib/tempPlayer';
 
 interface MatchPostgameReportModalProps {
   visible: boolean;
@@ -61,10 +61,11 @@ function isDrawResult(winner?: string | null) {
 }
 
 function formatMvpLine(players: PlayerStat[]): string {
-  if (!players.length) return '없음';
-  const max = Math.max(...players.map((p) => p.points));
-  if (max <= 0) return '없음';
-  const tied = players.filter((p) => p.points === max).sort((a, b) => a.name.localeCompare(b.name, 'ko'));
+  const eligible = players.filter((p) => isAwardEligiblePlayer(p.playerId, p.name) && p.points > 0);
+  if (!eligible.length) return '[없음]';
+  const max = Math.max(...eligible.map((p) => p.points));
+  if (max <= 0) return '[없음]';
+  const tied = eligible.filter((p) => p.points === max).sort((a, b) => a.name.localeCompare(b.name, 'ko'));
   if (tied.length === 1) return `${tied[0].name} (${tied[0].points}점)`;
   return `${tied.map((p) => p.name).join(', ')} (공동 ${max}점)`;
 }
@@ -339,14 +340,17 @@ export default function MatchPostgameReportModal({
     const allPlayers = Array.from(playerMap.values()).sort(
       (a, b) => b.points - a.points || b.faults - a.faults
     );
+    const awardPlayers = allPlayers.filter((p) => isAwardEligiblePlayer(p.playerId, p.name));
     const hostPlayers = allPlayers.filter((p) => p.team === 'host');
     const awayPlayers = allPlayers.filter((p) => p.team === 'away');
-    const mvp = [...allPlayers].sort((a, b) => b.points - a.points)[0] || null;
-    const hostTop = hostPlayers[0] || null;
-    const awayTop = awayPlayers[0] || null;
-    const mvpLine = formatMvpLine(allPlayers);
-    const hostTopLine = formatMvpLine(hostPlayers);
-    const awayTopLine = formatMvpLine(awayPlayers);
+    const hostAwardPlayers = awardPlayers.filter((p) => p.team === 'host');
+    const awayAwardPlayers = awardPlayers.filter((p) => p.team === 'away');
+    const mvp = [...awardPlayers].sort((a, b) => b.points - a.points)[0] || null;
+    const hostTop = hostAwardPlayers[0] || null;
+    const awayTop = awayAwardPlayers[0] || null;
+    const mvpLine = formatMvpLine(awardPlayers);
+    const hostTopLine = formatMvpLine(hostAwardPlayers);
+    const awayTopLine = formatMvpLine(awayAwardPlayers);
 
     const setIndexSet = new Set<number>();
     scoredEvents.forEach((e) => setIndexSet.add(Number(e.set_index)));
@@ -371,6 +375,7 @@ export default function MatchPostgameReportModal({
       const setPlayerMap = new Map<string, PlayerStat>();
       setScores.forEach((e) => {
         if (!isPersonalKill(e.event_type)) return;
+        if (!isAwardEligiblePlayer(e.player_id, e.player_name)) return;
         const team = resolveTeam(e);
         const displayName = formatPlayerDisplayName(e.player_id, e.player_name);
         const key = `${team}:${e.player_id || displayName}`;
@@ -388,7 +393,9 @@ export default function MatchPostgameReportModal({
         setIndex: idx,
         hostScore,
         awayScore,
-        clutchName: lastScore ? formatPlayerDisplayName(lastScore.player_id, lastScore.player_name) : null,
+        clutchName: lastScore && isAwardEligiblePlayer(lastScore.player_id, lastScore.player_name)
+          ? formatPlayerDisplayName(lastScore.player_id, lastScore.player_name)
+          : null,
         clutchTeam: lastScore?.team_type || null,
         mvp: setMvp,
         mvpLine: setMvpLine,
@@ -492,25 +499,25 @@ export default function MatchPostgameReportModal({
         <View style={styles.shareStatChip}>
           <Text style={styles.shareStatEmoji}>👑</Text>
           <Text style={styles.shareStatTitle}>경기 MVP</Text>
-          <Text style={styles.shareStatValue}>{analytics.mvpLine}</Text>
+          <Text style={styles.shareStatValue} numberOfLines={1} ellipsizeMode="tail">{analytics.mvpLine}</Text>
         </View>
         <View style={styles.shareStatChip}>
           <Text style={styles.shareStatEmoji}>🎯</Text>
           <Text style={styles.shareStatTitle}>클러치 요정</Text>
-          <Text style={styles.shareStatValue}>
-            {analytics.matchClutchNames.length > 0 ? analytics.matchClutchNames.join(', ') : '없음'}
+          <Text style={styles.shareStatValue} numberOfLines={1} ellipsizeMode="tail">
+            {analytics.matchClutchNames.length > 0 ? analytics.matchClutchNames.join(', ') : '[없음]'}
           </Text>
         </View>
       </View>
 
       <View style={styles.shareTopRow}>
         <View style={[styles.shareTopBox, { borderColor: '#38BDF8' }]}>
-          <Text style={[styles.shareTopLabel, { color: '#7DD3FC' }]}>{displayHostName} 최다득점</Text>
-          <Text style={styles.shareTopValue}>{analytics.hostTopLine}</Text>
+          <Text style={[styles.shareTopLabel, { color: '#7DD3FC' }]} numberOfLines={1} ellipsizeMode="tail">{displayHostName} 최다득점</Text>
+          <Text style={styles.shareTopValue} numberOfLines={1} ellipsizeMode="tail">{analytics.hostTopLine}</Text>
         </View>
         <View style={[styles.shareTopBox, { borderColor: '#FB7185' }]}>
-          <Text style={[styles.shareTopLabel, { color: '#FDA4AF' }]}>{displayAwayName} 최다득점</Text>
-          <Text style={styles.shareTopValue}>{analytics.awayTopLine}</Text>
+          <Text style={[styles.shareTopLabel, { color: '#FDA4AF' }]} numberOfLines={1} ellipsizeMode="tail">{displayAwayName} 최다득점</Text>
+          <Text style={styles.shareTopValue} numberOfLines={1} ellipsizeMode="tail">{analytics.awayTopLine}</Text>
         </View>
       </View>
     </View>
@@ -623,13 +630,13 @@ export default function MatchPostgameReportModal({
                     <View style={styles.recordCard}>
                       <Text style={styles.recordEmoji}>👑</Text>
                       <Text style={styles.recordTitle}>오늘의 득점왕 (MVP)</Text>
-                      <Text style={styles.recordValue}>{analytics.mvpLine}</Text>
+                      <Text style={styles.recordValue} numberOfLines={1} ellipsizeMode="tail">{analytics.mvpLine}</Text>
                     </View>
                     <View style={styles.recordCard}>
                       <Text style={styles.recordEmoji}>🎯</Text>
                       <Text style={styles.recordTitle}>경기 전체 클러치</Text>
-                      <Text style={styles.recordValue}>
-                        {analytics.matchClutchNames.length > 0 ? analytics.matchClutchNames.join(', ') : '없음'}
+                      <Text style={styles.recordValue} numberOfLines={1} ellipsizeMode="tail">
+                        {analytics.matchClutchNames.length > 0 ? analytics.matchClutchNames.join(', ') : '[없음]'}
                       </Text>
                     </View>
                   </View>
@@ -661,11 +668,11 @@ export default function MatchPostgameReportModal({
                       <View style={styles.setClutchRow}>
                         <View style={styles.setClutchChip}>
                           <Text style={styles.setClutchLabel}>🏆 세트 MVP</Text>
-                          <Text style={styles.setClutchValue}>{activeSetSummary.mvpLine}</Text>
+                          <Text style={styles.setClutchValue} numberOfLines={1} ellipsizeMode="tail">{activeSetSummary.mvpLine}</Text>
                         </View>
                         <View style={[styles.setClutchChip, { backgroundColor: '#EEF2FF' }]}>
                           <Text style={styles.setClutchLabel}>🎯 세트 클러치</Text>
-                          <Text style={styles.setClutchValue}>{activeSetSummary.clutchName || '없음'}</Text>
+                          <Text style={styles.setClutchValue} numberOfLines={1} ellipsizeMode="tail">{activeSetSummary.clutchName || '[없음]'}</Text>
                         </View>
                       </View>
                       <MomentumBar events={activeSetEvents} hostName={displayHostName} awayName={displayAwayName} />
@@ -742,12 +749,12 @@ const styles = StyleSheet.create({
   shareStatChip: { flex: 1, backgroundColor: '#1E293B', borderRadius: 12, padding: 10, alignItems: 'center', borderWidth: 1, borderColor: '#334155' },
   shareStatEmoji: { fontSize: 18, marginBottom: 2 },
   shareStatTitle: { fontSize: 10, fontWeight: '800', color: '#FBBF24', marginBottom: 4 },
-  shareStatValue: { fontSize: 12, fontWeight: '900', color: '#F8FAFC', textAlign: 'center' },
+  shareStatValue: { fontSize: 12, fontWeight: '900', color: '#F8FAFC', textAlign: 'center', includeFontPadding: false, lineHeight: 16 },
 
   shareTopRow: { flexDirection: 'row', gap: 8 },
   shareTopBox: { flex: 1, borderRadius: 10, padding: 10, borderWidth: 1, backgroundColor: '#111827' },
   shareTopLabel: { fontSize: 10, fontWeight: '800', marginBottom: 4 },
-  shareTopValue: { fontSize: 12, fontWeight: '900', color: '#F8FAFC' },
+  shareTopValue: { fontSize: 12, fontWeight: '900', color: '#F8FAFC', includeFontPadding: false, lineHeight: 16 },
 
   highlightContainer: { gap: 10 },
   scoreSummaryBox: { backgroundColor: '#EFF6FF', borderRadius: 12, padding: 16, alignItems: 'center', borderWidth: 1, borderColor: '#BFDBFE' },
@@ -759,7 +766,7 @@ const styles = StyleSheet.create({
   recordCard: { width: '48.5%', backgroundColor: '#FFFBEB', borderWidth: 1, borderColor: '#FDE68A', borderRadius: 12, padding: 12, alignItems: 'center' },
   recordEmoji: { fontSize: 24, marginBottom: 4 },
   recordTitle: { fontSize: 11, fontWeight: '800', color: '#D97706', marginBottom: 4, textAlign: 'center' },
-  recordValue: { fontSize: 14, fontWeight: '900', color: '#92400E', textAlign: 'center' },
+  recordValue: { fontSize: 14, fontWeight: '900', color: '#92400E', textAlign: 'center', includeFontPadding: false, lineHeight: 18 },
 
   streakCompare: { backgroundColor: '#F8FAFC', borderRadius: 12, padding: 12, borderWidth: 1, borderColor: '#E2E8F0' },
   streakCompareTitle: { fontSize: 13, fontWeight: '900', color: Colors.text, marginBottom: 8, textAlign: 'center' },
@@ -793,7 +800,7 @@ const styles = StyleSheet.create({
   setClutchRow: { flexDirection: 'row', gap: 6 },
   setClutchChip: { flex: 1, backgroundColor: '#FFFBEB', borderRadius: 10, padding: 8, borderWidth: 1, borderColor: '#FDE68A' },
   setClutchLabel: { fontSize: 10, fontWeight: '800', color: '#92400E', marginBottom: 3 },
-  setClutchValue: { fontSize: 12, fontWeight: '900', color: '#78350F' },
+  setClutchValue: { fontSize: 12, fontWeight: '900', color: '#78350F', includeFontPadding: false, lineHeight: 16 },
   timelineBox: { backgroundColor: '#0F172A', borderRadius: 12, padding: 12, marginTop: 8 },
 
   momentumHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 },

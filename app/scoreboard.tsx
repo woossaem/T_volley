@@ -56,6 +56,51 @@ interface MatchRecord {
   host_roster?: string;
   away_roster?: string;
   winner_team?: string;
+  score_logs?: any[] | null;
+}
+
+function setIndexFromScoreLog(log: any): number {
+  if (log?.set_index != null && log.set_index !== '') return Number(log.set_index) || 0;
+  return Math.max(0, (Number(log?.set_number) || 1) - 1);
+}
+
+function mapScoreLogToEvent(log: any, matchId: string, fallbackId: string): MatchEvent {
+  return {
+    id: String(log?.id || fallbackId),
+    match_id: matchId,
+    set_index: setIndexFromScoreLog(log),
+    event_type: log?.event_type,
+    team_type: log?.team_type,
+    player_id: log?.player_id ?? null,
+    player_name: log?.player_name ?? null,
+    host_score: Number(log?.host_score) || 0,
+    away_score: Number(log?.away_score) || 0,
+    is_canceled: !!log?.is_canceled,
+  };
+}
+
+function mergeEventsWithScoreLogs(tableEvents: MatchEvent[], scoreLogs: any[], matchId: string): MatchEvent[] {
+  const mapped = (Array.isArray(scoreLogs) ? scoreLogs : []).map((log, i) => (
+    mapScoreLogToEvent(log, matchId, `log-${i}`)
+  ));
+  const table = Array.isArray(tableEvents) ? tableEvents : [];
+  if (table.length === 0) return mapped;
+  const ids = new Set(table.map((e) => String(e.id)));
+  const extras = mapped.filter((e) => !ids.has(String(e.id)));
+  return extras.length ? [...table, ...extras] : table;
+}
+
+function pickHydratedSetScore(
+  setRow?: { hostScore?: number; awayScore?: number; host_score?: number; away_score?: number } | null,
+  fromEvents?: { host: number; away: number } | null,
+): { host: number; away: number } | null {
+  if (!setRow && !fromEvents) return null;
+  const host = Number(setRow?.hostScore ?? setRow?.host_score);
+  const away = Number(setRow?.awayScore ?? setRow?.away_score);
+  const rowScore = setRow ? { host: host || 0, away: away || 0 } : null;
+  if (rowScore && (rowScore.host > 0 || rowScore.away > 0)) return rowScore;
+  if (fromEvents && (fromEvents.host > 0 || fromEvents.away > 0)) return fromEvents;
+  return rowScore || fromEvents || null;
 }
 
 export default function ScoreboardScreen() {
@@ -108,6 +153,7 @@ export default function ScoreboardScreen() {
 
   const isInitialLoadRef = useRef(true);
   const matchClosedRef = useRef(false);
+  const hydrateGenRef = useRef(0);
   const currentSetIndexRef = useRef(currentSetIndex);
   currentSetIndexRef.current = currentSetIndex;
 
@@ -277,16 +323,18 @@ export default function ScoreboardScreen() {
           const liveIdx = snapshot.liveSetIndex;
           setCurrentSetIndex(liveIdx);
           currentSetIndexRef.current = liveIdx;
-          const liveSet = snapshot.sets[liveIdx];
-          if (liveSet) setCurrentScores({ host: liveSet.hostScore, away: liveSet.awayScore });
           isInitialLoadRef.current = false;
         }
 
         const { data: evData } = await supabase.from('match_events').select('*').eq('match_id', matchId).order('created_at', { ascending: true });
-        if (evData) {
-          setEvents(evData);
-          recalcScores(evData, currentSetIndexRef.current);
-        }
+        const scoreLogs = Array.isArray((data as any).score_logs) ? (data as any).score_logs : [];
+        const mergedEvents = mergeEventsWithScoreLogs((evData || []) as MatchEvent[], scoreLogs, matchId);
+        setEvents(mergedEvents);
+
+        const applyIdx = currentSetIndexRef.current;
+        const setRec = loadedSets.find((s) => s.setNumber === applyIdx + 1) || loadedSets[applyIdx];
+        const picked = pickHydratedSetScore(setRec, lastScoreForSetFromEvents(mergedEvents, applyIdx));
+        if (picked) setCurrentScores(picked);
       }
     } catch (err: any) {
       console.error('스코어보드 실패:', err);
@@ -327,9 +375,11 @@ export default function ScoreboardScreen() {
     const eventChannel = supabase.channel(`events_${matchId}`)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'match_events', filter: `match_id=eq.${matchId}` }, async () => {
         const { data } = await supabase.from('match_events').select('*').eq('match_id', matchId).order('created_at', { ascending: true });
-        if (data) {
+        if (data && data.length > 0) {
           setEvents(data);
-          recalcScores(data, currentSetIndexRef.current);
+          const idx = currentSetIndexRef.current;
+          const hasSetEvents = data.some((e: any) => Number(e.set_index) === idx);
+          if (hasSetEvents) recalcScores(data, idx);
         }
       })
       .subscribe();
@@ -615,16 +665,110 @@ export default function ScoreboardScreen() {
     });
   };
 
-  const changeCurrentSet = (idx: number) => {
-    if (idx === currentSetIndex) {
-      resetSetUiState();
-      recalcScores(events.filter((e) => Number(e.set_index) === idx), idx);
-      return;
+  const hydrateSetFromDb = useCallback(async (idx: number) => {
+    if (!matchId) return;
+    const gen = ++hydrateGenRef.current;
+    try {
+      let setRow: { host_score?: number; away_score?: number } | null = null;
+      try {
+        const { data, error } = await supabase
+          .from('match_sets')
+          .select('host_score, away_score, set_number')
+          .eq('match_id', matchId)
+          .eq('set_number', idx + 1)
+          .maybeSingle();
+        if (!error && data) setRow = data;
+      } catch {}
+
+      let scoreLogs: any[] = [];
+      try {
+        const { data: matchRow, error } = await supabase
+          .from('matches')
+          .select('score_logs')
+          .eq('id', matchId)
+          .maybeSingle();
+        if (!error && Array.isArray((matchRow as any)?.score_logs)) {
+          scoreLogs = (matchRow as any).score_logs;
+        }
+      } catch {}
+
+      let tableEvents: MatchEvent[] = [];
+      let tableOk = false;
+      try {
+        const { data: evData, error } = await supabase
+          .from('match_events')
+          .select('*')
+          .eq('match_id', matchId)
+          .order('created_at', { ascending: true });
+        if (!error) {
+          tableOk = true;
+          tableEvents = (evData || []) as MatchEvent[];
+        }
+      } catch {}
+
+      if (hydrateGenRef.current !== gen || currentSetIndexRef.current !== idx) return;
+
+      let merged: MatchEvent[] = [];
+      setEvents((prev) => {
+        if (!tableOk && scoreLogs.length === 0) {
+          merged = prev;
+          return prev;
+        }
+        merged = mergeEventsWithScoreLogs(tableOk ? tableEvents : prev, scoreLogs, matchId);
+        return merged;
+      });
+
+      const localSet = matchSets.find((s) => s.setNumber === idx + 1);
+      const picked = pickHydratedSetScore(setRow || localSet, lastScoreForSetFromEvents(merged, idx));
+      if (picked) setCurrentScores(picked);
+    } catch (e) {
+      console.error('세트 하이드레이션 실패:', e);
     }
+  }, [matchId, matchSets]);
+
+  const flushScoreLogsSnapshot = async () => {
+    if (!matchId) return;
+    const scoreLogs = events.map((e) => ({
+      id: e.id,
+      set_index: e.set_index,
+      set_number: Number(e.set_index) + 1,
+      event_type: e.event_type,
+      team_type: e.team_type,
+      player_id: e.player_id,
+      player_name: e.player_name,
+      host_score: e.host_score,
+      away_score: e.away_score,
+      is_canceled: e.is_canceled,
+    }));
+    await updateMatchIgnoringUnknownColumns(matchId, { score_logs: scoreLogs });
+  };
+
+  const commitActiveSetBeforeFinish = async (): Promise<string[]> => {
+    const setEvents = events.filter((e) => Number(e.set_index) === currentSetIndex && !e.is_canceled);
+    const hasScore = (currentScores.host || 0) > 0 || (currentScores.away || 0) > 0;
+    const hasLogs = setEvents.length > 0;
+    let updatedHistory = closeLiveSetIntoHistory(setHistory);
+    if (hasScore || hasLogs) {
+      const liveScore = `${currentScores.host}:${currentScores.away}`;
+      if (currentSetIndex < updatedHistory.length) {
+        updatedHistory = updatedHistory.map((s, idx) => (idx === currentSetIndex ? liveScore : s));
+      } else {
+        updatedHistory = [...updatedHistory, liveScore];
+      }
+    }
+    await persistSetsFromHistory(updatedHistory, null);
+    await flushScoreLogsSnapshot();
+    return updatedHistory;
+  };
+
+  const changeCurrentSet = (idx: number) => {
     setCurrentSetIndex(idx);
     currentSetIndexRef.current = idx;
     resetSetUiState();
-    recalcScores(events.filter((e) => Number(e.set_index) === idx), idx);
+    const localSet = matchSets.find((s) => s.setNumber === idx + 1);
+    const picked = pickHydratedSetScore(localSet, lastScoreForSetFromEvents(events, idx));
+    if (picked) setCurrentScores(picked);
+    void hydrateSetFromDb(idx);
   };
 
   const visibleSets = useMemo(() => {
@@ -821,21 +965,7 @@ export default function ScoreboardScreen() {
                 undefined,
                 { host: hostCarried, away: awayCarried },
               );
-              if (matchId) {
-                const scoreLogs = events.map((e) => ({
-                  id: e.id,
-                  set_index: e.set_index,
-                  set_number: Number(e.set_index) + 1,
-                  event_type: e.event_type,
-                  team_type: e.team_type,
-                  player_id: e.player_id,
-                  player_name: e.player_name,
-                  host_score: e.host_score,
-                  away_score: e.away_score,
-                  is_canceled: e.is_canceled,
-                }));
-                await updateMatchIgnoringUnknownColumns(matchId, { score_logs: scoreLogs });
-              }
+              await flushScoreLogsSnapshot();
 
               setSetScoresHistory(updatedHistory);
               setHistoryRef.current = updatedHistory;
@@ -875,8 +1005,7 @@ export default function ScoreboardScreen() {
   const handleConfirmIntramuralFinish = async (winner: string) => {
     setActionLoading(true);
     try {
-      const finalHistory = closeLiveSetIntoHistory(setHistory);
-      await persistSetsFromHistory(finalHistory, null);
+      const finalHistory = await commitActiveSetBeforeFinish();
 
       const updateData = {
         set_scores: finalHistory.join(', ') || null,
@@ -900,8 +1029,7 @@ export default function ScoreboardScreen() {
   const processOfficialMatchFinish = async (winnerOverride?: string) => {
     setActionLoading(true);
     try {
-      const finalHistory = closeLiveSetIntoHistory(setHistory);
-      await persistSetsFromHistory(finalHistory, null);
+      const finalHistory = await commitActiveSetBeforeFinish();
 
       const myTeamInMatch = match && teamsInclude(myTeams, match.host_team_name)
         ? match.host_team_name
@@ -1272,6 +1400,7 @@ export default function ScoreboardScreen() {
                       onLongPress={() => handleRequestDeleteSet(idx + 1)}
                       delayLongPress={380}
                       style={styles.setNavPillHit}
+                      hitSlop={8}
                     >
                       <Text style={[styles.setNavPillText, isCurrent && styles.setNavPillTextActive]}>
                         {idx + 1}세트
@@ -1290,7 +1419,7 @@ export default function ScoreboardScreen() {
                 );
               })}
               {myRole !== 'spectator' && visibleSets.length < MAX_SETS ? (
-                <TouchableOpacity style={styles.setNavAdd} onPress={handleAddSet} disabled={actionLoading}>
+                <TouchableOpacity style={styles.setNavAdd} onPress={handleAddSet} disabled={actionLoading} hitSlop={8}>
                   <Text style={styles.setNavAddText}>+</Text>
                 </TouchableOpacity>
               ) : null}
@@ -1300,16 +1429,16 @@ export default function ScoreboardScreen() {
           <View style={styles.headerSlimRight}>
             <Text style={styles.recorderLine} numberOfLines={1}>{recorderLine}</Text>
             {myRole !== 'spectator' && (
-              <TouchableOpacity style={styles.leaveRoleBtnSlim} onPress={handleLeaveRole}>
+              <TouchableOpacity style={styles.leaveRoleBtnSlim} onPress={handleLeaveRole} hitSlop={8}>
                 <Text style={styles.leaveRoleBtnTextSlim}>반납</Text>
               </TouchableOpacity>
             )}
             {events.length > 0 && (
-              <TouchableOpacity style={styles.reportBtnSlim} onPress={() => setReportModalVisible(true)}>
+              <TouchableOpacity style={styles.reportBtnSlim} onPress={() => setReportModalVisible(true)} hitSlop={8}>
                 <Text style={styles.reportBtnTextSlim}>📊 경기 리포트</Text>
               </TouchableOpacity>
             )}
-            <TouchableOpacity style={styles.switchCourtBtnSlim} onPress={() => setIsSwapped(prev => !prev)}>
+            <TouchableOpacity style={styles.switchCourtBtnSlim} onPress={() => setIsSwapped(prev => !prev)} hitSlop={8}>
               <Text style={styles.switchCourtBtnTextSlim}>🔄 코트 변경</Text>
             </TouchableOpacity>
           </View>
@@ -1406,13 +1535,13 @@ export default function ScoreboardScreen() {
 
         {myRole !== 'spectator' && (
           <View style={styles.actionButtonsArea}>
-            <TouchableOpacity style={styles.undoBtn} onPress={handleUndoEvent}>
+            <TouchableOpacity style={styles.undoBtn} onPress={handleUndoEvent} hitSlop={8}>
               <Text style={styles.undoBtnText} numberOfLines={1}>취소</Text>
             </TouchableOpacity>
-            <TouchableOpacity style={styles.finishSetBtn} onPress={handleFinishSet}>
+            <TouchableOpacity style={styles.finishSetBtn} onPress={handleFinishSet} hitSlop={8}>
               <Text style={styles.finishSetBtnText} numberOfLines={1}>세트마감</Text>
             </TouchableOpacity>
-            <TouchableOpacity style={styles.finishMatchBtn} onPress={handleOpenFinishMatch}>
+            <TouchableOpacity style={styles.finishMatchBtn} onPress={handleOpenFinishMatch} hitSlop={8}>
               <Text style={styles.finishMatchBtnText} numberOfLines={1}>경기종료</Text>
             </TouchableOpacity>
           </View>
@@ -1553,7 +1682,7 @@ export default function ScoreboardScreen() {
             </Text>
             <Text style={styles.modalWarn}>
               {pendingDeleteEvent
-                ? `${pendingDeleteEvent.host_score}:${pendingDeleteEvent.away_score} · ${pendingDeleteEvent.player_name || '무기명'} · ${pendingDeleteEvent.event_type}`
+                ? `${pendingDeleteEvent.host_score}:${pendingDeleteEvent.away_score} · ${displaySlotPlayerName(pendingDeleteEvent.player_id, pendingDeleteEvent.player_name)} · ${pendingDeleteEvent.event_type}`
                 : ''}
             </Text>
             <View style={styles.modalBtnRow}>
@@ -1635,7 +1764,7 @@ const styles = StyleSheet.create({
   switchCourtBtnSlim: { paddingHorizontal: 10, paddingVertical: 6, backgroundColor: '#F1F5F9', borderRadius: 8 },
   switchCourtBtnTextSlim: { color: '#334155', fontWeight: '800', fontSize: 11 },
   scoreboardMainGrid: { flex: 1, minHeight: 160, flexDirection: 'row', width: '100%', backgroundColor: '#020617' },
-  teamCourtHalf: { flex: 1, minWidth: 0, position: 'relative', padding: 0, margin: 0 },
+  teamCourtHalf: { flex: 1, flexShrink: 0, minWidth: 0, position: 'relative', padding: 0, margin: 0 },
   hostCourtBg: { backgroundColor: '#0284C7' },
   awayCourtBg: { backgroundColor: '#BE123C' },
   courtTeamName: {

@@ -119,15 +119,40 @@ function looksLikeSystemPlayerCode(value?: string | null): boolean {
   );
 }
 
-/** 리포트/타임라인 표기: [레프트(무기명)] 또는 [무기명] */
-export function formatTempPlayerLabel(id?: string | null, fallbackLabel?: string | null): string {
-  const key = parseTempPositionKey(id);
-  if (key) return `[${TEMP_POSITION_LABELS[key]}(무기명)]`;
-  const fallback = String(fallbackLabel || '').trim();
-  if (fallback && fallback !== '무기명' && !looksLikeSystemPlayerCode(fallback)) {
-    return `[${fallback}(무기명)]`;
+function stripAnonymousDecorators(value?: string | null): string {
+  return String(value || '')
+    .replace(/[\[\]]/g, '')
+    .replace(/\(\s*무기명\s*\)/g, '')
+    .replace(/무기명/g, '')
+    .replace(/\s+/g, '')
+    .trim();
+}
+
+function looksLikeAnonymousDisplay(value?: string | null): boolean {
+  const raw = String(value || '').trim();
+  if (!raw) return false;
+  return raw === '무기명' || raw === '[무기명]' || raw.includes('무기명');
+}
+
+function soloPositionLabel(id?: string | null, fallbackLabel?: string | null): string {
+  const cleaned = stripAnonymousDecorators(fallbackLabel);
+  const fromId = parseTempPositionKey(id);
+  let fromText: TempPositionKey | null = null;
+  for (const row of LABEL_TO_POSITION) {
+    if (cleaned.includes(row.needle)) {
+      fromText = row.key;
+      break;
+    }
   }
-  return '[무기명]';
+  const key = fromId || fromText;
+  const num = cleaned.match(/(\d+)/)?.[1];
+  if (key) return num ? `${TEMP_POSITION_LABELS[key]}${num}` : TEMP_POSITION_LABELS[key];
+  return cleaned;
+}
+
+/** 리포트/타임라인 표기: 레프트 / 레프트1 / 무기명 */
+export function formatTempPlayerLabel(id?: string | null, fallbackLabel?: string | null): string {
+  return soloPositionLabel(id, fallbackLabel) || '무기명';
 }
 
 export function formatPlayerDisplayName(
@@ -135,13 +160,29 @@ export function formatPlayerDisplayName(
   playerName?: string | null,
   fallbackLabel?: string | null,
 ): string {
-  if (looksLikeSystemPlayerCode(playerId) || looksLikeSystemPlayerCode(playerName)) {
-    return formatTempPlayerLabel(playerId, fallbackLabel);
+  if (
+    looksLikeSystemPlayerCode(playerId)
+    || looksLikeSystemPlayerCode(playerName)
+    || looksLikeAnonymousDisplay(playerName)
+  ) {
+    return formatTempPlayerLabel(playerId, fallbackLabel || playerName);
   }
   const name = String(playerName || '').trim();
   if (name && name !== '무기명') return name;
   if (!playerId) return formatTempPlayerLabel(playerId, fallbackLabel);
   return name || '무기명';
+}
+
+export function isPureAnonymousPlayer(playerId?: string | null, playerName?: string | null): boolean {
+  const id = String(playerId ?? '').trim();
+  if (!id || id.toLowerCase() === 'anonymous' || id.includes('anon:')) return true;
+  if (isTempSlotId(id) && !parseTempPositionKey(id)) return true;
+  const label = formatPlayerDisplayName(playerId, playerName);
+  return label === '[무기명]' || label === '무기명';
+}
+
+export function isAwardEligiblePlayer(playerId?: string | null, playerName?: string | null): boolean {
+  return !isPureAnonymousPlayer(playerId, playerName);
 }
 
 export function tempAbbrev(id?: string | null): string {

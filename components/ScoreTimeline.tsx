@@ -67,6 +67,7 @@ export default function ScoreTimeline({
       }}
       disabled={!canControl}
       activeOpacity={0.7}
+      hitSlop={8}
     >
       <Text
         style={[styles.text, compact && styles.textCompact, isHost ? styles.hostText : styles.awayText, isCanceled && styles.canceledText]}
@@ -140,6 +141,7 @@ export default function ScoreTimeline({
                 }}
                 disabled={!canControl}
                 activeOpacity={0.7}
+                hitSlop={8}
               >
                 <Text
                   style={[styles.text, isHost ? styles.hostText : styles.awayText, isCanceled && styles.canceledText]}
