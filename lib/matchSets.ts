@@ -156,6 +156,55 @@ export async function fetchSetScoreFromDb(
 }
 
 /**
+ * 라이브 세트 점수만 match_sets 에 UPDATE/INSERT 한다.
+ * 다른 세트 행을 지우거나 라인업을 다시 쓰지 않는다.
+ */
+export async function writeLiveSetScore(
+  matchId: string,
+  setIndex: number,
+  score: { host: number; away: number },
+): Promise<{ host: number; away: number }> {
+  const setNumber = Math.max(1, setIndex + 1);
+  const host = Number(score.host) || 0;
+  const away = Number(score.away) || 0;
+
+  if (matchSetsTableAvailable) {
+    try {
+      const { data: existing, error: readError } = await supabase
+        .from('match_sets')
+        .select('id')
+        .eq('match_id', matchId)
+        .eq('set_number', setNumber)
+        .maybeSingle();
+      if (readError) {
+        matchSetsTableAvailable = false;
+      } else if (existing) {
+        const { error } = await supabase
+          .from('match_sets')
+          .update({ host_score: host, away_score: away })
+          .eq('match_id', matchId)
+          .eq('set_number', setNumber);
+        if (error) throw error;
+      } else {
+        const { error } = await supabase.from('match_sets').insert({
+          match_id: matchId,
+          set_number: setNumber,
+          host_score: host,
+          away_score: away,
+          is_closed: false,
+        });
+        if (error) throw error;
+      }
+    } catch (err) {
+      if (matchSetsTableAvailable) throw err;
+    }
+  }
+
+  const saved = await fetchSetScoreFromDb(matchId, setIndex);
+  return saved || { host, away };
+}
+
+/**
  * 점수 취소/타임라인 삭제 후 해당 세트만 재계산해 match_sets + matches.set_scores 에 반영.
  * winner_team / 다른 세트 라인업은 건드리지 않는다.
  */
@@ -165,71 +214,7 @@ export async function syncSetScoreFromRemainingEvents(
   setIndex: number,
 ): Promise<{ host: number; away: number }> {
   const score = lastScoreForSetFromEvents(events, setIndex);
-  const setNumber = Math.max(1, setIndex + 1);
-
-  let rows: Array<{ set_number: number; host_score: number; away_score: number }> = [];
-  if (matchSetsTableAvailable) {
-    try {
-      const { data, error } = await supabase
-        .from('match_sets')
-        .select('set_number, host_score, away_score')
-        .eq('match_id', matchId)
-        .order('set_number', { ascending: true });
-      if (error) {
-        matchSetsTableAvailable = false;
-      } else {
-        rows = (data || []).map((r: any) => ({
-          set_number: Number(r.set_number) || 0,
-          host_score: Number(r.host_score) || 0,
-          away_score: Number(r.away_score) || 0,
-        }));
-      }
-    } catch {
-      matchSetsTableAvailable = false;
-    }
-  }
-
-  if (matchSetsTableAvailable) {
-    const exists = rows.some((r) => r.set_number === setNumber);
-    const stamp = new Date().toISOString();
-    if (exists) {
-      await supabase
-        .from('match_sets')
-        .update({ host_score: score.host, away_score: score.away, updated_at: stamp })
-        .eq('match_id', matchId)
-        .eq('set_number', setNumber);
-      rows = rows.map((r) => (
-        r.set_number === setNumber ? { ...r, host_score: score.host, away_score: score.away } : r
-      ));
-    } else {
-      await supabase.from('match_sets').insert({
-        match_id: matchId,
-        set_number: setNumber,
-        host_score: score.host,
-        away_score: score.away,
-        is_closed: false,
-        updated_at: stamp,
-      });
-      rows.push({ set_number: setNumber, host_score: score.host, away_score: score.away });
-    }
-  } else {
-    const { data: matchRow } = await supabase.from('matches').select('set_scores').eq('id', matchId).maybeSingle();
-    rows = parseSetScoresString(matchRow?.set_scores).map((s, i) => ({
-      set_number: i + 1,
-      host_score: s.host,
-      away_score: s.away,
-    }));
-    while (rows.length < setNumber) {
-      rows.push({ set_number: rows.length + 1, host_score: 0, away_score: 0 });
-    }
-    rows[setIndex] = { set_number: setNumber, host_score: score.host, away_score: score.away };
-  }
-
-  rows.sort((a, b) => a.set_number - b.set_number);
-  const summary = formatSetScoresString(rows.map((r) => ({ hostScore: r.host_score, awayScore: r.away_score })));
-  await supabase.from('matches').update({ set_scores: summary }).eq('id', matchId);
-  const saved = await fetchSetScoreFromDb(matchId, setIndex);
-  return saved || score;
+  return writeLiveSetScore(matchId, setIndex, score);
 }
 
 export function lastScoresBySetFromEvents(events: MatchEventLike[]): { host: number; away: number }[] {

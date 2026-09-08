@@ -41,8 +41,8 @@ import {
   parseRosterJson,
   upsertMatchSets,
   lastScoreForSetFromEvents,
-  syncSetScoreFromRemainingEvents,
   fetchSetScoreFromDb,
+  writeLiveSetScore,
   type MatchSetRecord,
 } from '../lib/matchSets';
 
@@ -299,11 +299,14 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
 
   const persistRecalculatedSetScore = async (allEvents: MatchEvent[], setIndex: number) => {
     if (!matchId) return lastScoreForSetFromEvents(allEvents, setIndex);
-    await syncSetScoreFromRemainingEvents(matchId, allEvents, setIndex).catch(() => (
-      lastScoreForSetFromEvents(allEvents, setIndex)
-    ));
+    const computed = lastScoreForSetFromEvents(allEvents, setIndex);
+    try {
+      await writeLiveSetScore(matchId, setIndex, computed);
+    } catch (e) {
+      console.error('match_sets 점수 동기화 실패:', e);
+    }
     const fromDb = await fetchSetScoreFromDb(matchId, setIndex);
-    const score = fromDb || lastScoreForSetFromEvents(allEvents, setIndex);
+    const score = fromDb || computed;
     applySetScoreToState(setIndex, score);
     return score;
   };
@@ -372,16 +375,20 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
         setEvents(mergedEvents);
 
         const applyIdx = currentSetIndexRef.current;
-        const setRec = loadedSets.find((s) => s.setNumber === applyIdx + 1) || loadedSets[applyIdx];
-        const fromSets = scoreFromMatchSetRow(setRec);
-        if (fromSets) setCurrentScores(fromSets);
+        const fromDb = await fetchSetScoreFromDb(matchId, applyIdx);
+        if (fromDb) applySetScoreToState(applyIdx, fromDb);
+        else {
+          const setRec = loadedSets.find((s) => s.setNumber === applyIdx + 1) || loadedSets[applyIdx];
+          const fromSets = scoreFromMatchSetRow(setRec);
+          if (fromSets) setCurrentScores(fromSets);
+        }
       }
     } catch (err: any) {
       console.error('스코어보드 실패:', err);
     } finally {
       setLoading(false);
     }
-  }, [matchId, currentUserId, isSpectatorForced]);
+  }, [matchId, currentUserId, isSpectatorForced, applySetScoreToState]);
 
   useEffect(() => {
     fetchMatchDetails();
@@ -417,6 +424,11 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
       .on('postgres_changes', { event: '*', schema: 'public', table: 'match_events', filter: `match_id=eq.${matchId}` }, async () => {
         const { data } = await supabase.from('match_events').select('*').eq('match_id', matchId).order('created_at', { ascending: true });
         setEvents(asArray<MatchEvent>(data));
+        if (isSpectatorForced) {
+          const idx = currentSetIndexRef.current;
+          const fromDb = await fetchSetScoreFromDb(matchId, idx);
+          if (fromDb) applySetScoreToState(idx, fromDb);
+        }
       })
       .subscribe();
 
@@ -560,8 +572,13 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
     };
     await supabase.from('match_events').insert(scoreLog);
     if (matchId) await appendMatchScoreLog(matchId, scoreLog);
-    if (currentSetIndex >= setHistory.length) {
-      await persistSetsFromHistory(setHistory, { host: newHostScore, away: newAwayScore });
+    if (matchId) {
+      try {
+        const saved = await writeLiveSetScore(matchId, currentSetIndex, { host: newHostScore, away: newAwayScore });
+        applySetScoreToState(currentSetIndex, saved);
+      } catch (e) {
+        console.error('match_sets 점수 저장 실패:', e);
+      }
     }
   };
 
@@ -1336,6 +1353,10 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
     });
     if (currentSetIndex >= setHistory.length) {
       await persistSetsFromHistory(setHistory, { host: tempHostScore, away: tempAwayScore });
+    }
+    if (matchId) {
+      const saved = await writeLiveSetScore(matchId, currentSetIndex, { host: tempHostScore, away: tempAwayScore });
+      applySetScoreToState(currentSetIndex, saved);
     }
     setEditModalVisible(false);
   };
