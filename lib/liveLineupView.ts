@@ -4,12 +4,13 @@ import {
   assignedUserId,
   clampLineCount,
   DEFAULT_LINE_COUNT,
+  courtSlotLabelAt,
   displaySlotPlayerName,
   parseSetFormationMap,
   resolveFormationFromSources,
   type SetFormation,
 } from './roster';
-import { parseTempGuestNum, positionKeyFromCourtIndex, TEMP_POSITION_LABELS } from './tempPlayer';
+import { parseTempGuestNum } from './tempPlayer';
 import { getSafeDisplayName, getSafeTeamName } from './utils';
 import type { LineupPlayerView, TeamLineupView } from '../components/TeamLineupPanel';
 
@@ -41,11 +42,12 @@ function toPlayer(
   const name = meta?.name || displaySlotPlayerName(real, null);
   let position: string | undefined;
   if (kind === 'court' && formation) {
-    const front = clampLineCount(formation.frontCount, DEFAULT_LINE_COUNT);
-    const middle = clampLineCount(formation.middleCount, DEFAULT_LINE_COUNT);
-    const back = clampLineCount(formation.backCount, DEFAULT_LINE_COUNT);
-    const posKey = positionKeyFromCourtIndex(index, front, middle, back);
-    position = TEMP_POSITION_LABELS[posKey];
+    position = courtSlotLabelAt(
+      index,
+      formation.frontCount,
+      formation.middleCount,
+      formation.backCount,
+    );
   }
   return {
     id: real,
