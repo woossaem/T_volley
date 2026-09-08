@@ -18,7 +18,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
 import { Colors } from '../constants/Colors';
 import StickyAdBanner from '../components/StickyAdBanner';
-import { getSafeTeamName } from '../lib/utils';
+import { getSafeDisplayName, getSafeTeamName } from '../lib/utils';
 
 interface PollOption {
   id: string;
@@ -147,8 +147,8 @@ export default function PollsScreen() {
       if (error) throw error;
 
       const formattedPolls: PollData[] = (data || []).map((p: any) => {
-        const creatorName = Array.isArray(p.profiles) ? p.profiles[0]?.full_name : p.profiles?.full_name;
-        const teamName = Array.isArray(p.teams) ? p.teams[0]?.name : p.teams?.name;
+        const creatorName = getSafeDisplayName(p.profiles || p);
+        const teamName = getSafeTeamName(p.teams);
 
         let totalVotes = 0;
         let hasVoted = false;

@@ -67,7 +67,7 @@ function padCourt(members: Member[] | null | undefined, layout?: CourtLayout, fi
     (layout?.backCount ?? DEFAULT_LINE_COUNT);
   const next: CourtSlotPlayer[] = (members || []).map((m) => ({
     user_id: assignedUserId(m.user_id),
-    full_name: m.full_name,
+    full_name: getSafeDisplayName(m),
   }));
   while (next.length < total) {
     next.push({ user_id: fillEmpty ? '' : null, full_name: ANONYMOUS_PLAYER_NAME });

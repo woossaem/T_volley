@@ -3,6 +3,30 @@
 const BLANK_TOKENS = new Set(['', '-', 'null', 'undefined', 'nan', 'none', '(null)', '{}', '[]', '[object object]']);
 const ZERO_WIDTH = /[\u200B-\u200D\uFEFF\u00A0]/g;
 
+const USER_NAME_KEYS = [
+  'nickname',
+  'full_name',
+  'fullName',
+  'user_name',
+  'username',
+  'name',
+  'player_name',
+  'display_name',
+  'displayName',
+  'real_name',
+  'realName',
+];
+
+const TEAM_NAME_KEYS = [
+  'name',
+  'team_name',
+  'host_team_name',
+  'away_team_name',
+  'title',
+  'display_name',
+  'displayName',
+];
+
 function cleanText(value: unknown): string | null {
   if (typeof value === 'number' && Number.isFinite(value)) return String(value);
   if (typeof value !== 'string') return null;
@@ -36,65 +60,68 @@ function pickFirst(row: Record<string, unknown> | null, keys: string[]): string 
   return null;
 }
 
-function emailLocal(row: Record<string, unknown> | null): string | null {
+function emailLocalFrom(row: Record<string, unknown> | null): string | null {
   const email = cleanText(row?.email);
   if (!email || !email.includes('@')) return null;
   const local = email.split('@')[0]?.trim();
   return local || null;
 }
 
+function collectRecords(raw: unknown, depth = 0, bag: Record<string, unknown>[] = []): Record<string, unknown>[] {
+  if (depth > 4) return bag;
+  const row = asRecord(raw);
+  if (!row) return bag;
+  if (bag.includes(row)) return bag;
+  bag.push(row);
+  [
+    row.profiles,
+    row.profile,
+    row.user,
+    row.member,
+    row.player,
+    row.user_metadata,
+    row.raw_user_meta_data,
+    row.teams,
+    row.team,
+    row.host_team,
+    row.away_team,
+  ].forEach((nested) => collectRecords(nested, depth + 1, bag));
+  return bag;
+}
+
 export const getSafeDisplayName = (player: any): string => {
   if (!player) return '게스트';
+  if (typeof player === 'string' && player.trim() !== '') return player.trim();
   const asString = cleanText(player);
   if (asString) return asString;
 
-  const root = asRecord(player);
-  if (!root) return '게스트';
+  const sources = collectRecords(player);
+  if (sources.length === 0) return '게스트';
 
-  const nested = asRecord(root.profiles ?? root.profile ?? root.user ?? root.member ?? root.player);
-  const meta = asRecord(root.user_metadata ?? root.raw_user_meta_data);
-  const sources = [root, nested, meta];
   for (const src of sources) {
-    const name = pickFirst(src, [
-      'nickname',
-      'full_name',
-      'fullName',
-      'user_name',
-      'username',
-      'name',
-      'player_name',
-      'display_name',
-      'displayName',
-      'real_name',
-      'realName',
-    ]);
+    const name = pickFirst(src, USER_NAME_KEYS);
     if (name) return name;
-    const fromEmail = emailLocal(src);
+  }
+
+  for (const src of sources) {
+    const fromEmail = emailLocalFrom(src);
     if (fromEmail) return fromEmail;
   }
+
   return '선수';
 };
 
 export const getSafeTeamName = (team: any): string => {
   if (!team) return '게스트 팀';
+  if (typeof team === 'string' && team.trim() !== '') return team.trim();
   const asString = cleanText(team);
   if (asString) return asString;
 
-  const root = asRecord(team);
-  if (!root) return '게스트 팀';
+  const sources = collectRecords(team);
+  if (sources.length === 0) return '게스트 팀';
 
-  const nested = asRecord(root.teams ?? root.team);
-  const sources = [root, nested];
   for (const src of sources) {
-    const teamName = pickFirst(src, [
-      'name',
-      'team_name',
-      'host_team_name',
-      'away_team_name',
-      'title',
-      'display_name',
-      'displayName',
-    ]);
+    const teamName = pickFirst(src, TEAM_NAME_KEYS);
     if (teamName) return teamName;
   }
   return '동호회팀';

@@ -291,7 +291,7 @@ export default function IntramuralScreen() {
 
     const badges: BadgeOption[] = [];
     if (teamsInclude(myTeams, match.host_team_name)) {
-      badges.push({ type: 'host', teamName: match.host_team_name, label: `⚔️ 소속팀 (${match.host_team_name})` });
+      badges.push({ type: 'host', teamName: match.host_team_name, label: `⚔️ 소속팀 (${getSafeTeamName(match.host_team_name)})` });
     }
     setAvailableBadges(badges);
     setSelectedBadge(badges[0]);
@@ -558,7 +558,7 @@ export default function IntramuralScreen() {
 
     intraMembers.forEach(m => {
       userStats[m.user_id] = { wins: 0, draws: 0, losses: 0, total: 0 };
-      nameById[m.user_id] = m.full_name;
+      nameById[m.user_id] = getSafeDisplayName(m);
     });
 
     matches.forEach(match => {
@@ -606,7 +606,7 @@ export default function IntramuralScreen() {
       .filter(([_, stat]) => stat.total > 0)
       .map(([uId, stat]) => {
         const memberObj = intraMembers.find(m => m.user_id === uId);
-        const fullName = memberObj?.full_name || (uId === currentUserId ? '나' : '팀원');
+        const fullName = memberObj ? getSafeDisplayName(memberObj) : (uId === currentUserId ? '나' : '팀원');
         const winRate = stat.total > 0 ? Math.round((stat.wins / stat.total) * 100) : 0;
         return {
           userId: uId,

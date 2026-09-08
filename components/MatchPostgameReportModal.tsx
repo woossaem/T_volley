@@ -15,7 +15,7 @@ import { safeInset } from '../lib/nativeSafe';
 import ScoreTimeline, { MatchEvent } from './ScoreTimeline';
 import { parseRosterUserIds, parseSetRosterMap, safeIncludes } from '../lib/roster';
 import { isPersonalFault, isPersonalKill } from '../lib/playerStats';
-import { resolveTeamName } from '../lib/nameUtils';
+import { getSafeTeamName } from '../lib/utils';
 import { formatPlayerDisplayName, isAwardEligiblePlayer } from '../lib/tempPlayer';
 
 interface MatchPostgameReportModalProps {
@@ -282,11 +282,11 @@ export default function MatchPostgameReportModal({
   }, [match?.description]);
 
   const isIntramural = match?.status === 'intramural';
-  const intramuralTeamName = resolveTeamName(match?.host_team_name, '우리팀');
-  const displayHostName = isIntramural ? parsedIntraNames.teamA : resolveTeamName(match?.host_team_name, '홈팀');
-  const displayAwayName = isIntramural ? parsedIntraNames.teamB : resolveTeamName(match?.away_team_name, '어웨이팀');
+  const intramuralTeamName = getSafeTeamName(match?.host_team_name || '우리팀');
+  const displayHostName = isIntramural ? getSafeTeamName(parsedIntraNames.teamA) : getSafeTeamName(match?.host_team_name || '홈팀');
+  const displayAwayName = isIntramural ? getSafeTeamName(parsedIntraNames.teamB) : getSafeTeamName(match?.away_team_name || '어웨이팀');
   const reportSubtitle = isIntramural
-    ? `${intramuralTeamName} 자체 내전 (${parsedIntraNames.teamA} vs ${parsedIntraNames.teamB})`
+    ? `${intramuralTeamName} 자체 내전 (${displayHostName} vs ${displayAwayName})`
     : `${displayHostName} VS ${displayAwayName}`;
   const hostIcon = isIntramural ? '⚔️' : hostTeamType === 'club' ? '🛡️' : '🏫';
   const awayIcon = isIntramural ? '⚔️' : awayTeamType === 'club' ? '🛡️' : '🏫';

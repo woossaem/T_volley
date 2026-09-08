@@ -855,7 +855,10 @@ export default function MyMatchesScreen() {
       }),
     };
     const members = isHost ? hostMembers : awayMembers;
-    const replacements = collectTempReplacements(before, filled.court, (id) => members.find((m) => m.user_id === id)?.full_name);
+    const replacements = collectTempReplacements(before, filled.court, (id) => {
+      const found = members.find((m) => m.user_id === id);
+      return found ? getSafeDisplayName(found) : undefined;
+    });
     const formMap = parseSetFormationMap(isHost ? selectedMatchForResult.host_roster : selectedMatchForResult.away_roster);
     formMap[setIndex] = filled;
     const carried = seedNextSetFormation(formMap, setIndex);

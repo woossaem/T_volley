@@ -26,13 +26,11 @@ export default function IndexScreen() {
   return (
     <View style={styles.container}>
       <View style={styles.centerBox}>
-        <View style={styles.logoBadge}>
-          <Image
-            source={require('../assets/icon.png')}
-            style={styles.logoImage}
-            resizeMode="contain"
-          />
-        </View>
+        <Image
+          source={require('../assets/icon.png')}
+          style={styles.logoImage}
+          resizeMode="contain"
+        />
 
         <View style={styles.titleRow}>
           <Text style={styles.mainTitle}>T_VOLLEY</Text>
@@ -59,19 +57,7 @@ export default function IndexScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#0F172A', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 60 },
   centerBox: { alignItems: 'center', marginTop: 120 },
-  logoBadge: {
-    width: 112,
-    height: 112,
-    borderRadius: 24,
-    backgroundColor: '#0F172A',
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderWidth: 2,
-    borderColor: '#3B82F6',
-    marginBottom: 20,
-    overflow: 'hidden',
-  },
-  logoImage: { width: '100%', height: '100%' },
+  logoImage: { width: 112, height: 112, marginBottom: 20 },
   titleRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 6 },
   mainTitle: { fontSize: 32, fontWeight: '900', color: '#FFFFFF', letterSpacing: 2 },
   seasonBadge: { backgroundColor: '#F59E0B', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6 },

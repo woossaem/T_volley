@@ -392,7 +392,7 @@ export default function HomeScreen() {
               <View style={styles.liveBarLeft}>
                 <View style={styles.liveDotPill}><Text style={styles.liveDotPillText}>🔴 공식전 LIVE</Text></View>
                 <Text style={styles.liveBarTeamsText} numberOfLines={1}>
-                  {liveOfficialMatch.host_team_name} vs {liveOfficialMatch.away_team_name || '상대팀'}
+                  {getSafeTeamName(liveOfficialMatch.host_team_name)} vs {liveOfficialMatch.away_team_name ? getSafeTeamName(liveOfficialMatch.away_team_name) : '상대팀'}
                 </Text>
               </View>
               <Text style={styles.liveBarActionText}>전광판 스코어보드 ›</Text>
@@ -417,7 +417,7 @@ export default function HomeScreen() {
               <View style={styles.liveBarLeft}>
                 <View style={styles.liveIntraDotPill}><Text style={styles.liveDotPillText}>💜 팀 내전 LIVE</Text></View>
                 <Text style={styles.liveIntraTeamsText} numberOfLines={1}>
-                  [{liveIntraMatch.host_team_name}] {parseTeamNamesFromDesc(liveIntraMatch.description).teamA} VS {parseTeamNamesFromDesc(liveIntraMatch.description).teamB}
+                  [{getSafeTeamName(liveIntraMatch.host_team_name)}] {getSafeTeamName(parseTeamNamesFromDesc(liveIntraMatch.description).teamA)} VS {getSafeTeamName(parseTeamNamesFromDesc(liveIntraMatch.description).teamB)}
                 </Text>
               </View>
               <Text style={styles.liveIntraActionText}>전광판 스코어보드 ›</Text>

@@ -245,7 +245,7 @@ export default function MyTeamDetailScreen() {
       memList.sort((a, b) => {
         if (a.id === currentLeaderId) return -1;
         if (b.id === currentLeaderId) return 1;
-        return a.full_name.localeCompare(b.full_name, 'ko-KR');
+        return getSafeDisplayName(a).localeCompare(getSafeDisplayName(b), 'ko-KR');
       });
 
       setMembers(memList);
@@ -265,7 +265,7 @@ export default function MyTeamDetailScreen() {
       memList.forEach(mUser => {
         const career = emptyPlayerCareerStats();
         intraMatches.forEach((m: any) => {
-          addMatchPlayerStats(career, mUser.id, m, m.match_events || m.score_logs || [], mUser.full_name);
+          addMatchPlayerStats(career, mUser.id, m, m.match_events || m.score_logs || [], getSafeDisplayName(mUser));
         });
         rankMap[mUser.id].total = career.setsPlayed;
         rankMap[mUser.id].wins = career.setWins;

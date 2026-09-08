@@ -33,13 +33,11 @@ export default function LoginScreen() {
   return (
     <SafeAreaView style={styles.container} edges={['top', 'bottom', 'left', 'right']}>
       <View style={styles.centerSection}>
-        <View style={styles.logoBadge}>
-          <Image
-            source={require('../assets/icon.png')}
-            style={styles.logoImage}
-            resizeMode="contain"
-          />
-        </View>
+        <Image
+          source={require('../assets/icon.png')}
+          style={styles.logoImage}
+          resizeMode="contain"
+        />
 
         <View style={styles.titleRow}>
           <Text style={styles.appTitle}>T volley</Text>
@@ -107,24 +105,7 @@ export default function LoginScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#0F172A', justifyContent: 'space-between', paddingHorizontal: 24 },
   centerSection: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingTop: 20 },
-  logoBadge: {
-    width: 112,
-    height: 112,
-    borderRadius: 24,
-    borderWidth: 2,
-    borderColor: '#3B82F6',
-    overflow: 'hidden',
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginBottom: 20,
-    backgroundColor: '#0F172A',
-    shadowColor: '#3B82F6',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 10,
-    elevation: 6,
-  },
-  logoImage: { width: '100%', height: '100%' },
+  logoImage: { width: 112, height: 112, marginBottom: 20 },
   titleRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 8 },
   appTitle: { fontSize: 32, fontWeight: '900', color: '#FFFFFF', letterSpacing: 1 },
   seasonBadge: { backgroundColor: '#FDE047', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 8 },
