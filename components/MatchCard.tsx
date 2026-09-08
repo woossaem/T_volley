@@ -122,7 +122,7 @@ export default function MatchCard({
 
   const copyLiveLink = async () => {
     const slug = match.short_code || match.id;
-    const url = `https://t-volley.com/live/${slug}`;
+    const url = `https://t-volley-live.vercel.app/live/${slug}`;
     await Clipboard.setStringAsync(url);
     Alert.alert('복사 완료', '라이브 전광판 링크가 복사되었습니다! 카톡에 공유해보세요.');
   };

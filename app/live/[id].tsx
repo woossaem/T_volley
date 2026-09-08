@@ -1,9 +1,21 @@
 import React, { useEffect, useState } from 'react';
-import { View, Text, StyleSheet, ActivityIndicator, Platform, TouchableOpacity } from 'react-native';
+import {
+  View,
+  Text,
+  StyleSheet,
+  ActivityIndicator,
+  Platform,
+  TouchableOpacity,
+  useWindowDimensions,
+  Alert,
+} from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { supabase } from '../../lib/supabase';
 import { Colors } from '../../constants/Colors';
 import ScoreboardScreen from '../scoreboard';
+
+const PLAY_STORE_SEARCH_URL = 'https://play.google.com/store/search?q=%ED%8B%B0%EB%B3%BC%EB%A6%AC';
+const APP_STORE_URL = 'https://www.apple.com/app-store/';
 
 function resolveLiveParam(raw: string | string[] | undefined): string {
   const value = Array.isArray(raw) ? raw[0] : raw;
@@ -15,8 +27,64 @@ function resolveLiveParam(raw: string | string[] | undefined): string {
   }
 }
 
-export default function LiveScoreboardScreen() {
+function PlgPromoBanner() {
   const router = useRouter();
+  const { width } = useWindowDimensions();
+  const compact = width < 768;
+  const [isBannerVisible, setIsBannerVisible] = useState(true);
+
+  const handleDownload = () => {
+    if (Platform.OS !== 'web') return;
+    const userAgent = String(globalThis.navigator?.userAgent || '').toLowerCase();
+    if (/android/.test(userAgent)) {
+      window.open(PLAY_STORE_SEARCH_URL, '_blank');
+    } else if (/iphone|ipad|ipod/.test(userAgent)) {
+      window.open(APP_STORE_URL, '_blank');
+    } else {
+      Alert.alert('앱 다운로드', "스토어에서 '티볼리'를 검색하여 앱을 설치해 주세요!");
+    }
+  };
+
+  if (!isBannerVisible) return null;
+
+  return (
+    <View style={[styles.plgBanner, compact && styles.plgBannerCompact]} pointerEvents="box-none">
+      <View style={[styles.plgCard, compact && styles.plgCardCompact]}>
+        <TouchableOpacity
+          style={styles.plgCloseBtn}
+          onPress={() => setIsBannerVisible(false)}
+          hitSlop={8}
+          accessibilityRole="button"
+          accessibilityLabel="배너 닫기"
+        >
+          <Text style={styles.plgCloseText}>✕</Text>
+        </TouchableOpacity>
+        <View style={styles.plgCopy}>
+          <Text style={[styles.plgTitle, compact && styles.plgTitleCompact]}>🏐 우리 팀 경기 기록, 더 스마트하게</Text>
+          <Text style={[styles.plgSub, compact && styles.plgSubCompact]}>선수 교체부터 개인 스탯까지 빠르고 간편하게!</Text>
+          <View style={[styles.plgCtaRow, compact && styles.plgCtaRowCompact]}>
+            <TouchableOpacity
+              style={[styles.plgCta, compact && styles.plgCtaCompact]}
+              onPress={() => router.push('/login')}
+              activeOpacity={0.85}
+            >
+              <Text style={[styles.plgCtaText, compact && styles.plgCtaTextCompact]}>3초만에 간편 등록하기</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.plgCta, styles.plgCtaSecondary, compact && styles.plgCtaCompact]}
+              onPress={handleDownload}
+              activeOpacity={0.85}
+            >
+              <Text style={[styles.plgCtaText, compact && styles.plgCtaTextCompact]}>앱 다운로드</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </View>
+    </View>
+  );
+}
+
+export default function LiveScoreboardScreen() {
   const params = useLocalSearchParams<{ id: string }>();
   const rawId = resolveLiveParam(params.id);
   const [matchId, setMatchId] = useState<string | null>(null);
@@ -64,8 +132,6 @@ export default function LiveScoreboardScreen() {
     };
   }, [rawId]);
 
-  const showPlgBanner = Platform.OS === 'web';
-
   if (loading) {
     return (
       <View style={styles.fallback}>
@@ -89,26 +155,7 @@ export default function LiveScoreboardScreen() {
       <View style={styles.boardFrame}>
         <ScoreboardScreen matchId={matchId} isSpectator={true} />
       </View>
-      {showPlgBanner ? (
-        <View style={styles.plgBanner} pointerEvents="box-none">
-          <View style={styles.plgCard}>
-            <View style={styles.qrPlaceholder}>
-              <Text style={styles.qrMark}>QR</Text>
-            </View>
-            <View style={styles.plgCopy}>
-              <Text style={styles.plgTitle}>🏐 우리 팀 경기 기록, 더 스마트하게</Text>
-              <Text style={styles.plgSub}>선수 교체부터 개인 스탯까지 빠르고 간편하게!</Text>
-              <TouchableOpacity
-                style={styles.plgCta}
-                onPress={() => router.push('/login')}
-                activeOpacity={0.85}
-              >
-                <Text style={styles.plgCtaText}>3초만에 간편 등록하기</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-        </View>
-      ) : null}
+      {Platform.OS === 'web' ? <PlgPromoBanner /> : null}
     </View>
   );
 }
@@ -150,39 +197,55 @@ const styles = StyleSheet.create({
     bottom: 16,
     zIndex: 40,
   },
+  plgBannerCompact: {
+    right: 8,
+    bottom: 8,
+    left: 8,
+  },
   plgCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
+    position: 'relative',
     backgroundColor: 'rgba(15, 23, 42, 0.92)',
     borderWidth: 1,
     borderColor: 'rgba(148, 163, 184, 0.35)',
     borderRadius: 12,
-    paddingVertical: 10,
+    paddingTop: 14,
+    paddingBottom: 10,
     paddingHorizontal: 12,
     maxWidth: 360,
   },
-  qrPlaceholder: {
-    width: 56,
-    height: 56,
-    borderRadius: 8,
-    backgroundColor: '#FFFFFF',
+  plgCardCompact: {
+    paddingTop: 12,
+    paddingBottom: 8,
+    paddingHorizontal: 10,
+    maxWidth: '100%',
+    borderRadius: 10,
+  },
+  plgCloseBtn: {
+    position: 'absolute',
+    top: 4,
+    right: 6,
+    width: 24,
+    height: 24,
     alignItems: 'center',
     justifyContent: 'center',
+    zIndex: 2,
   },
-  qrMark: {
-    fontSize: 12,
-    fontWeight: '900',
-    color: '#0F172A',
-    letterSpacing: 1,
+  plgCloseText: {
+    color: '#E2E8F0',
+    fontSize: 14,
+    fontWeight: '800',
+    lineHeight: 16,
   },
   plgCopy: {
-    flex: 1,
+    paddingRight: 18,
   },
   plgTitle: {
     color: '#FFFFFF',
     fontSize: 13,
     fontWeight: '800',
+  },
+  plgTitleCompact: {
+    fontSize: 12,
   },
   plgSub: {
     color: '#CBD5E1',
@@ -191,17 +254,42 @@ const styles = StyleSheet.create({
     marginTop: 3,
     lineHeight: 16,
   },
-  plgCta: {
+  plgSubCompact: {
+    fontSize: 10,
+    lineHeight: 14,
+    marginTop: 2,
+  },
+  plgCtaRow: {
     marginTop: 8,
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+  },
+  plgCtaRowCompact: {
+    marginTop: 6,
+    gap: 4,
+  },
+  plgCta: {
     backgroundColor: '#2563EB',
     borderRadius: 8,
     paddingVertical: 8,
     paddingHorizontal: 10,
     alignItems: 'center',
+    flexGrow: 1,
+  },
+  plgCtaCompact: {
+    paddingVertical: 6,
+    paddingHorizontal: 8,
+  },
+  plgCtaSecondary: {
+    backgroundColor: '#334155',
   },
   plgCtaText: {
     color: '#FFFFFF',
     fontSize: 12,
     fontWeight: '800',
+  },
+  plgCtaTextCompact: {
+    fontSize: 11,
   },
 });
