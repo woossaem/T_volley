@@ -21,7 +21,7 @@ import { supabase } from '../lib/supabase';
 import { Colors } from '../constants/Colors';
 import StickyAdBanner from '../components/StickyAdBanner';
 import { isActiveTeamStatus } from '../lib/teamStatus';
-import { getSafeTeamName } from '../lib/utils';
+import { generateShortCode, getSafeTeamName } from '../lib/utils';
 import { insertMatchIgnoringUnknownColumns } from '../lib/matchWrite';
 import { DEFAULT_GUEST_TEAM_NAME, guestMatchWritePayload } from '../lib/guestMatch';
 
@@ -203,6 +203,7 @@ export default function CreateMatchScreen() {
         status: 'open',
         need_mercenary: isGuestMatch ? false : needMercenary,
         mercenary_details: isGuestMatch || !needMercenary ? null : mercenaryDetails.trim(),
+        short_code: generateShortCode(),
         ...guestPayload,
       });
 

@@ -20,7 +20,6 @@ import { supabase } from '../lib/supabase';
 import { sendNotificationToTeam } from '../lib/notificationService';
 import { isGuestBindPending, isSoloGuestMatch } from '../lib/guestMatch';
 import { asArray, safeInset, safeLockLandscape, safeLockPortrait, safeStyleNumber } from '../lib/nativeSafe';
-
 import { MatchEvent } from '../components/ScoreTimeline';
 import ScoreTimeline from '../components/ScoreTimeline';
 import PlayerActionModal, { Member, ScoreKind, type LineupApplyPayload } from '../components/PlayerActionModal';
@@ -45,6 +44,20 @@ import {
   syncSetScoreFromRemainingEvents,
   type MatchSetRecord,
 } from '../lib/matchSets';
+
+const safeNativeCall = async (action: () => Promise<any>) => {
+  if (Platform.OS === 'web') return;
+  try {
+    await action();
+  } catch (e) {
+    console.warn('[Native Safe Guard] bypassed:', e);
+  }
+};
+
+type ScoreboardScreenProps = {
+  matchId?: string;
+  isSpectator?: boolean;
+};
 
 interface MatchRecord {
   id: string;
@@ -107,10 +120,12 @@ function pickHydratedSetScore(
   return rowScore || fromEvents || null;
 }
 
-export default function ScoreboardScreen() {
+export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
   const router = useRouter();
   const params = useLocalSearchParams<{ matchId: string }>();
-  const matchId = params.matchId;
+  const paramMatchId = Array.isArray(params.matchId) ? params.matchId[0] : params.matchId;
+  const matchId = props.matchId || paramMatchId;
+  const isSpectatorForced = props.isSpectator === true;
 
   const { session } = useAuth();
   const insets = useSafeAreaInsets();
@@ -125,7 +140,9 @@ export default function ScoreboardScreen() {
 
   const [myTeams, setMyTeams] = useState<string[]>([]);
   const [roleModalVisible, setRoleModalVisible] = useState(false);
-  const [myRole, setMyRole] = useState<'spectator' | 'host_recorder' | 'away_recorder' | 'integrated_recorder' | null>(null);
+  const [myRole, setMyRole] = useState<'spectator' | 'host_recorder' | 'away_recorder' | 'integrated_recorder' | null>(
+    isSpectatorForced ? 'spectator' : null,
+  );
 
   const [hostRecorderName, setHostRecorderName] = useState<string>('공석');
   const [awayRecorderName, setAwayRecorderName] = useState<string>('공석');
@@ -181,11 +198,12 @@ export default function ScoreboardScreen() {
 
   useFocusEffect(
     useCallback(() => {
+      if (Platform.OS === 'web') return;
       if (!matchClosedRef.current) {
-        void safeLockLandscape();
+        void safeNativeCall(() => safeLockLandscape());
       }
       return () => {
-        void safeLockPortrait();
+        void safeNativeCall(() => safeLockPortrait());
       };
     }, [])
   );
@@ -202,7 +220,7 @@ export default function ScoreboardScreen() {
     setFinishModalVisible(false);
     setActionModalVisible(false);
     setEditModalVisible(false);
-    await safeLockPortrait();
+    await safeNativeCall(() => safeLockPortrait());
     setReportModalVisible(true);
   }, []);
 
@@ -283,21 +301,29 @@ export default function ScoreboardScreen() {
   };
 
   const fetchMatchDetails = useCallback(async () => {
-    if (!matchId || !currentUserId) return;
+    if (!matchId) return;
+    if (!currentUserId && !isSpectatorForced) return;
     try {
-      const { data: tmData } = await supabase.from('team_members').select('teams(name)').eq('user_id', currentUserId).eq('is_active', true);
-      const teams = (tmData || []).map((tm: any) => {
-        const tObj = Array.isArray(tm.teams) ? tm.teams[0] : tm.teams;
-        return tObj?.name || '';
-      }).filter(Boolean);
-      setMyTeams(teams);
+      if (currentUserId) {
+        const { data: tmData } = await supabase.from('team_members').select('teams(name)').eq('user_id', currentUserId).eq('is_active', true);
+        const teams = (tmData || []).map((tm: any) => {
+          const tObj = Array.isArray(tm.teams) ? tm.teams[0] : tm.teams;
+          return tObj?.name || '';
+        }).filter(Boolean);
+        setMyTeams(teams);
+      }
 
       const { data, error } = await supabase.from('matches').select('*').eq('id', matchId).single();
       if (error) throw error;
 
       if (data) {
         setMatch(data);
-        setRoleModalVisible(true);
+        if (isSpectatorForced) {
+          setMyRole('spectator');
+          setRoleModalVisible(false);
+        } else {
+          setRoleModalVisible(true);
+        }
 
         const hMems = await fetchMembers(safeNameText(data.host_team_name));
         setHostMembers(hMems);
@@ -347,7 +373,7 @@ export default function ScoreboardScreen() {
     } finally {
       setLoading(false);
     }
-  }, [matchId, currentUserId, recalcScores]);
+  }, [matchId, currentUserId, isSpectatorForced, recalcScores]);
 
   useEffect(() => {
     fetchMatchDetails();
@@ -815,9 +841,10 @@ export default function ScoreboardScreen() {
   }, [matchId]);
 
   useEffect(() => {
+    if (isSpectatorForced) return;
     if (loading || !matchId || !match) return;
     void autofillSet1GuestsIfNeeded();
-  }, [loading, matchId, match?.id]);
+  }, [loading, matchId, match?.id, isSpectatorForced]);
 
   const closeLiveSetIntoHistory = (history: string[]) => {
     return collectClosedSetScores({

@@ -1,4 +1,5 @@
 import { supabase } from './supabase';
+import { generateShortCode } from './utils';
 
 /** PostgREST 스키마 캐시에 없는 컬럼. insert/update 시 제외한다. */
 const KNOWN_MISSING_MATCH_COLUMNS = ['submitted_by_name'] as const;
@@ -68,7 +69,8 @@ async function writeMatchIgnoringUnknownColumns(
  * select 가 RLS 로 실패해도 insert 자체만 성공하면 등록 완료로 본다.
  */
 export async function insertMatchIgnoringUnknownColumns(payload: Record<string, unknown>) {
-  const result = await writeMatchIgnoringUnknownColumns(payload, async (row) => {
+  const withShortCode = payload.short_code ? payload : { ...payload, short_code: generateShortCode() };
+  const result = await writeMatchIgnoringUnknownColumns(withShortCode, async (row) => {
     const inserted = await supabase.from('matches').insert(row).select().maybeSingle();
     if (!inserted.error) return { data: inserted.data || row, error: null };
 

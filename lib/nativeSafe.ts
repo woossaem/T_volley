@@ -1,11 +1,13 @@
+import { Platform } from 'react-native';
 import * as ScreenOrientation from 'expo-screen-orientation';
 
-/** iOS 네이티브 모듈 예외를 삼켜 진입 크래시를 막는다. */
+/** 웹/iOS 네이티브 모듈 예외를 삼켜 진입 크래시를 막는다. */
 export async function safeNativeCall(action: () => Promise<any>): Promise<void> {
+  if (Platform.OS === 'web') return;
   try {
     await action();
   } catch (e) {
-    console.warn('[iOS Safe Guard] Native call bypassed:', e);
+    console.warn('[Native Safe Guard] bypassed:', e);
   }
 }
 

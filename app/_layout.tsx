@@ -85,6 +85,8 @@ function RootLayoutContent() {
         <Stack.Screen name="matches" />
         <Stack.Screen name="my-matches" />
         <Stack.Screen name="create-match" />
+        <Stack.Screen name="scoreboard" />
+        <Stack.Screen name="live/[id]" />
         <Stack.Screen name="teams" />
         <Stack.Screen name="rankings" />
         <Stack.Screen name="profile-setup" />

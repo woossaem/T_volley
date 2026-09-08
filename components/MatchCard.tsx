@@ -1,6 +1,7 @@
 import React from 'react';
-import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, Alert } from 'react-native';
 import { useRouter } from 'expo-router';
+import * as Clipboard from 'expo-clipboard';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Colors } from '../constants/Colors';
 import { formatTeamDisplayName } from '../lib/teamStatus';
@@ -47,6 +48,7 @@ export interface MatchData {
   away_team_id?: string | null;
   retro_claim_status?: string | null;
   retro_claim_team_name?: string | null;
+  short_code?: string | null;
 }
 
 export interface ApplicationData {
@@ -117,6 +119,13 @@ export default function MatchCard({
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const openScoreboard = () => router.push({ pathname: '/scoreboard', params: { matchId: match.id } });
+
+  const copyLiveLink = async () => {
+    const slug = match.short_code || match.id;
+    const url = `https://t-volley.com/live/${slug}`;
+    await Clipboard.setStringAsync(url);
+    Alert.alert('복사 완료', '라이브 전광판 링크가 복사되었습니다! 카톡에 공유해보세요.');
+  };
 
   const displayTeamName = (name?: string | null) => {
     const resolved = getSafeTeamName(name);
@@ -310,6 +319,15 @@ export default function MatchCard({
           )}
         </View>
         <Text style={styles.setScoreChevron}>›</Text>
+      </TouchableOpacity>
+
+      <TouchableOpacity
+        style={styles.liveLinkCopyBtn}
+        onPress={copyLiveLink}
+        activeOpacity={0.85}
+        hitSlop={8}
+      >
+        <Text style={styles.liveLinkCopyBtnText}>🔗 라이브 전광판 링크 복사</Text>
       </TouchableOpacity>
 
       {match.need_mercenary && match.mercenary_details && isMercenaryExpanded ? (
@@ -822,6 +840,16 @@ const styles = StyleSheet.create({
   setScoreBoxBody: { flex: 1, minWidth: 0 },
   setScoreNudge: { fontSize: 11, color: '#94A3B8', fontWeight: '700', lineHeight: 14, includeFontPadding: false, marginBottom: 6 },
   setScoreChevron: { fontSize: 16, color: '#94A3B8', lineHeight: 20, includeFontPadding: false, fontWeight: '400' },
+  liveLinkCopyBtn: {
+    backgroundColor: '#EFF6FF',
+    borderWidth: 1,
+    borderColor: '#BFDBFE',
+    borderRadius: 10,
+    paddingVertical: 9,
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  liveLinkCopyBtnText: { fontSize: 12, fontWeight: '800', color: '#1D4ED8', lineHeight: 16, includeFontPadding: false },
   setScoreEmpty: { fontSize: 13, color: '#94A3B8', fontWeight: '700', lineHeight: 18, includeFontPadding: false },
   setScorePillsRow: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'flex-start', gap: 8 },
   setScorePill: { backgroundColor: '#0F172A', borderRadius: 10, paddingHorizontal: 12, paddingVertical: 5, minWidth: 72, alignItems: 'center', borderWidth: 1, borderColor: '#334155' },

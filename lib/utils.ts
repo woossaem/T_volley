@@ -136,3 +136,13 @@ export function getPlayerDisplayName(player: unknown): string {
 export function getTeamDisplayName(team: unknown): string {
   return getSafeTeamName(team);
 }
+
+/** 웹 라이브 전광판용 6자리 단축 코드 (예: TV-A912). 오인 가능 문자(I, O, 0, 1) 제외. */
+export const generateShortCode = (): string => {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  let randomStr = '';
+  for (let i = 0; i < 4; i++) {
+    randomStr += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+  return `TV-${randomStr}`;
+};
