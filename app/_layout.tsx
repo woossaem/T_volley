@@ -95,11 +95,13 @@ function RootLayoutContent() {
       {!isSplashDone && (
         <Animated.View style={[styles.splashOverlay, { opacity: fadeAnim }]}>
           <View style={styles.centerContent}>
-            <Image
-              source={require('../assets/icon.png')}
-              style={styles.logoImage}
-              resizeMode="contain"
-            />
+            <View style={styles.logoWrapper}>
+              <Image
+                source={require('../assets/icon.png')}
+                style={styles.logoImage}
+                resizeMode="cover"
+              />
+            </View>
 
             <View style={styles.titleRow}>
               <Text style={styles.appTitle}>T_VOLLEY</Text>
@@ -152,10 +154,20 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  logoImage: {
-    width: 112,
-    height: 112,
+  logoWrapper: {
+    width: 104,
+    height: 104,
+    borderRadius: 24,
+    overflow: 'hidden',
+    backgroundColor: 'transparent',
+    alignItems: 'center',
+    justifyContent: 'center',
     marginBottom: 20,
+  },
+  logoImage: {
+    width: '100%',
+    height: '100%',
+    borderRadius: 24,
   },
   titleRow: {
     flexDirection: 'row',

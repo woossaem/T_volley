@@ -33,11 +33,13 @@ export default function LoginScreen() {
   return (
     <SafeAreaView style={styles.container} edges={['top', 'bottom', 'left', 'right']}>
       <View style={styles.centerSection}>
-        <Image
-          source={require('../assets/icon.png')}
-          style={styles.logoImage}
-          resizeMode="contain"
-        />
+        <View style={styles.logoWrapper}>
+          <Image
+            source={require('../assets/icon.png')}
+            style={styles.logoImage}
+            resizeMode="cover"
+          />
+        </View>
 
         <View style={styles.titleRow}>
           <Text style={styles.appTitle}>T volley</Text>
@@ -105,7 +107,21 @@ export default function LoginScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#0F172A', justifyContent: 'space-between', paddingHorizontal: 24 },
   centerSection: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingTop: 20 },
-  logoImage: { width: 112, height: 112, marginBottom: 20 },
+  logoWrapper: {
+    width: 104,
+    height: 104,
+    borderRadius: 24,
+    overflow: 'hidden',
+    backgroundColor: 'transparent',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 20,
+  },
+  logoImage: {
+    width: '100%',
+    height: '100%',
+    borderRadius: 24,
+  },
   titleRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 8 },
   appTitle: { fontSize: 32, fontWeight: '900', color: '#FFFFFF', letterSpacing: 1 },
   seasonBadge: { backgroundColor: '#FDE047', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 8 },
