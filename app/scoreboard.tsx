@@ -222,8 +222,8 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
     const boardW = isSpectatorForced
       ? Math.min(1200, Math.max(320, windowWidth - 472))
       : Math.min(1200, windowWidth);
-    const fitted = Math.floor((boardW / 2) * 0.68);
-    return Math.max(160, Math.min(320, fitted));
+    const fitted = Math.floor((boardW / 2) * 0.88);
+    return Math.max(160, Math.min(416, fitted));
   }, [isPcWeb, isSpectatorForced, windowWidth]);
   const scoreLineHeight = Math.round(scoreFontSize * 1.03);
   const insets = useSafeAreaInsets();
