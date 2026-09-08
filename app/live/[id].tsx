@@ -7,11 +7,15 @@ import {
   Platform,
   TouchableOpacity,
   useWindowDimensions,
+  Modal,
+  ScrollView,
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { supabase } from '../../lib/supabase';
 import { Colors } from '../../constants/Colors';
 import ScoreboardScreen from '../scoreboard';
+import TeamLineupPanel, { type TeamLineupView } from '../../components/TeamLineupPanel';
+import { loadLiveLineups } from '../../lib/liveLineupView';
 
 const PLAY_STORE_URL = 'https://play.google.com/store/apps/details?id=com.rudolfuu.tvolley&pcampaignid=web_share';
 const APP_STORE_URL = 'https://apps.apple.com/kr/app/%ED%8B%B0%EB%B3%BC%EB%A6%AC/id6799385540';
@@ -85,10 +89,16 @@ function PlgPromoBanner() {
 
 export default function LiveScoreboardScreen() {
   const params = useLocalSearchParams<{ id: string }>();
+  const { width, height } = useWindowDimensions();
+  const isDesktop = width >= 1024;
   const rawId = resolveLiveParam(params.id);
   const [matchId, setMatchId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [leftLineup, setLeftLineup] = useState<TeamLineupView | null>(null);
+  const [rightLineup, setRightLineup] = useState<TeamLineupView | null>(null);
+  const [isLineupModalOpen, setIsLineupModalOpen] = useState(false);
+  const [focusedTeam, setFocusedTeam] = useState<'ALL' | 'HOME' | 'AWAY'>('ALL');
 
   useEffect(() => {
     let cancelled = false;
@@ -131,6 +141,39 @@ export default function LiveScoreboardScreen() {
     };
   }, [rawId]);
 
+  useEffect(() => {
+    if (isDesktop) setIsLineupModalOpen(false);
+  }, [isDesktop]);
+
+  useEffect(() => {
+    if (!matchId || (!isDesktop && !isLineupModalOpen)) return;
+    let cancelled = false;
+    const refresh = async () => {
+      try {
+        const next = await loadLiveLineups(matchId);
+        if (cancelled || !next) return;
+        setLeftLineup(next.left);
+        setRightLineup(next.right);
+      } catch {
+        // 라인업 패널 전용. 전광판 점수 조회와 분리한다.
+      }
+    };
+    void refresh();
+    const channel = supabase
+      .channel(`live_lineup_${matchId}`)
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'matches', filter: `id=eq.${matchId}` }, () => {
+        void refresh();
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'match_sets', filter: `match_id=eq.${matchId}` }, () => {
+        void refresh();
+      })
+      .subscribe();
+    return () => {
+      cancelled = true;
+      supabase.removeChannel(channel);
+    };
+  }, [matchId, isDesktop, isLineupModalOpen]);
+
   if (loading) {
     return (
       <View style={styles.fallback}>
@@ -149,11 +192,85 @@ export default function LiveScoreboardScreen() {
     );
   }
 
+  const homeDimmed = focusedTeam === 'AWAY';
+  const awayDimmed = focusedTeam === 'HOME';
+
   return (
-    <View style={styles.page}>
-      <View style={styles.boardFrame}>
-        <ScoreboardScreen matchId={matchId} isSpectator={true} />
+    <View style={isDesktop ? styles.desktopShell : styles.page}>
+      {isDesktop ? (
+        <TeamLineupPanel team={{ name: leftLineup?.teamName }} lineup={leftLineup} side="left" />
+      ) : null}
+      <View style={isDesktop ? styles.desktopBoard : styles.boardFrame}>
+        <ScoreboardScreen
+          matchId={matchId}
+          isSpectator={true}
+          onOpenLineup={!isDesktop ? () => setIsLineupModalOpen(true) : undefined}
+        />
       </View>
+      {isDesktop ? (
+        <TeamLineupPanel team={{ name: rightLineup?.teamName }} lineup={rightLineup} side="right" />
+      ) : null}
+      {!isDesktop ? (
+        <Modal
+          visible={isLineupModalOpen}
+          transparent
+          animationType="fade"
+          onRequestClose={() => setIsLineupModalOpen(false)}
+        >
+          <View style={styles.lineupModalBackdrop}>
+            <View style={[styles.lineupModalSheet, { maxHeight: Math.round(height * 0.85) }]}>
+              <View style={styles.lineupModalHeader}>
+                <Text style={styles.lineupModalTitle}>선발 라인업 및 후보 명단</Text>
+                <TouchableOpacity
+                  style={styles.lineupModalClose}
+                  onPress={() => setIsLineupModalOpen(false)}
+                  hitSlop={8}
+                >
+                  <Text style={styles.lineupModalCloseText}>✕</Text>
+                </TouchableOpacity>
+              </View>
+              <View style={styles.lineupFilterRow}>
+                <TouchableOpacity
+                  style={[styles.lineupFilterBtn, focusedTeam === 'ALL' && styles.lineupFilterBtnActive]}
+                  onPress={() => setFocusedTeam('ALL')}
+                >
+                  <Text style={styles.lineupFilterText}>전체 보기</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.lineupFilterBtn, focusedTeam === 'HOME' && styles.lineupFilterBtnHost]}
+                  onPress={() => setFocusedTeam('HOME')}
+                >
+                  <Text style={styles.lineupFilterText} numberOfLines={1}>{leftLineup?.teamName || '홈 팀'}</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.lineupFilterBtn, focusedTeam === 'AWAY' && styles.lineupFilterBtnAway]}
+                  onPress={() => setFocusedTeam('AWAY')}
+                >
+                  <Text style={styles.lineupFilterText} numberOfLines={1}>{rightLineup?.teamName || '어웨이 팀'}</Text>
+                </TouchableOpacity>
+              </View>
+              <ScrollView style={styles.lineupCompareScroll} contentContainerStyle={styles.lineupCompareRow}>
+                <View style={[styles.lineupCompareCol, homeDimmed && styles.lineupDimmed]}>
+                  <TeamLineupPanel
+                    team={{ name: leftLineup?.teamName }}
+                    lineup={leftLineup}
+                    side="left"
+                    variant="compare"
+                  />
+                </View>
+                <View style={[styles.lineupCompareCol, awayDimmed && styles.lineupDimmed]}>
+                  <TeamLineupPanel
+                    team={{ name: rightLineup?.teamName }}
+                    lineup={rightLineup}
+                    side="right"
+                    variant="compare"
+                  />
+                </View>
+              </ScrollView>
+            </View>
+          </View>
+        </Modal>
+      ) : null}
       {Platform.OS === 'web' ? <PlgPromoBanner /> : null}
     </View>
   );
@@ -164,11 +281,26 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#020617',
   },
+  desktopShell: {
+    flexDirection: 'row',
+    width: '100%',
+    height: '100%',
+    flex: 1,
+    backgroundColor: '#090a0f',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
   boardFrame: {
     flex: 1,
     width: '100%',
     maxWidth: 1200,
     alignSelf: 'center',
+  },
+  desktopBoard: {
+    flex: 1,
+    height: '100%',
+    minWidth: 0,
+    maxWidth: 1200,
   },
   fallback: {
     flex: 1,
@@ -189,6 +321,85 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     textAlign: 'center',
     marginTop: 8,
+  },
+  lineupModalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(9, 10, 15, 0.95)',
+    justifyContent: 'flex-end',
+    padding: 10,
+  },
+  lineupModalSheet: {
+    backgroundColor: '#0F172A',
+    borderRadius: 14,
+    padding: 12,
+    width: '100%',
+    minHeight: 280,
+  },
+  lineupModalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 8,
+  },
+  lineupModalTitle: {
+    color: '#F8FAFC',
+    fontSize: 15,
+    fontWeight: '800',
+    flex: 1,
+    paddingRight: 8,
+  },
+  lineupModalClose: {
+    width: 28,
+    height: 28,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  lineupModalCloseText: {
+    color: '#E2E8F0',
+    fontSize: 18,
+    fontWeight: '800',
+  },
+  lineupFilterRow: {
+    flexDirection: 'row',
+    gap: 6,
+    marginBottom: 8,
+  },
+  lineupFilterBtn: {
+    flex: 1,
+    borderRadius: 8,
+    paddingVertical: 7,
+    paddingHorizontal: 6,
+    alignItems: 'center',
+    backgroundColor: '#1E293B',
+  },
+  lineupFilterBtnActive: {
+    backgroundColor: '#334155',
+  },
+  lineupFilterBtnHost: {
+    backgroundColor: '#0C4A6E',
+  },
+  lineupFilterBtnAway: {
+    backgroundColor: '#881337',
+  },
+  lineupFilterText: {
+    color: '#E2E8F0',
+    fontSize: 11,
+    fontWeight: '800',
+  },
+  lineupCompareScroll: {
+    flexGrow: 1,
+  },
+  lineupCompareRow: {
+    flexDirection: 'row',
+    gap: 8,
+    flexGrow: 1,
+  },
+  lineupCompareCol: {
+    flex: 1,
+    minWidth: 0,
+  },
+  lineupDimmed: {
+    opacity: 0.35,
   },
   plgBanner: {
     position: 'absolute',

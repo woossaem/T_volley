@@ -58,6 +58,7 @@ const safeNativeCall = async (action: () => Promise<any>) => {
 type ScoreboardScreenProps = {
   matchId?: string;
   isSpectator?: boolean;
+  onOpenLineup?: () => void;
 };
 
 interface MatchRecord {
@@ -124,6 +125,7 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
   const paramMatchId = Array.isArray(params.matchId) ? params.matchId[0] : params.matchId;
   const matchId = props.matchId || paramMatchId;
   const isSpectatorForced = props.isSpectator === true;
+  const onOpenLineup = props.onOpenLineup;
 
   const { session } = useAuth();
   const insets = useSafeAreaInsets();
@@ -1701,7 +1703,12 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
             </ScrollView>
           </View>
 
-          <View style={styles.headerSlimRight}>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            style={styles.headerSlimRightScroll}
+            contentContainerStyle={styles.headerSlimRight}
+          >
             <Text style={styles.recorderLine} numberOfLines={1}>{recorderLine}</Text>
             {myRole !== 'spectator' && (
               <TouchableOpacity style={styles.leaveRoleBtnSlim} onPress={handleLeaveRole} hitSlop={8}>
@@ -1716,7 +1723,12 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
             <TouchableOpacity style={styles.switchCourtBtnSlim} onPress={() => setIsSwapped(prev => !prev)} hitSlop={8}>
               <Text style={styles.switchCourtBtnTextSlim}>🔄 코트 변경</Text>
             </TouchableOpacity>
-          </View>
+            {onOpenLineup ? (
+              <TouchableOpacity style={styles.lineupBtnSlim} onPress={onOpenLineup} hitSlop={8}>
+                <Text style={styles.lineupBtnTextSlim}>📋 라인업</Text>
+              </TouchableOpacity>
+            ) : null}
+          </ScrollView>
         </View>
       </View>
 
@@ -2043,13 +2055,16 @@ const styles = StyleSheet.create({
   setNavClose: { width: 16, height: 16, borderRadius: 8, alignItems: 'center', justifyContent: 'center', marginLeft: 2 },
   setNavCloseText: { color: '#FCA5A5', fontSize: 13, fontWeight: '900', lineHeight: 14 },
   recorderLine: { fontSize: 11, color: '#E2E8F0', fontWeight: '800', textAlign: 'left', marginRight: 6, flexShrink: 1 },
-  headerSlimRight: { flexDirection: 'row', gap: 4, flexShrink: 1, minWidth: 0, justifyContent: 'flex-end', alignItems: 'center', paddingVertical: 0 },
+  headerSlimRightScroll: { flexGrow: 0, flexShrink: 1, minWidth: 0 },
+  headerSlimRight: { flexDirection: 'row', gap: 6, flexShrink: 0, minWidth: 0, justifyContent: 'flex-end', alignItems: 'center', paddingVertical: 0, paddingHorizontal: 8 },
   reportBtnSlim: { backgroundColor: '#FEFCE8', paddingHorizontal: 6, paddingVertical: 3, borderRadius: 6, borderWidth: 1, borderColor: '#FDE047' },
   reportBtnTextSlim: { color: '#A16207', fontWeight: '800', fontSize: 10.5 },
   leaveRoleBtnSlim: { backgroundColor: '#FEF2F2', paddingHorizontal: 6, paddingVertical: 3, borderRadius: 6, borderWidth: 1, borderColor: '#FECACA' },
   leaveRoleBtnTextSlim: { color: '#DC2626', fontWeight: '800', fontSize: 10.5 },
   switchCourtBtnSlim: { paddingHorizontal: 10, paddingVertical: 6, backgroundColor: '#F1F5F9', borderRadius: 8 },
   switchCourtBtnTextSlim: { color: '#334155', fontWeight: '800', fontSize: 11 },
+  lineupBtnSlim: { paddingHorizontal: 8, paddingVertical: 4, backgroundColor: '#1E3A8A', borderRadius: 8 },
+  lineupBtnTextSlim: { color: '#DBEAFE', fontWeight: '800', fontSize: 11 },
   scoreboardMainGrid: { flex: 1, minHeight: 160, flexDirection: 'row', width: '100%', backgroundColor: '#020617' },
   teamCourtHalf: { flex: 1, flexShrink: 0, minWidth: 0, position: 'relative', padding: 0, margin: 0 },
   hostCourtBg: { backgroundColor: '#0284C7' },
