@@ -10,13 +10,13 @@ import {
   Modal,
   Image,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
 import { Colors } from '../constants/Colors';
 import { formatTeamDisplayName, isActiveMembership } from '../lib/teamStatus';
-import { addMatchPlayerStats, emptyPlayerCareerStats, formatSetRecordLabel } from '../lib/playerStats';
+import { addMatchPlayerStats, emptyPlayerCareerStats, formatSetRecordLabel, formatSetWinAppearance } from '../lib/playerStats';
 import { hydrateMatchesWithSetScores } from '../lib/matchSets';
 import { resolveTeamName, resolveTeamNameOrNull, cleanRegionName, getTeamIcon, isSameName, UNSET_REGION } from '../lib/nameUtils';
 import UserProfileModal from '../components/UserProfileModal';
@@ -26,6 +26,8 @@ import BadgeCollectionModal from '../components/BadgeCollectionModal';
 import { getCurrentSeasonInfo, getSeasonOptions } from '../lib/season';
 import { getAllBadgesWithStatus } from '../lib/badgeUtils';
 import { isOfficialMatch } from '../lib/officialMatch';
+import { getSafeDisplayName, getSafeTeamName } from '../lib/utils';
+import { buildTeamReportAnalytics, listIntramuralTeamMatches, listOfficialTeamMatches } from '../lib/teamReportAnalytics';
 
 interface TeamRankingData {
   team_id: string;
@@ -86,6 +88,7 @@ const getMatchSeasonCode = (dateStr: string) => {
 
 export default function RankingScreen() {
   const router = useRouter();
+  const insets = useSafeAreaInsets();
   const { session } = useAuth();
   const currentUserId = session?.user?.id;
 
@@ -157,7 +160,11 @@ export default function RankingScreen() {
       setLoading(true);
 
       const { data: allTeams } = await supabase.from('teams').select('*');
-      const { data: allMatchesRaw } = await supabase.from('matches').select('*, match_sets(*)').in('status', ['completed', 'friendly']);
+      const { data: allMatchesRaw } = await supabase
+        .from('matches')
+        .select('*, match_sets(*)')
+        .eq('is_official', true)
+        .eq('status', 'completed');
       const { data: intraMatchesRaw } = await supabase.from('matches').select('*, match_sets(*)').eq('status', 'intramural');
       const allMatches = await hydrateMatchesWithSetScores(allMatchesRaw || []);
       const intraMatches = await hydrateMatchesWithSetScores(intraMatchesRaw || []);
@@ -167,7 +174,7 @@ export default function RankingScreen() {
         .from('team_members')
         .select('user_id, team_id, is_primary, is_active');
 
-      setRawMatches(allMatches);
+      setRawMatches([...allMatches, ...intraMatches]);
 
       const activeTmData = (tmData || []).filter((tm: any) => isActiveMembership(tm.is_active));
 
@@ -231,7 +238,7 @@ export default function RankingScreen() {
 
       setDbActiveRegions(Array.from(regionsSet));
 
-      const officialMatches = (allMatches || []).filter((m: any) => isOfficialMatch(m));
+      const officialMatches = (allMatches || []).filter((m: any) => isOfficialMatch(m) && m.is_guest_match !== true);
       const careerWinsMap = new Map<string, number>();
       officialMatches.forEach((m: any) => {
         const wName = resolveTeamNameOrNull(m.winner_team);
@@ -245,7 +252,7 @@ export default function RankingScreen() {
         const mSeasonCode = getMatchSeasonCode(m.match_date || m.created_at);
         return mSeasonCode === selectedPeriod;
       });
-      const personalTargetMatches = [...officialMatches, ...intraMatches].filter((m: any) => {
+      const personalTargetMatches = officialMatches.filter((m: any) => {
         if (selectedPeriod === 'hall_of_fame') return true;
         const mSeasonCode = getMatchSeasonCode(m.match_date || m.created_at);
         return mSeasonCode === selectedPeriod;
@@ -338,7 +345,7 @@ export default function RankingScreen() {
       const pRanks: PersonalRankingData[] = (allProfiles || []).map((p: any) => {
         const career = emptyPlayerCareerStats();
         personalTargetMatches.forEach((m: any) => {
-          addMatchPlayerStats(career, p.id, m, eventsByMatch.get(m.id) || [], p.full_name);
+          addMatchPlayerStats(career, p.id, m, eventsByMatch.get(m.id) || [], getSafeDisplayName(p));
         });
 
         let userRegion = userSchoolRegionMap.get(p.id);
@@ -350,7 +357,7 @@ export default function RankingScreen() {
 
         return {
           userId: p.id,
-          fullName: p.full_name || '선생님',
+          fullName: getSafeDisplayName(p),
           isPublic: true,
           schoolName: p.school_name || '소속 학교 미설정',
           region: userRegion,
@@ -409,94 +416,20 @@ export default function RankingScreen() {
   const selectedTeamAnalytics = useMemo(() => {
     if (!selectedTeamForModal) return null;
     const teamName = selectedTeamForModal;
-    const teamData = qualifiedTeamRanks.find(t => t.team_name === teamName) || pendingTeamRanks.find(t => t.team_name === teamName);
+    const teamData = qualifiedTeamRanks.find((t) => t.team_name === teamName) || pendingTeamRanks.find((t) => t.team_name === teamName);
 
-    const targetMatches = (rawMatches || []).filter((m: any) => {
-      if (!isOfficialMatch(m)) return false;
+    const seasonMatches = (rawMatches || []).filter((m: any) => {
       if (selectedPeriod !== 'hall_of_fame') {
         return getMatchSeasonCode(m.match_date || m.created_at) === selectedPeriod;
       }
       return true;
     });
 
-    const teamMatches = targetMatches.filter((m: any) => {
-      return isSameName(m.host_team_name, teamName) || isSameName(m.away_team_name, teamName);
-    });
-
-    let setsWon = 0, setsLost = 0, shutoutWins = 0, fullsetWins = 0;
-    let totalWins = 0, totalLosses = 0, totalDraws = 0;
-    const oppMap: { [oppName: string]: { wins: number; losses: number; draws: number; total: number } } = {};
-
-    teamMatches.forEach((m: any) => {
-      const hName = resolveTeamName(m.host_team_name);
-      const aName = resolveTeamName(m.away_team_name);
-      const wName = resolveTeamName(m.winner_team);
-      const isHost = isSameName(hName, teamName);
-      const oppName = isHost ? aName : hName;
-      const isWin = isSameName(wName, teamName);
-      const isDraw = wName === 'draw' || wName === '무승부';
-
-      if (isWin) totalWins++;
-      else if (isDraw) totalDraws++;
-      else totalLosses++;
-
-      if (oppName) {
-        if (!oppMap[oppName]) oppMap[oppName] = { wins: 0, losses: 0, draws: 0, total: 0 };
-        oppMap[oppName].total++;
-        if (isWin) oppMap[oppName].wins++;
-        else if (isDraw) oppMap[oppName].draws++;
-        else oppMap[oppName].losses++;
-      }
-
-      let hostSetWon = 0, awaySetWon = 0;
-      if (m.set_scores) {
-        m.set_scores.split(', ').forEach((s: string) => {
-          const [h, a] = s.split(':').map(Number);
-          if (!isNaN(h) && !isNaN(a)) {
-            if (h > a) hostSetWon++;
-            else if (a > h) awaySetWon++;
-          }
-        });
-      }
-
-      const mySetWon = isHost ? hostSetWon : awaySetWon;
-      const oppSetWon = isHost ? awaySetWon : hostSetWon;
-      setsWon += mySetWon;
-      setsLost += oppSetWon;
-
-      if (isWin) {
-        if (oppSetWon === 0) shutoutWins++;
-        else fullsetWins++;
-      }
-    });
-
-    let nemesis = '없음', nemesisStat = '', victim = '없음', victimStat = '';
-    let maxLossDiff = -999, maxWinDiff = -999;
-
-    Object.entries(oppMap).forEach(([opp, stat]) => {
-      const winDiff = stat.wins - stat.losses;
-      const lossDiff = stat.losses - stat.wins;
-
-      if (stat.losses > stat.wins && lossDiff > maxLossDiff) {
-        maxLossDiff = lossDiff; nemesis = opp; nemesisStat = `${stat.losses}패 ${stat.wins}승 (${stat.total}전)`;
-      }
-
-      if (stat.wins > stat.losses && winDiff > maxWinDiff) {
-        maxWinDiff = winDiff; victim = opp; victimStat = `${stat.wins}승 ${stat.losses}패 (${stat.total}전)`;
-      }
-    });
-
-    const teamRecent5 = teamMatches.slice(0, 5).map((m: any) => {
-      const isWin = isSameName(m.winner_team, teamName);
-      const isDraw = m.winner_team === 'draw' || m.winner_team === '무승부';
-      return isWin ? 'WIN' : isDraw ? 'DRAW' : 'LOSS';
-    });
-
-    const totalMatches = teamMatches.length;
-    const winRate = totalMatches > 0 ? Math.round((totalWins / totalMatches) * 100) : 0;
-
-    return {
-      teamName,
+    const officialMatches = listOfficialTeamMatches(seasonMatches, teamName);
+    const intraMatches = listIntramuralTeamMatches(seasonMatches, teamName);
+    const built = buildTeamReportAnalytics(officialMatches, teamName, 'official');
+    const intraBuilt = buildTeamReportAnalytics(intraMatches, teamName, 'intramural');
+    const meta = {
       region: teamData?.region || UNSET_REGION,
       teamType: (teamData?.type as 'school' | 'club') || undefined,
       mannerTemp: teamData?.mannerTemp || 36.5,
@@ -504,21 +437,11 @@ export default function RankingScreen() {
       memberCount: teamData?.memberCount || 0,
       status: teamData?.status,
       teamId: teamData?.team_id,
-      totalMatches,
-      totalWins,
-      totalDraws,
-      totalLosses,
-      winRate,
-      setsWon,
-      setsLost,
-      setDiff: setsWon - setsLost,
-      shutoutWins,
-      fullsetWins,
-      nemesis,
-      nemesisStat,
-      victim,
-      victimStat,
-      teamRecent5,
+    };
+
+    return {
+      official: { ...built, ...meta },
+      intramural: { ...intraBuilt, ...meta },
     };
   }, [selectedTeamForModal, rawMatches, selectedPeriod, qualifiedTeamRanks, pendingTeamRanks]);
 
@@ -540,10 +463,10 @@ export default function RankingScreen() {
       </View>
 
       <View style={styles.tabContainer}>
-        <TouchableOpacity style={[styles.tab, rankTab === 'team' && styles.tabActive]} onPress={() => setRankTab('team')}>
+        <TouchableOpacity style={[styles.tab, rankTab === 'team' && styles.tabActive]} onPress={() => setRankTab('team')} hitSlop={8}>
           <Text style={[styles.tabText, rankTab === 'team' && styles.tabTextActive]}>🛡️ 공식 팀 랭킹</Text>
         </TouchableOpacity>
-        <TouchableOpacity style={[styles.tab, rankTab === 'personal' && styles.tabActive]} onPress={() => setRankTab('personal')}>
+        <TouchableOpacity style={[styles.tab, rankTab === 'personal' && styles.tabActive]} onPress={() => setRankTab('personal')} hitSlop={8}>
           <Text style={[styles.tabText, rankTab === 'personal' && styles.tabTextActive]}>🏃‍♂️ 개인 다승 랭킹</Text>
         </TouchableOpacity>
       </View>
@@ -603,8 +526,10 @@ export default function RankingScreen() {
         <View style={styles.ruleBanner}>
           <Text style={styles.ruleTitle}>📌 랭킹 산정 및 터치 안내</Text>
           <Text style={styles.ruleText}>
+            • 전국 개인/팀 랭킹은 <Text style={{ fontWeight: '700', color: '#1D4ED8' }}>다른 팀과의 공식 교류전</Text>만 합산합니다. 팀 안 연습경기(청백전)는 들어가지 않습니다.{'\n'}
             • <Text style={{ fontWeight: '700', color: '#1D4ED8' }}>블루리본(3명 이상)</Text> 인증 팀만 정식 차트에 집계됩니다.{'\n'}
             • 승점제 적용: <Text style={{ fontWeight: '700', color: '#1D4ED8' }}>승리 3점, 무승부 1점, 패배 0점</Text>{'\n'}
+            • 개인 다승은 <Text style={{ fontWeight: '700', color: '#1D4ED8' }}>세트 승 / 출전 세트</Text>로 표기합니다.{'\n'}
             • 팀 및 개인 랭킹 카드를 터치하면 <Text style={{ fontWeight: '700', color: '#1D4ED8' }}>상세 전력 분석 프로필</Text>을 보실 수 있습니다.
           </Text>
         </View>
@@ -635,7 +560,7 @@ export default function RankingScreen() {
                   
                   <View style={styles.teamInfo}>
                     <View style={styles.teamNameRow}>
-                      <Text style={styles.teamName}>{getTeamIcon(item.type)} {formatTeamDisplayName(resolveTeamName(item), item.status)}</Text>
+                      <Text style={styles.teamName}>{getTeamIcon(item.type)} {formatTeamDisplayName(getSafeTeamName(item), item.status)}</Text>
                       <View style={styles.blueRibbonMini}><Text style={{ fontSize: 12 }}>🟦</Text></View>
                     </View>
                     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 2 }}>
@@ -699,7 +624,7 @@ export default function RankingScreen() {
                       <View style={{ flex: 1, paddingRight: 8 }}>
                         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
                           <Text style={styles.pendingTeamName}>
-                            {getTeamIcon(item.type)} {formatTeamDisplayName(resolveTeamName(item), item.status)}
+                            {getTeamIcon(item.type)} {formatTeamDisplayName(getSafeTeamName(item), item.status)}
                           </Text>
                           {item.isOfficial && (
                             <View style={{ paddingHorizontal: 2 }}>
@@ -802,13 +727,14 @@ export default function RankingScreen() {
                       <Text style={styles.recordText}>🏫 {item.schoolName} [{item.region}]</Text>
                     </View>
 
-                    <View style={{ alignItems: 'flex-end' }}>
-                      <Text style={[styles.winRateNum, { color: '#0284C7' }]}>{item.wins}승</Text>
+                    <View style={styles.personalWinBox}>
+                      <Text style={[styles.winRateNum, { color: '#0284C7' }]}>
+                        {formatSetWinAppearance(item.wins, item.setsPlayed)}
+                      </Text>
                       <Text style={styles.winRateLabel}>
                         {formatSetRecordLabel(item.setWins, item.setDraws, item.setLosses)} · 세트승률 {item.setWinRate}%
                       </Text>
                       <Text style={styles.personalStatLine}>득점 {item.points} · 범실 {item.faults}</Text>
-                      <Text style={styles.personalStatLine}>{item.setsPlayed}세트 출전</Text>
                       <Text style={styles.mannerTempTag}>🌡️ {item.mannerTemp.toFixed(1)}°C</Text>
                     </View>
                   </TouchableOpacity>
@@ -835,7 +761,7 @@ export default function RankingScreen() {
       )}
 
       <Modal visible={periodModalVisible} animationType="fade" transparent={true}>
-        <View style={styles.modalOverlay}>
+        <View style={[styles.modalOverlay, { paddingTop: Math.max(insets.top, 16), paddingBottom: Math.max(insets.bottom, 16) }]}>
           <View style={styles.modalContent}>
             <Text style={styles.modalTitle}>📅 랭킹 시즌 선택</Text>
             <Text style={styles.modalSub}>조회하고 싶은 시즌 차트를 선택해 주세요.</Text>
@@ -861,7 +787,7 @@ export default function RankingScreen() {
               })}
             </View>
 
-            <TouchableOpacity style={styles.closeBtn} onPress={() => setPeriodModalVisible(false)}>
+            <TouchableOpacity style={styles.closeBtn} onPress={() => setPeriodModalVisible(false)} hitSlop={8}>
               <Text style={styles.closeBtnText}>닫기</Text>
             </TouchableOpacity>
           </View>
@@ -872,6 +798,7 @@ export default function RankingScreen() {
         visible={profileModalVisible}
         userId={selectedUserIdForModal}
         isMyTeamMember={selectedUserIdForModal ? myTeammatesSet.has(selectedUserIdForModal) : false}
+        officialOnly
         onClose={() => {
           setProfileModalVisible(false);
           setSelectedUserIdForModal(null);
@@ -884,7 +811,8 @@ export default function RankingScreen() {
           setTeamReportModalVisible(false);
           setSelectedTeamForModal(null);
         }}
-        analytics={selectedTeamAnalytics}
+        analytics={selectedTeamAnalytics?.official || null}
+        intramuralAnalytics={selectedTeamAnalytics?.intramural || null}
         selectedSeason={currentPeriodLabel}
       />
     </SafeAreaView>
@@ -896,11 +824,11 @@ const styles = StyleSheet.create({
   header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 20, paddingVertical: 14, backgroundColor: Colors.surface, borderBottomWidth: 1, borderBottomColor: Colors.border },
   backBtn: { width: 32, height: 32, justifyContent: 'center' },
   backText: { fontSize: 32, color: Colors.text, lineHeight: 32 },
-  headerTitle: { fontSize: 18, fontWeight: '700', color: Colors.text },
+  headerTitle: { fontSize: 18, lineHeight: 24, fontWeight: '700', color: Colors.text, includeFontPadding: false },
   tabContainer: { flexDirection: 'row', backgroundColor: Colors.surface, padding: 6, borderBottomWidth: 1, borderBottomColor: Colors.border },
   tab: { flex: 1, paddingVertical: 12, alignItems: 'center', borderRadius: 10 },
   tabActive: { backgroundColor: '#EFF6FF' },
-  tabText: { fontSize: 14, fontWeight: '700', color: '#64748B' },
+  tabText: { fontSize: 14, lineHeight: 18, fontWeight: '700', color: '#64748B', includeFontPadding: false },
   tabTextActive: { color: Colors.primary, fontWeight: '800' },
   
   periodSelectorBar: { paddingHorizontal: 16, paddingTop: 12 },
@@ -956,10 +884,11 @@ const styles = StyleSheet.create({
   mannerTempBadge: { backgroundColor: '#FFFBEB', borderWidth: 1, borderColor: '#FDE68A', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 6 },
   mannerTempBadgeText: { fontSize: 10, fontWeight: '800', color: '#D97706' },
 
-  winRateBox: { alignItems: 'flex-end', minWidth: 80 },
-  winRateNum: { fontSize: 17, fontWeight: '900', color: Colors.primary },
-  winRateLabel: { fontSize: 11, color: Colors.textMuted, marginTop: 2 },
-  personalStatLine: { fontSize: 10, fontWeight: '700', color: '#0369A1', marginTop: 2 },
+  winRateBox: { alignItems: 'flex-end', minWidth: 80, flexShrink: 0 },
+  personalWinBox: { alignItems: 'flex-end', width: 118, flexShrink: 0 },
+  winRateNum: { fontSize: 13, lineHeight: 18, fontWeight: '900', color: Colors.primary, includeFontPadding: false, textAlign: 'right' },
+  winRateLabel: { fontSize: 11, lineHeight: 14, color: Colors.textMuted, marginTop: 2, includeFontPadding: false },
+  personalStatLine: { fontSize: 10, lineHeight: 13, fontWeight: '700', color: '#0369A1', marginTop: 2, includeFontPadding: false },
 
   mannerTempTag: { fontSize: 10, fontWeight: '800', color: '#D97706', marginTop: 2 },
 

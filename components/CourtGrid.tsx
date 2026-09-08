@@ -6,10 +6,15 @@ import {
   clampLineCount,
   DEFAULT_LINE_COUNT,
   displaySlotPlayerName,
+  formatTempGuestLabel,
+  formatTempTagLabel,
+  isRegisteredUserId,
   isTempSlotId,
   lineSlotLabels,
   type CourtRow,
 } from '../lib/roster';
+import { getSafeDisplayName } from '../lib/utils';
+import { IOS_SHADOW_GLOW, IOS_SHADOW_NONE, IOS_SHADOW_SOFT } from '../lib/nativeSafe';
 
 export interface CourtSlotPlayer {
   user_id: string | null;
@@ -25,6 +30,7 @@ interface CourtGridProps {
   compact?: boolean;
   interactive?: boolean;
   selectedId?: string | null;
+  selectedIndex?: number | null;
   highlightIndex?: number | null;
   holding?: boolean;
   teamLabel?: string;
@@ -37,6 +43,7 @@ interface CourtGridProps {
   /** slate: 모달용 매트 다크. court: 포메이션 기본 그린 코트 */
   tone?: 'court' | 'slate';
   onSlotPress?: (player: CourtSlotPlayer, slotIndex: number) => void;
+  onTagPress?: (player: CourtSlotPlayer, slotIndex: number) => void;
 }
 
 function rowSlots(
@@ -76,7 +83,7 @@ function positionLabelStyle(label: string) {
 }
 
 export default function CourtGrid({
-  court,
+  court = [],
   frontCount = DEFAULT_LINE_COUNT,
   middleCount = DEFAULT_LINE_COUNT,
   backCount = DEFAULT_LINE_COUNT,
@@ -84,6 +91,7 @@ export default function CourtGrid({
   compact = false,
   interactive = true,
   selectedId,
+  selectedIndex = null,
   highlightIndex = null,
   holding = false,
   teamLabel,
@@ -94,6 +102,7 @@ export default function CourtGrid({
   emptySlotLabel,
   tone = 'court',
   onSlotPress,
+  onTagPress,
 }: CourtGridProps) {
   const front = clampLineCount(frontCount, DEFAULT_LINE_COUNT);
   const middle = clampLineCount(middleCount, DEFAULT_LINE_COUNT);
@@ -104,11 +113,16 @@ export default function CourtGrid({
 
   const renderSlot = (player: CourtSlotPlayer, idx: number, label: string, row: CourtRow) => {
     const empty = isEmptySlot(player);
-    const selected = !!selectedId && selectedId === player.user_id;
+    const selected = selectedIndex === idx || (!!selectedId && !!player.user_id && selectedId === player.user_id);
     const highlighted = highlightIndex === idx;
-    const name = isTempSlotId(player.user_id)
-      ? displaySlotPlayerName(player.user_id, player.full_name, label)
-      : (empty ? ANONYMOUS_PLAYER_NAME : (player.full_name || ANONYMOUS_PLAYER_NAME));
+    const tagLabel = formatTempTagLabel(player.user_id);
+    const guestLabel = formatTempGuestLabel(player.user_id);
+    const name = guestLabel
+      || (isRegisteredUserId(player.user_id)
+        ? getSafeDisplayName(player)
+        : (isTempSlotId(player.user_id)
+          ? (tagLabel ? label : displaySlotPlayerName(player.user_id, getSafeDisplayName(player), label))
+          : (empty ? ANONYMOUS_PLAYER_NAME : getSafeDisplayName(player))));
     const emptyText = emptySlotLabel ?? (compact ? '👤' : ANONYMOUS_PLAYER_NAME);
     return (
       <TouchableOpacity
@@ -128,7 +142,18 @@ export default function CourtGrid({
         onPress={() => { if (canPress) onSlotPress?.(player, idx); }}
         disabled={!canPress}
         activeOpacity={canPress ? 0.75 : 1}
+        hitSlop={8}
       >
+        {tagLabel ? (
+          <TouchableOpacity
+            style={styles.tagBadge}
+            onPress={() => { if (canPress) onTagPress?.(player, idx); }}
+            hitSlop={8}
+            activeOpacity={0.8}
+          >
+            <Text style={styles.tagBadgeText} numberOfLines={1} ellipsizeMode="tail">{tagLabel}</Text>
+          </TouchableOpacity>
+        ) : null}
         <Text
           style={[
             styles.slotPos,
@@ -248,8 +273,7 @@ const styles = StyleSheet.create({
     borderWidth: 0,
     borderColor: 'transparent',
     borderStyle: 'solid',
-    shadowOpacity: 0,
-    elevation: 0,
+    ...IOS_SHADOW_NONE,
   },
   slotPosSlate: { color: '#94A3B8' },
   slotTextSlate: { color: '#F8FAFC' },
@@ -277,7 +301,7 @@ const styles = StyleSheet.create({
   slotRowCompact: { gap: 0, marginBottom: 0 },
   columnsRow: { flexGrow: 1, flexShrink: 1, flexDirection: 'row', gap: 2, minHeight: 0, width: '100%', alignItems: 'stretch' },
   slotCol: { flex: 1, minWidth: 0, gap: 4 },
-  slotColCompact: { flex: 1, minWidth: 0, width: undefined, gap: 2, flexGrow: 1, flexShrink: 1 },
+  slotColCompact: { flex: 1, minWidth: 0, gap: 2, flexGrow: 1, flexShrink: 1 },
   slot: {
     flex: 1,
     minHeight: 44,
@@ -287,11 +311,28 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     borderWidth: 1.5,
-    shadowColor: '#000',
-    shadowOpacity: 0.25,
-    shadowRadius: 3,
-    shadowOffset: { width: 0, height: 2 },
-    elevation: 2,
+    position: 'relative',
+    overflow: 'visible',
+    ...IOS_SHADOW_SOFT,
+  },
+  tagBadge: {
+    position: 'absolute',
+    top: 0,
+    right: 0,
+    zIndex: 4,
+    backgroundColor: '#0F172A',
+    borderRadius: 6,
+    paddingHorizontal: 3,
+    paddingVertical: 0,
+    borderWidth: 1,
+    borderColor: '#FBBF24',
+  },
+  tagBadgeText: {
+    fontSize: 10,
+    lineHeight: 12,
+    includeFontPadding: false,
+    fontWeight: '900',
+    color: '#FDE68A',
   },
   slotCompact: {
     minHeight: 24,
@@ -299,8 +340,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 3,
     margin: 1,
     borderRadius: 4,
-    shadowOpacity: 0,
-    elevation: 0,
+    ...IOS_SHADOW_NONE,
   },
   slotColumn: { minHeight: 0, flex: 1 },
   slotColumnCompact: {
@@ -319,8 +359,19 @@ const styles = StyleSheet.create({
   slotEmpty: { backgroundColor: '#F8FAFC', borderColor: '#94A3B8', borderStyle: 'dashed' },
   slotFilled: { backgroundColor: '#0F172A', borderColor: '#F8FAFC', borderStyle: 'solid' },
   slotDrop: { borderColor: '#FDE68A' },
-  slotSelected: { borderColor: '#38BDF8', borderWidth: 2, backgroundColor: '#1E3A8A', borderStyle: 'solid' },
-  slotHighlight: { borderColor: '#38BDF8', borderWidth: 2, borderStyle: 'solid' },
+  slotSelected: {
+    borderColor: '#38BDF8',
+    borderWidth: 2,
+    backgroundColor: '#1E3A8A',
+    borderStyle: 'solid',
+    ...IOS_SHADOW_GLOW,
+  },
+  slotHighlight: {
+    borderColor: '#38BDF8',
+    borderWidth: 2,
+    borderStyle: 'solid',
+    ...IOS_SHADOW_GLOW,
+  },
   slotDisabled: { opacity: 0.85 },
   slotPos: { fontSize: 9, lineHeight: 11, fontWeight: '800', color: '#BBF7D0', marginBottom: 2, includeFontPadding: false },
   slotPosCompact: { fontSize: 9, lineHeight: 11, color: '#64748B', marginBottom: 0, fontWeight: '700', includeFontPadding: false },

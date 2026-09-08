@@ -33,11 +33,11 @@ export default function LoginScreen() {
   return (
     <SafeAreaView style={styles.container} edges={['top', 'bottom', 'left', 'right']}>
       <View style={styles.centerSection}>
-        <View style={styles.logoCircle}>
+        <View style={styles.logoBadge}>
           <Image
             source={require('../assets/icon.png')}
             style={styles.logoImage}
-            resizeMode="cover"
+            resizeMode="contain"
           />
         </View>
 
@@ -107,16 +107,17 @@ export default function LoginScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#0F172A', justifyContent: 'space-between', paddingHorizontal: 24 },
   centerSection: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingTop: 20 },
-  logoCircle: {
-    width: 90,
-    height: 90,
-    borderRadius: 45,
+  logoBadge: {
+    width: 112,
+    height: 112,
+    borderRadius: 24,
     borderWidth: 2,
     borderColor: '#3B82F6',
     overflow: 'hidden',
     justifyContent: 'center',
     alignItems: 'center',
     marginBottom: 20,
+    backgroundColor: '#0F172A',
     shadowColor: '#3B82F6',
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.3,

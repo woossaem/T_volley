@@ -11,6 +11,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { supabase } from '../lib/supabase';
 import { Colors } from '../constants/Colors';
+import { safeInset } from '../lib/nativeSafe';
 import ScoreTimeline, { MatchEvent } from './ScoreTimeline';
 import { parseRosterUserIds, parseSetRosterMap, safeIncludes } from '../lib/roster';
 import { isPersonalFault, isPersonalKill } from '../lib/playerStats';
@@ -232,23 +233,23 @@ export default function MatchPostgameReportModal({
       const { data } = await supabase
         .from('match_events')
         .select('*')
-        .eq('match_id', match.id)
+        .eq('match_id', match?.id)
         .order('created_at', { ascending: true });
       if (data && data.length > 0) {
         setEvents(data);
       } else {
         const logs = Array.isArray(match?.score_logs) ? match.score_logs : [];
         setEvents(logs.map((log: any, idx: number) => ({
-          id: String(log.id || `log-${idx}`),
-          match_id: match.id,
-          set_index: Number(log.set_index ?? ((Number(log.set_number) || 1) - 1)),
-          event_type: log.event_type,
-          team_type: log.team_type,
-          player_id: log.player_id,
-          player_name: formatPlayerDisplayName(log.player_id, log.player_name),
-          host_score: log.host_score,
-          away_score: log.away_score,
-          is_canceled: !!log.is_canceled,
+          id: String(log?.id || `log-${idx}`),
+          match_id: match?.id,
+          set_index: Number(log?.set_index ?? ((Number(log?.set_number) || 1) - 1)),
+          event_type: log?.event_type,
+          team_type: log?.team_type,
+          player_id: log?.player_id,
+          player_name: formatPlayerDisplayName(log?.player_id, log?.player_name),
+          host_score: Number(log?.host_score) || 0,
+          away_score: Number(log?.away_score) || 0,
+          is_canceled: !!log?.is_canceled,
         })));
       }
     } catch (e) {
@@ -694,7 +695,7 @@ export default function MatchPostgameReportModal({
             </ScrollView>
           )}
 
-          <TouchableOpacity style={[styles.closeBtn, { marginBottom: Math.min(insets.bottom, 8) }]} onPress={onClose} activeOpacity={0.8} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+          <TouchableOpacity style={[styles.closeBtn, { marginBottom: Math.min(safeInset(insets.bottom), 8) }]} onPress={onClose} activeOpacity={0.8} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
             <Text style={styles.closeBtnText}>닫기</Text>
           </TouchableOpacity>
         </View>

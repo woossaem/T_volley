@@ -7,8 +7,11 @@ import {
   Modal,
   ScrollView,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import StickyAdBanner from './StickyAdBanner';
+import ProStatPanel from './ProStatPanel';
+import type { ProStatReport } from '../lib/proStats';
 
 interface MercenaryReportModalProps {
   visible: boolean;
@@ -24,6 +27,7 @@ interface MercenaryReportModalProps {
     setsLost: number;
     bestHiredTeam: string;
     maxHiredCount: number;
+    proStats?: ProStatReport | null;
   } | null;
   selectedSeason: string;
 }
@@ -34,7 +38,11 @@ export default function MercenaryReportModal({
   analytics,
   selectedSeason,
 }: MercenaryReportModalProps) {
+  const insets = useSafeAreaInsets();
   if (!analytics) return null;
+
+  const setsPlayed = analytics.setsWon + analytics.setsLost;
+  const setWinRate = setsPlayed > 0 ? Math.round((analytics.setsWon / setsPlayed) * 100) : 0;
 
   return (
     <Modal
@@ -43,7 +51,7 @@ export default function MercenaryReportModal({
       transparent={true}
       onRequestClose={onClose}
     >
-      <View style={styles.modalOverlay}>
+      <View style={[styles.modalOverlay, { paddingTop: Math.max(insets.top, 16), paddingBottom: Math.max(insets.bottom, 16) }]}>
         <View style={styles.modalContent}>
           <View style={styles.modalHeader}>
             <Text style={[styles.modalTitle, { color: '#92400E' }]}>🙋‍♂️ 용병(게스트) 출전 성적표</Text>
@@ -53,7 +61,6 @@ export default function MercenaryReportModal({
           </View>
 
           <ScrollView style={styles.scrollArea} showsVerticalScrollIndicator={false}>
-            {/* 최근 흐름 */}
             <View style={[styles.reportBox, styles.amberBox]}>
               <Text style={[styles.reportLabel, { color: '#B45309' }]}>🔥 최근 5경기 게스트 출전 폼</Text>
               {analytics.recent5.length === 0 ? (
@@ -77,24 +84,20 @@ export default function MercenaryReportModal({
               )}
             </View>
 
-            {/* 세트 승률 */}
             <View style={[styles.reportBox, styles.amberBox]}>
               <Text style={[styles.reportLabel, { color: '#B45309' }]}>
-                📈 세트 승률 (
-                {analytics.setsWon + analytics.setsLost > 0
-                  ? Math.round((analytics.setsWon / (analytics.setsWon + analytics.setsLost)) * 100)
-                  : 0}
-                %)
+                📈 세트 승률 ({setWinRate}%)
               </Text>
               <Text style={[styles.reportValue, { color: '#92400E' }]}>
-                {analytics.setsWon}세트 획득 / {analytics.setsLost}세트 내어줌
+                {analytics.setsWon}세트 승 ({setsPlayed}세트 출전)
               </Text>
             </View>
 
-            {/* 자주 합류한 단골 팀 */}
+            {analytics.proStats ? <ProStatPanel player={analytics.proStats} accent="amber" /> : null}
+
             <View style={[styles.reportBox, styles.amberBox]}>
               <Text style={[styles.reportLabel, { color: '#B45309' }]}>🤝 나를 많이 초청해 준 팀</Text>
-              <Text style={[styles.reportValue, { color: '#92400E', fontSize: 16 }]}>
+              <Text style={[styles.reportValue, { color: '#92400E', fontSize: 16, lineHeight: 22 }]}>
                 {analytics.bestHiredTeam}
               </Text>
               <Text style={[styles.reportSubText, { color: '#D97706' }]}>
@@ -109,7 +112,7 @@ export default function MercenaryReportModal({
             <StickyAdBanner />
           </View>
 
-          <TouchableOpacity style={styles.modalCloseBtn} onPress={onClose}>
+          <TouchableOpacity style={styles.modalCloseBtn} onPress={onClose} hitSlop={8}>
             <Text style={styles.modalCloseBtnText}>닫기</Text>
           </TouchableOpacity>
         </View>
@@ -119,24 +122,24 @@ export default function MercenaryReportModal({
 }
 
 const styles = StyleSheet.create({
-  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center', padding: 16 },
+  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center', paddingHorizontal: 16 },
   modalContent: { backgroundColor: '#FFFFFF', borderRadius: 20, padding: 14, width: '100%', maxHeight: '90%', elevation: 5 },
   modalHeader: { borderBottomWidth: 1, borderBottomColor: '#FEF3C7', paddingBottom: 8, marginBottom: 8 },
-  modalTitle: { fontSize: 16, fontWeight: '900' },
-  modalSubTag: { fontSize: 11, fontWeight: '700', marginTop: 2 },
+  modalTitle: { fontSize: 16, lineHeight: 22, fontWeight: '900', includeFontPadding: false },
+  modalSubTag: { fontSize: 11, lineHeight: 15, fontWeight: '700', marginTop: 2, includeFontPadding: false },
   scrollArea: { flexShrink: 1 },
   reportBox: { borderRadius: 10, padding: 10, borderWidth: 1, marginBottom: 6 },
   amberBox: { borderColor: '#FDE68A', backgroundColor: '#FFFBEB' },
-  reportLabel: { fontSize: 12, fontWeight: '800', marginBottom: 2 },
-  reportValue: { fontSize: 14, fontWeight: '800' },
-  reportSubText: { fontSize: 11, fontWeight: '600', marginTop: 2 },
+  reportLabel: { fontSize: 12, lineHeight: 16, fontWeight: '800', marginBottom: 2, includeFontPadding: false },
+  reportValue: { fontSize: 14, lineHeight: 20, fontWeight: '800', includeFontPadding: false },
+  reportSubText: { fontSize: 11, lineHeight: 15, fontWeight: '600', marginTop: 2, includeFontPadding: false },
   formRow: { flexDirection: 'row', gap: 6, marginTop: 4 },
-  formBadge: { width: 28, height: 28, borderRadius: 6, justifyContent: 'center', alignItems: 'center' },
+  formBadge: { width: 28, height: 28, borderRadius: 6, justifyContent: 'center', alignItems: 'center', flexShrink: 0 },
   formWin: { backgroundColor: '#10B981' },
   formDraw: { backgroundColor: '#64748B' },
   formLoss: { backgroundColor: '#EF4444' },
-  formBadgeText: { color: '#FFFFFF', fontWeight: '900', fontSize: 11 },
+  formBadgeText: { color: '#FFFFFF', fontWeight: '900', fontSize: 11, lineHeight: 14, includeFontPadding: false },
   adWrapper: { marginTop: 4, marginBottom: 4 },
   modalCloseBtn: { backgroundColor: '#F1F5F9', borderRadius: 10, paddingVertical: 10, alignItems: 'center', marginTop: 4 },
-  modalCloseBtnText: { color: '#0F172A', fontSize: 14, fontWeight: '800' },
+  modalCloseBtnText: { color: '#0F172A', fontSize: 14, lineHeight: 20, fontWeight: '800', includeFontPadding: false },
 });

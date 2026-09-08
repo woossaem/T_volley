@@ -11,7 +11,8 @@ import {
   Alert,
 } from 'react-native';
 import { Colors } from '../constants/Colors';
-import StickyAdBanner from './StickyAdBanner'; // 💡 스티커 광고 배너 Import
+import StickyAdBanner from './StickyAdBanner';
+import { getSafeDisplayName, getSafeTeamName } from '../lib/utils';
 
 export interface CommentData {
   id: string;
@@ -79,7 +80,7 @@ export default function MatchCommentModal({
       onReportComment(comment);
       return;
     }
-    Alert.alert('댓글 신고/차단', `'${comment.full_name}' 님의 댓글을 신고 또는 차단하시겠습니까?`, [
+    Alert.alert('댓글 신고/차단', `'${getSafeDisplayName(comment)}' 님의 댓글을 신고 또는 차단하시겠습니까?`, [
       { text: '취소', style: 'cancel' },
       {
         text: '신고 접수',
@@ -101,8 +102,8 @@ export default function MatchCommentModal({
             {isIntramural ? '💬 팀 내전 소통 댓글' : '💬 주최팀 ↔ 신청팀 소통 댓글'}
           </Text>
           <Text style={styles.modalSub}>
-            주최: <Text style={{ fontWeight: '800', color: Colors.primary }}>{targetMatch.host_team_name}</Text>
-            {targetMatch.away_team_name ? ` VS ${targetMatch.away_team_name}` : ''}
+            주최: <Text style={{ fontWeight: '800', color: Colors.primary }}>{getSafeTeamName(targetMatch.host_team_name)}</Text>
+            {targetMatch.away_team_name ? ` VS ${getSafeTeamName(targetMatch.away_team_name)}` : ''}
           </Text>
 
           <ScrollView style={styles.commentListScroll} showsVerticalScrollIndicator={false}>
@@ -128,7 +129,7 @@ export default function MatchCommentModal({
                         <View style={styles.badgeChip}>
                           <Text style={styles.badgeChipText}>{item.badgeLabel || '🏐 티볼리 유저'}</Text>
                         </View>
-                        <Text style={styles.commentAuthorName}>{item.full_name} 👤</Text>
+                        <Text style={styles.commentAuthorName}>{getSafeDisplayName(item)} 👤</Text>
                       </TouchableOpacity>
 
                       <View style={styles.actionGroup}>

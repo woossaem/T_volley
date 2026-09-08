@@ -21,6 +21,7 @@ import StickyAdBanner from '../components/StickyAdBanner';
 import BadgeCollectionModal from '../components/BadgeCollectionModal';
 import { getAllBadgesWithStatus } from '../lib/badgeUtils';
 import { resolveTeamName, extractRow } from '../lib/nameUtils';
+import { getSafeDisplayName, getSafeTeamName } from '../lib/utils';
 import { isActiveMembership, isActiveTeamStatus } from '../lib/teamStatus';
 import { APP_VERSION } from '../constants/Version'; // 💡 공통 버전 변수 Import
 import { safeIncludes, teamsInclude } from '../lib/roster';
@@ -128,7 +129,7 @@ export default function HomeScreen() {
       }
 
       setProfile({
-        fullName: profData?.full_name || session?.user?.user_metadata?.full_name || '선생님',
+        fullName: getSafeDisplayName(profData || session?.user?.user_metadata),
         schoolName: profData?.school_name || '학교 미설정',
         gender: profData?.gender || '남성',
         position: profData?.position || '포지션 미설정',
@@ -465,7 +466,7 @@ export default function HomeScreen() {
 
                 <View style={styles.profileInfo}>
                   <View style={styles.nameRow}>
-                    <Text style={styles.profileName}>{profile?.fullName || '선생님'} 선생님</Text>
+                    <Text style={styles.profileName}>{getSafeDisplayName(profile)} 선생님</Text>
                     <View style={[styles.genderTag, profile?.gender === '여성' ? styles.femaleTag : styles.maleTag]}>
                       <Text style={[styles.genderTagText, profile?.gender === '여성' ? styles.femaleText : styles.maleText]}>
                         {profile?.gender || '남성'}
@@ -511,7 +512,7 @@ export default function HomeScreen() {
                           style={styles.teamChip}
                           onPress={() => router.push({ pathname: '/my-team-detail', params: { teamId: tObj.id } })}
                         >
-                          <Text style={styles.teamChipText}>🛡️ {tObj.name}</Text>
+                          <Text style={styles.teamChipText}>🛡️ {getSafeTeamName(tObj)}</Text>
                         </TouchableOpacity>
                       ))}
 
@@ -669,7 +670,7 @@ export default function HomeScreen() {
                   }}
                 >
                   <Text style={styles.teamModalItemText}>
-                    {idx === 0 ? '⭐ ' : ''}🛡️ {tObj.name}
+                    {idx === 0 ? '⭐ ' : ''}🛡️ {getSafeTeamName(tObj)}
                   </Text>
                   <Text style={styles.teamModalItemArrow}>관리 ›</Text>
                 </TouchableOpacity>

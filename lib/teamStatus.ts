@@ -1,5 +1,9 @@
 export type TeamLifecycleStatus = 'active' | 'dormant' | 'deleted';
 
+export function bareTeamName(rawName: string | null | undefined): string {
+  return String(rawName || '').replace(/^\((휴면|해체)\)\s*/, '').trim();
+}
+
 export function formatTeamDisplayName(
   rawName: string | null | undefined,
   status?: string | null

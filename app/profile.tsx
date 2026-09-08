@@ -11,14 +11,26 @@ import {
   Image,
   Alert,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter, useFocusEffect } from 'expo-router';
 import * as Clipboard from 'expo-clipboard';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
-import { parseRosterUserIds, safeIncludes, safeNameText } from '../lib/roster';
-import { isOfficialMatch } from '../lib/officialMatch';
-import { addMatchPlayerStats, emptyPlayerCareerStats } from '../lib/playerStats';
+import { parseRosterUserIds } from '../lib/roster';
+import { isIntramuralMatch, isOfficialMatch } from '../lib/officialMatch';
+import { addMatchPlayerStats, collectPlayerSetForm, emptyPlayerCareerStats } from '../lib/playerStats';
+import {
+  collectTeammateIds,
+  isMercenaryOnMatch,
+  isSameTeamLabel,
+  playerAppearedForTeam,
+  playerAppearedInMatch,
+  resolvePlayerMatchSide,
+} from '../lib/playerAppearance';
+import { parseMatchScoreLogs } from '../lib/rankingService';
+import { aggregatePlayerProStats } from '../lib/proStats';
+import { buildPersonalReportAnalytics } from '../lib/personalReportAnalytics';
+import { buildTeamReportAnalytics, listIntramuralTeamMatches, listOfficialTeamMatches } from '../lib/teamReportAnalytics';
 import { hydrateMatchesWithSetScores } from '../lib/matchSets';
 import { Colors } from '../constants/Colors';
 import StickyAdBanner from '../components/StickyAdBanner';
@@ -26,6 +38,7 @@ import StickyAdBanner from '../components/StickyAdBanner';
 import PersonalReportModal from '../components/PersonalReportModal';
 import TeamReportModal from '../components/TeamReportModal';
 import MercenaryReportModal from '../components/MercenaryReportModal';
+import { getSafeDisplayName, getSafeTeamName } from '../lib/utils';
 
 interface ProfileData {
   full_name: string;
@@ -83,6 +96,7 @@ interface TeamStats {
   losses: number;
   total: number;
   winRate: number;
+  intramuralTotal?: number;
 }
 
 interface TeamMyStat {
@@ -97,6 +111,7 @@ interface TeamMyStat {
 
 export default function ProfileScreen() {
   const router = useRouter();
+  const insets = useSafeAreaInsets();
   const { session, signOut } = useAuth();
   const currentUserId = session?.user?.id || '';
 
@@ -160,10 +175,10 @@ export default function ProfileScreen() {
     try {
       setLoading(true);
 
-      const { data: allProfs } = await supabase.from('profiles').select('id, full_name');
+      const { data: allProfs } = await supabase.from('profiles').select('*');
       if (allProfs) {
         const pMap: { [id: string]: string } = {};
-        allProfs.forEach(p => { pMap[p.id] = p.full_name || '팀원'; });
+        allProfs.forEach(p => { pMap[p.id] = getSafeDisplayName(p); });
         setProfilesMap(pMap);
       }
 
@@ -353,22 +368,22 @@ export default function ProfileScreen() {
           mannerTemp: t.manner_temp,
           memberCount: t.member_count,
           status: t.status,
-          wins: 0, draws: 0, losses: 0, total: 0, winRate: 0
+          wins: 0, draws: 0, losses: 0, total: 0, winRate: 0, intramuralTotal: 0
         };
         myTeamStatMap[tName] = { teamName: tName, teamType: t.team_type || 'school', myAppearedCount: 0, wins: 0, draws: 0, losses: 0, winRate: 0 };
       }
     });
 
-    targetMatches.forEach((m: any) => {
-      const hostList = parseRosterUserIds(m.host_roster);
-      const awayList = parseRosterUserIds(m.away_roster);
-      const inHost = currentUserId ? (hostList.includes(currentUserId) || safeIncludes(m.host_roster, currentUserId)) : false;
-      const inAway = currentUserId ? (awayList.includes(currentUserId) || safeIncludes(m.away_roster, currentUserId)) : false;
+    const playerName = profilesMap[currentUserId];
 
-      const hostMercList = parseRosterUserIds(m.host_mercenary_roster);
-      const awayMercList = parseRosterUserIds(m.away_mercenary_roster);
-      const isHostMerc = currentUserId ? hostMercList.includes(currentUserId) : false;
-      const isAwayMerc = currentUserId ? awayMercList.includes(currentUserId) : false;
+    targetMatches.forEach((m: any) => {
+      const extraLogs = parseMatchScoreLogs(m);
+      const appeared = currentUserId ? playerAppearedInMatch(m, currentUserId, playerName, extraLogs) : false;
+      const side = currentUserId ? resolvePlayerMatchSide(m, currentUserId, playerName, extraLogs) : null;
+      const isMerc = currentUserId ? isMercenaryOnMatch(m, currentUserId) : false;
+      const onMyTeam = appeared && myTeamsList.some((t) =>
+        playerAppearedForTeam(m, currentUserId, t.name, playerName, extraLogs)
+      );
 
       const isTournament = m.format?.includes('대회') || m.format?.includes('토너먼트') || m.format?.includes('리그');
 
@@ -376,9 +391,10 @@ export default function ProfileScreen() {
       const awayNameRaw = m.away_team_name;
       const winnerNameRaw = m.winner_team;
 
-      // 💡 [핵심] 삭제된 팀과의 경기여도 내가 출전한 경기라면 상단 통합 승무패/경기수에는 100% 정상 합산됨!
-      if (inHost || inAway) {
-        const isIntra = m.status === 'intramural';
+      const countedAsTeam = appeared && (onMyTeam || !isMerc);
+
+      if (countedAsTeam) {
+        const isIntra = isIntramuralMatch(m);
         let isMyWin = false;
         let isDraw = m.winner_team === 'draw' || m.winner_team === '무승부';
 
@@ -392,17 +408,19 @@ export default function ProfileScreen() {
               teamB = matchDesc[2] || 'B팀';
             }
           }
-          if (inHost && (winnerNameRaw === teamA || winnerNameRaw === 'A팀')) isMyWin = true;
-          if (inAway && (winnerNameRaw === teamB || winnerNameRaw === 'B팀')) isMyWin = true;
+          const playedHost = side !== 'away';
+          if (playedHost && (winnerNameRaw === teamA || winnerNameRaw === 'A팀')) isMyWin = true;
+          if (!playedHost && (winnerNameRaw === teamB || winnerNameRaw === 'B팀')) isMyWin = true;
         } else {
-          const myPlayedTeam = inHost ? hostNameRaw : awayNameRaw;
-          if (winnerNameRaw && winnerNameRaw === myPlayedTeam) isMyWin = true;
+          const myPlayedTeam = side === 'away' ? awayNameRaw : hostNameRaw;
+          if (winnerNameRaw && isSameTeamLabel(winnerNameRaw, myPlayedTeam)) isMyWin = true;
 
-          if (myPlayedTeam && myTeamStatMap[myPlayedTeam]) {
-            myTeamStatMap[myPlayedTeam].myAppearedCount++;
-            if (isMyWin) myTeamStatMap[myPlayedTeam].wins++;
-            else if (isDraw) myTeamStatMap[myPlayedTeam].draws++;
-            else myTeamStatMap[myPlayedTeam].losses++;
+          const matchedKey = Object.keys(myTeamStatMap).find((t) => isSameTeamLabel(t, myPlayedTeam));
+          if (matchedKey && myTeamStatMap[matchedKey]) {
+            myTeamStatMap[matchedKey].myAppearedCount++;
+            if (isMyWin) myTeamStatMap[matchedKey].wins++;
+            else if (isDraw) myTeamStatMap[matchedKey].draws++;
+            else myTeamStatMap[matchedKey].losses++;
           }
 
           if (isTournament) {
@@ -425,9 +443,11 @@ export default function ProfileScreen() {
         });
       }
 
-      if (isHostMerc || isAwayMerc) {
-        const hiredTeam = isHostMerc ? hostNameRaw : awayNameRaw;
-        const isWin = winnerNameRaw === hiredTeam;
+      if (!countedAsTeam && (isMerc || (appeared && !isIntramuralMatch(m)))) {
+        const hiredTeam = (isMerc
+          ? (parseRosterUserIds(m.host_mercenary_roster).includes(currentUserId) ? hostNameRaw : awayNameRaw)
+          : (side === 'away' ? awayNameRaw : hostNameRaw));
+        const isWin = isSameTeamLabel(winnerNameRaw, hiredTeam);
         const isDraw = m.winner_team === 'draw' || m.winner_team === '무승부';
 
         mercenaryTotal++;
@@ -436,19 +456,20 @@ export default function ProfileScreen() {
         else mercenaryLosses++;
       }
 
-      if (m.status === 'completed' || m.status === 'friendly') {
-        myTeamsList.forEach(t => {
-          const pureTName = t.name;
-          if (pureTName && (hostNameRaw === pureTName || awayNameRaw === pureTName)) {
-            if (statsMap[pureTName]) {
-              statsMap[pureTName].total++;
-              if (winnerNameRaw === pureTName) statsMap[pureTName].wins++;
-              else if (m.winner_team === 'draw' || m.winner_team === '무승부') statsMap[pureTName].draws++;
-              else statsMap[pureTName].losses++;
-            }
-          }
-        });
-      }
+      myTeamsList.forEach((t) => {
+        const pureTName = t.name;
+        if (!pureTName || !statsMap[pureTName]) return;
+        if (!isSameTeamLabel(hostNameRaw, pureTName) && !isSameTeamLabel(awayNameRaw, pureTName)) return;
+        if (isIntramuralMatch(m)) {
+          statsMap[pureTName].intramuralTotal = (statsMap[pureTName].intramuralTotal || 0) + 1;
+          return;
+        }
+        if (!isOfficialMatch(m)) return;
+        statsMap[pureTName].total++;
+        if (isSameTeamLabel(winnerNameRaw, pureTName)) statsMap[pureTName].wins++;
+        else if (m.winner_team === 'draw' || m.winner_team === '무승부') statsMap[pureTName].draws++;
+        else statsMap[pureTName].losses++;
+      });
     });
 
     const officialMatches = myPlayedMatches.filter(m => !m.isIntramural && !m.isTournament);
@@ -458,12 +479,16 @@ export default function ProfileScreen() {
     const officialLosses = officialTotal - officialWins - officialDraws;
     const officialWinRate = officialTotal > 0 ? Math.round((officialWins / officialTotal) * 100) : 0;
 
-    const intraMatches = myPlayedMatches.filter(m => m.isIntramural);
-    const intraTotal = intraMatches.length;
-    const intraWins = intraMatches.filter(m => m.isMyWin).length;
-    const intraDraws = intraMatches.filter(m => m.isDraw).length;
-    const intraLosses = intraTotal - intraWins - intraDraws;
-    const intraWinRate = intraTotal > 0 ? Math.round((intraWins / intraTotal) * 100) : 0;
+    const intraCareer = emptyPlayerCareerStats();
+    targetMatches.forEach((m: any) => {
+      if (!isIntramuralMatch(m) || !currentUserId) return;
+      addMatchPlayerStats(intraCareer, currentUserId, m, parseMatchScoreLogs(m), playerName);
+    });
+    const intraSetsPlayed = intraCareer.setsPlayed;
+    const intraSetWins = intraCareer.setWins;
+    const intraSetDraws = intraCareer.setDraws;
+    const intraSetLosses = intraCareer.setLosses;
+    const intraSetWinRate = intraCareer.setWinRate;
 
     const tournamentWinRate = tournamentTotal > 0 ? Math.round((tournamentWins / tournamentTotal) * 100) : 0;
     const mercenaryWinRate = mercenaryTotal > 0 ? Math.round((mercenaryWins / mercenaryTotal) * 100) : 0;
@@ -487,16 +512,16 @@ export default function ProfileScreen() {
     return {
       officialWins, officialDraws, officialLosses, officialTotal, officialWinRate,
       tournamentWins, tournamentDraws, tournamentLosses, tournamentTotal, tournamentWinRate,
-      intraWins, intraDraws, intraLosses, intraTotal, intraWinRate,
+      intraSetWins, intraSetDraws, intraSetLosses, intraSetsPlayed, intraSetWinRate,
       mercenaryWins, mercenaryDraws, mercenaryLosses, mercenaryTotal, mercenaryWinRate,
       teamMyStatsArr,
       teamOfficialStatsArr
     };
-  }, [rawMatches, myTeamsList, selectedSeason, currentUserId]);
+  }, [rawMatches, myTeamsList, selectedSeason, currentUserId, profilesMap]);
 
   const autoTitleBadge = useMemo(() => {
-    const totalMatches = computedData.officialTotal + computedData.tournamentTotal + computedData.intraTotal + computedData.mercenaryTotal;
-    const totalWins = computedData.officialWins + computedData.tournamentWins + computedData.intraWins + computedData.mercenaryWins;
+    const totalMatches = computedData.officialTotal + computedData.tournamentTotal + computedData.intraSetsPlayed + computedData.mercenaryTotal;
+    const totalWins = computedData.officialWins + computedData.tournamentWins + computedData.intraSetWins + computedData.mercenaryWins;
 
     if (totalWins >= 30) return { label: '🌟 배구 마스터', style: { backgroundColor: '#FDF4FF', borderColor: '#D8B4FE', color: '#9333EA' } };
     if (totalWins >= 15) return { label: '👑 승리의 화신', style: { backgroundColor: '#FEFCE8', borderColor: '#FDE047', color: '#B45309' } };
@@ -510,12 +535,11 @@ export default function ProfileScreen() {
 
   const teamOfficialAnalytics = useMemo(() => {
     if (!selectedOfficialTeam) return null;
-    
-    const teamName = selectedOfficialTeam;
-    const teamData = myTeamsList.find(t => t.name === teamName);
 
-    const targetMatches = rawMatches.filter(m => {
-      if (!isOfficialMatch(m)) return false;
+    const teamName = selectedOfficialTeam;
+    const teamData = myTeamsList.find((t) => t.name === teamName);
+
+    const seasonMatches = rawMatches.filter((m) => {
       if (selectedSeason !== 'all') {
         const targetYear = Number(selectedSeason);
         const { year } = parseMatchDate(m.match_date || m.created_at);
@@ -524,104 +548,32 @@ export default function ProfileScreen() {
       return true;
     });
 
-    const teamMatches = targetMatches.filter(m => {
-      return safeNameText(m.host_team_name) === teamName || safeNameText(m.away_team_name) === teamName;
-    });
-
-    let setsWon = 0, setsLost = 0, shutoutWins = 0, fullsetWins = 0;
-    const oppMap: { [oppName: string]: { wins: number; losses: number; draws: number; total: number } } = {};
-
-    teamMatches.forEach(m => {
-      const hName = m.host_team_name;
-      const aName = m.away_team_name;
-      const wName = m.winner_team;
-      const isHost = hName === teamName;
-      const oppName = isHost ? aName : hName;
-      const isWin = wName === teamName;
-      const isDraw = wName === 'draw' || wName === '무승부';
-
-      if (oppName) {
-        if (!oppMap[oppName]) oppMap[oppName] = { wins: 0, losses: 0, draws: 0, total: 0 };
-        oppMap[oppName].total++;
-        if (isWin) oppMap[oppName].wins++;
-        else if (isDraw) oppMap[oppName].draws++;
-        else oppMap[oppName].losses++;
-      }
-
-      let hostSetWon = 0, awaySetWon = 0;
-      if (m.set_scores) {
-        m.set_scores.split(', ').forEach(s => {
-          const [h, a] = s.split(':').map(Number);
-          if (!isNaN(h) && !isNaN(a)) {
-            if (h > a) hostSetWon++;
-            else if (a > h) awaySetWon++;
-          }
-        });
-      }
-
-      const mySetWon = isHost ? hostSetWon : awaySetWon;
-      const oppSetWon = isHost ? awaySetWon : hostSetWon;
-      setsWon += mySetWon;
-      setsLost += oppSetWon;
-
-      if (isWin) {
-        if (oppSetWon === 0) shutoutWins++;
-        else fullsetWins++;
-      }
-    });
-
-    let nemesis = '없음', nemesisStat = '', victim = '없음', victimStat = '';
-    let maxLossDiff = -999, maxWinDiff = -999;
-
-    Object.entries(oppMap).forEach(([opp, stat]) => {
-      const winDiff = stat.wins - stat.losses;
-      const lossDiff = stat.losses - stat.wins;
-
-      if (stat.losses > stat.wins && lossDiff > maxLossDiff) {
-        maxLossDiff = lossDiff; nemesis = opp; nemesisStat = `${stat.losses}패 ${stat.wins}승 (${stat.total}전)`;
-      }
-
-      if (stat.wins > stat.losses && winDiff > maxWinDiff) {
-        maxWinDiff = winDiff; victim = opp; victimStat = `${stat.wins}승 ${stat.losses}패 (${stat.total}전)`;
-      }
-    });
-
-    const teamRecent5 = teamMatches.slice(0, 5).map(m => {
-      const wName = m.winner_team;
-      const isWin = wName === teamName;
-      const isDraw = wName === 'draw' || wName === '무승부';
-      return isWin ? 'WIN' : isDraw ? 'DRAW' : 'LOSS';
-    });
-
+    const officialMatches = listOfficialTeamMatches(seasonMatches, teamName);
+    const intraMatches = listIntramuralTeamMatches(seasonMatches, teamName);
+    const built = buildTeamReportAnalytics(officialMatches, teamName, 'official');
+    const intraBuilt = buildTeamReportAnalytics(intraMatches, teamName, 'intramural');
     const memCount = teamData?.member_count || 0;
-
-    return {
-      teamName,
+    const meta = {
       region: teamData?.region || '지역 미설정',
       teamType: (teamData?.team_type || 'school') as 'school' | 'club',
       mannerTemp: teamData?.manner_temp || 36.5,
       isOfficial: memCount >= 3,
       memberCount: memCount,
-      totalMatches: teamMatches.length,
-      setsWon,
-      setsLost,
-      setDiff: setsWon - setsLost,
-      shutoutWins,
-      fullsetWins,
-      nemesis,
-      nemesisStat,
-      victim,
-      victimStat,
-      teamRecent5,
+      status: teamData?.status,
+      teamId: teamData?.id,
+    };
+
+    return {
+      official: { ...built, ...meta },
+      intramural: { ...intraBuilt, ...meta },
     };
   }, [selectedOfficialTeam, rawMatches, selectedSeason, myTeamsList]);
 
   const personalAnalytics = useMemo(() => {
-    if (!selectedPersonalTeam) return null;
+    if (!selectedPersonalTeam || !currentUserId) return null;
     const teamName = selectedPersonalTeam;
-
-    const targetMatches = rawMatches.filter(m => {
-      if (m.status === 'intramural') return false;
+    const playerName = profilesMap[currentUserId];
+    const seasonMatches = rawMatches.filter((m) => {
       if (selectedSeason !== 'all') {
         const targetYear = Number(selectedSeason);
         const { year } = parseMatchDate(m.match_date || m.created_at);
@@ -630,67 +582,22 @@ export default function ProfileScreen() {
       return true;
     });
 
-    const teamAllMatches = targetMatches.filter(m => {
-      return safeNameText(m.host_team_name) === teamName || safeNameText(m.away_team_name) === teamName;
+    return buildPersonalReportAnalytics({
+      userId: currentUserId,
+      playerName,
+      matches: seasonMatches,
+      profilesMap,
+      teamName,
     });
-    const totalTeamGames = teamAllMatches.length;
-
-    const myPlayedForTeam = teamAllMatches.filter(m => {
-      const hostList = parseRosterUserIds(m.host_roster);
-      const awayList = parseRosterUserIds(m.away_roster);
-      const inHost = currentUserId ? (safeNameText(m.host_team_name) === teamName && (hostList.includes(currentUserId) || safeIncludes(m.host_roster, currentUserId))) : false;
-      const inAway = currentUserId ? (safeNameText(m.away_team_name) === teamName && (awayList.includes(currentUserId) || safeIncludes(m.away_roster, currentUserId))) : false;
-      return inHost || inAway;
-    });
-
-    const myGames = myPlayedForTeam.length;
-    const attendanceRate = totalTeamGames > 0 ? Math.round((myGames / totalTeamGames) * 100) : 0;
-
-    const recent5 = myPlayedForTeam.slice(0, 5).map(m => {
-      const isWin = m.winner_team === teamName;
-      const isDraw = m.winner_team === 'draw' || m.winner_team === '무승부';
-      return isWin ? 'WIN' : isDraw ? 'DRAW' : 'LOSS';
-    });
-
-    const partnerWinsMap: { [userId: string]: number } = {};
-    const career = emptyPlayerCareerStats();
-    myPlayedForTeam.forEach(m => {
-      const isHost = safeNameText(m.host_team_name) === teamName;
-      const myRoster = parseRosterUserIds(isHost ? m.host_roster : m.away_roster);
-      const isWin = m.winner_team === teamName;
-
-      if (currentUserId) {
-        addMatchPlayerStats(career, currentUserId, m, (m.match_events as any[]) || [], profilesMap[currentUserId]);
-      }
-
-      if (isWin && myRoster.length > 0) {
-        myRoster.forEach(id => {
-          if (id && id !== currentUserId) {
-            partnerWinsMap[id] = (partnerWinsMap[id] || 0) + 1;
-          }
-        });
-      }
-    });
-
-    const setsWon = career.setWins;
-    const setsDrawn = career.setDraws;
-    const setsLost = career.setLosses;
-
-    let bestPartnerName = '데이터 없음', maxPartnerWins = 0;
-    Object.entries(partnerWinsMap).forEach(([id, wins]) => {
-      if (wins > maxPartnerWins) {
-        maxPartnerWins = wins; bestPartnerName = profilesMap[id] || '팀원';
-      }
-    });
-
-    return { teamName, totalTeamGames, myGames, attendanceRate, recent5, setsWon, setsDrawn, setsLost, bestPartnerName, maxPartnerWins };
   }, [selectedPersonalTeam, rawMatches, selectedSeason, currentUserId, profilesMap]);
 
   const mercenaryAnalytics = useMemo(() => {
     if (!currentUserId) return null;
+    const playerName = profilesMap[currentUserId];
+    const myTeamNames = myTeamsList.map((t) => t.name).filter(Boolean);
 
-    const targetMatches = rawMatches.filter(m => {
-      if (m.status === 'intramural') return false;
+    const targetMatches = rawMatches.filter((m) => {
+      if (isIntramuralMatch(m)) return false;
       if (selectedSeason !== 'all') {
         const targetYear = Number(selectedSeason);
         const { year } = parseMatchDate(m.match_date || m.created_at);
@@ -699,57 +606,74 @@ export default function ProfileScreen() {
       return true;
     });
 
-    const myMercMatches = targetMatches.filter(m => {
-      const hList = parseRosterUserIds(m.host_mercenary_roster);
-      const aList = parseRosterUserIds(m.away_mercenary_roster);
-      return hList.includes(currentUserId) || aList.includes(currentUserId);
+    const myMercMatches = targetMatches.filter((m) => {
+      if (isMercenaryOnMatch(m, currentUserId)) return true;
+      const logs = parseMatchScoreLogs(m);
+      if (!playerAppearedInMatch(m, currentUserId, playerName, logs)) return false;
+      return !myTeamNames.some((t) => playerAppearedForTeam(m, currentUserId, t, playerName, logs));
     });
 
     const totalGames = myMercMatches.length;
-    let wins = 0, draws = 0, losses = 0, setsWon = 0, setsLost = 0;
+    let wins = 0;
+    let draws = 0;
+    let losses = 0;
     const hiredCountMap: { [team: string]: number } = {};
+    const career = emptyPlayerCareerStats();
 
-    myMercMatches.forEach(m => {
-      const isHostMerc = parseRosterUserIds(m.host_mercenary_roster).includes(currentUserId!);
+    myMercMatches.forEach((m) => {
+      const logs = parseMatchScoreLogs(m);
+      addMatchPlayerStats(career, currentUserId, m, logs, playerName);
+      const side = resolvePlayerMatchSide(m, currentUserId, playerName, logs);
+      const isHostMerc = parseRosterUserIds(m.host_mercenary_roster).includes(currentUserId)
+        || side === 'host';
       const hiredTeam = isHostMerc ? m.host_team_name : m.away_team_name;
-      const isWin = m.winner_team === hiredTeam;
+      const isWin = isSameTeamLabel(m.winner_team, hiredTeam);
       const isDraw = m.winner_team === 'draw' || m.winner_team === '무승부';
 
-      if (isWin) wins++; else if (isDraw) draws++; else losses++;
-      if (hiredTeam) hiredCountMap[hiredTeam] = (hiredCountMap[hiredTeam] || 0) + 1;
+      if (isWin) wins += 1;
+      else if (isDraw) draws += 1;
+      else losses += 1;
+      if (hiredTeam) hiredCountMap[String(hiredTeam)] = (hiredCountMap[String(hiredTeam)] || 0) + 1;
+    });
 
-      if (m.set_scores) {
-        m.set_scores.split(', ').forEach(s => {
-          const [h, a] = s.split(':').map(Number);
-          if (!isNaN(h) && !isNaN(a)) {
-            if (isHostMerc) { if (h > a) setsWon++; else if (a > h) setsLost++; } 
-            else { if (a > h) setsWon++; else if (h > a) setsLost++; }
-          }
-        });
+    let bestHiredTeam = '데이터 없음';
+    let maxHiredCount = 0;
+    Object.entries(hiredCountMap).forEach(([t, count]) => {
+      if (count > maxHiredCount) {
+        maxHiredCount = count;
+        bestHiredTeam = t;
       }
     });
 
-    let bestHiredTeam = '데이터 없음', maxHiredCount = 0;
-    Object.entries(hiredCountMap).forEach(([t, count]) => {
-      if (count > maxHiredCount) { maxHiredCount = count; bestHiredTeam = t; }
-    });
-
-    const recent5 = myMercMatches.slice(0, 5).map(m => {
-      const isHostMerc = parseRosterUserIds(m.host_mercenary_roster).includes(currentUserId!);
-      const hiredTeam = isHostMerc ? m.host_team_name : m.away_team_name;
-      if (m.winner_team === hiredTeam) return 'WIN';
+    const recent5 = myMercMatches.slice(0, 5).map((m) => {
+      const logs = parseMatchScoreLogs(m);
+      const side = resolvePlayerMatchSide(m, currentUserId, playerName, logs);
+      const hiredTeam = side === 'away' ? m.away_team_name : m.host_team_name;
+      if (isSameTeamLabel(m.winner_team, hiredTeam)) return 'WIN';
       if (m.winner_team === 'draw' || m.winner_team === '무승부') return 'DRAW';
       return 'LOSS';
     });
 
-    return { totalGames, wins, draws, losses, winRate: totalGames > 0 ? Math.round((wins / totalGames) * 100) : 0, recent5, setsWon, setsLost, bestHiredTeam, maxHiredCount };
-  }, [rawMatches, selectedSeason, currentUserId]);
+    return {
+      totalGames,
+      wins,
+      draws,
+      losses,
+      winRate: totalGames > 0 ? Math.round((wins / totalGames) * 100) : 0,
+      recent5,
+      setsWon: career.setWins,
+      setsLost: career.setLosses,
+      bestHiredTeam,
+      maxHiredCount,
+      proStats: aggregatePlayerProStats(myMercMatches, currentUserId, playerName, bestHiredTeam),
+    };
+  }, [rawMatches, selectedSeason, currentUserId, profilesMap, myTeamsList]);
 
-  const displayName = profile?.full_name || session?.user?.user_metadata?.full_name || '선생님';
+  const displayName = getSafeDisplayName(profile || session?.user?.user_metadata);
   const avatarIco = profile?.avatar_icon || '🏐';
   const avatarUrl = profile?.avatar_url;
   const myGender = profile?.gender || '남성';
-  const myTeamsNameList = myTeamsList.map(t => t.name).filter(Boolean);
+  const myTeamsNameList = myTeamsList.map(t => getSafeTeamName(t)).filter(Boolean);
   const grapeCount = profile?.grape_count || 0;
   const mannerTemp = profile?.manner_temp || 36.5;
 
@@ -925,18 +849,21 @@ export default function ProfileScreen() {
               <View style={[styles.statCard, { backgroundColor: '#FAF5FF', borderColor: '#E9D5FF' }]}>
                 <Text style={[styles.statCardTitle, { color: '#7E22CE' }]}>⚔️ 3. 팀 내 연습경기 (청백전)</Text>
                 <Text style={[styles.statMainVal, { color: '#6B21A8' }]}>
-                  {computedData.intraWins}승 {computedData.intraDraws}무 {computedData.intraLosses}패
+                  {computedData.intraSetWins}승 {computedData.intraSetDraws}무 {computedData.intraSetLosses}패
                 </Text>
                 <View style={styles.statRow}>
-                  <Text style={[styles.statSubText, { color: '#7E22CE' }]}>총 {computedData.intraTotal}경기 출전</Text>
-                  <Text style={[styles.statRateText, { color: '#9333EA' }]}>승률 {computedData.intraWinRate}%</Text>
+                  <Text style={[styles.statSubText, { color: '#7E22CE' }]}>총 {computedData.intraSetsPlayed}세트 출전</Text>
+                  <Text style={[styles.statRateText, { color: '#9333EA' }]}>세트 승률 {computedData.intraSetWinRate}%</Text>
                 </View>
+                <Text style={[styles.statSubText, { color: '#7E22CE', marginTop: 4 }]}>
+                  청백전은 승패보다 출전 세트 기준으로 봅니다.
+                </Text>
               </View>
 
               <View style={[styles.statCard, { backgroundColor: '#F8FAFC', borderColor: '#E2E8F0' }]}>
                 <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
                   <Text style={[styles.statCardTitle, { color: '#475569' }]}>🙋‍♂️ 용병(게스트) 출전</Text>
-                  <TouchableOpacity onPress={() => setMercenaryModalVisible(true)} style={{ padding: 4 }}>
+                  <TouchableOpacity onPress={() => setMercenaryModalVisible(true)} style={{ padding: 4 }} hitSlop={8}>
                     <Text style={{ fontSize: 12, fontWeight: '800', color: Colors.primary, textDecorationLine: 'underline' }}>상세 분석 ›</Text>
                   </TouchableOpacity>
                 </View>
@@ -951,7 +878,7 @@ export default function ProfileScreen() {
             </View>
 
             <Text style={styles.sectionTitle}>
-              📊 소속팀별 내 출전 성적 (참여 많은 순)
+              📊 소속팀별 내 출전 성적 · 교류전 (참여 많은 순)
             </Text>
             {computedData.teamMyStatsArr.length === 0 ? (
               <View style={styles.emptyBox}><Text style={styles.emptyText}>소속된 팀이 없습니다.</Text></View>
@@ -962,7 +889,7 @@ export default function ProfileScreen() {
                     <View key={item.teamName} style={styles.teamRowCard}>
                       <View style={styles.teamRowHeader}>
                         <Text style={styles.teamRowName}>{item.teamType === 'club' ? '🛡️' : '🏫'} [{item.teamName}]</Text>
-                        <TouchableOpacity onPress={() => { setSelectedPersonalTeam(item.teamName); setPersonalModalVisible(true); }} style={{ padding: 4 }}>
+                        <TouchableOpacity onPress={() => { setSelectedPersonalTeam(item.teamName); setPersonalModalVisible(true); }} style={{ padding: 4 }} hitSlop={8}>
                           <Text style={styles.teamRowLink}>분석 리포트 ›</Text>
                         </TouchableOpacity>
                       </View>
@@ -998,6 +925,7 @@ export default function ProfileScreen() {
                             setTeamModalVisible(true);
                           }}
                           style={{ padding: 4 }}
+                          hitSlop={8}
                         >
                           <Text style={styles.teamRowLink}>전력 분석 ›</Text>
                         </TouchableOpacity>
@@ -1066,7 +994,7 @@ export default function ProfileScreen() {
       <StickyAdBanner />
 
       <Modal visible={seasonPickerModalVisible} animationType="fade" transparent={true} onRequestClose={() => setSeasonPickerModalVisible(false)}>
-        <View style={styles.modalOverlay}>
+        <View style={[styles.modalOverlay, { paddingTop: Math.max(insets.top, 16), paddingBottom: Math.max(insets.bottom, 16) }]}>
           <View style={styles.modalContent}>
             <Text style={styles.modalTitle}>📅 조회 시즌 선택</Text>
             <Text style={styles.modalSubTag}>확인하고 싶은 배구 시즌을 선택하세요.</Text>
@@ -1120,7 +1048,7 @@ export default function ProfileScreen() {
       </Modal>
 
       <Modal visible={grapeBoardModalVisible} animationType="fade" transparent={true} onRequestClose={() => setGrapeBoardModalVisible(false)}>
-        <View style={styles.modalOverlay}>
+        <View style={[styles.modalOverlay, { paddingTop: Math.max(insets.top, 16), paddingBottom: Math.max(insets.bottom, 16) }]}>
           <View style={[styles.modalContent, { backgroundColor: '#FAF5FF', borderColor: '#E9D5FF', borderWidth: 1.5 }]}>
             <Text style={{ fontSize: 18, fontWeight: '900', color: '#6B21A8', textAlign: 'center', marginBottom: 4 }}>
               🍇 칭찬 포도알 판
@@ -1191,7 +1119,8 @@ export default function ProfileScreen() {
           setTeamModalVisible(false);
           setSelectedOfficialTeam(null);
         }}
-        analytics={teamOfficialAnalytics}
+        analytics={teamOfficialAnalytics?.official || null}
+        intramuralAnalytics={teamOfficialAnalytics?.intramural || null}
         selectedSeason={selectedSeason}
       />
 
@@ -1209,8 +1138,8 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: Colors.background },
   header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 20, paddingVertical: 14, backgroundColor: Colors.surface, borderBottomWidth: 1, borderBottomColor: Colors.border },
   backBtn: { width: 32, height: 32, justifyContent: 'center' },
-  backText: { fontSize: 32, color: Colors.text, lineHeight: 32 },
-  headerTitle: { fontSize: 16, fontWeight: '800', color: Colors.text },
+  backText: { fontSize: 32, color: Colors.text, lineHeight: 32, includeFontPadding: false },
+  headerTitle: { fontSize: 16, lineHeight: 22, fontWeight: '800', color: Colors.text, includeFontPadding: false },
   
   content: { padding: 16, paddingBottom: 20 },
 
@@ -1295,25 +1224,25 @@ const styles = StyleSheet.create({
   seasonOptionTextActive: { color: '#1D4ED8', fontWeight: '800' },
   checkMark: { fontSize: 14 },
 
-  sectionTitle: { fontSize: 15, fontWeight: '800', color: Colors.text, marginBottom: 8, marginTop: 4 },
+  sectionTitle: { fontSize: 15, lineHeight: 20, fontWeight: '800', color: Colors.text, marginBottom: 8, marginTop: 4, includeFontPadding: false },
   statsContainer: { gap: 8, marginBottom: 16 },
   statCard: { backgroundColor: '#EFF6FF', borderRadius: 12, padding: 14, borderWidth: 1, borderColor: '#BFDBFE' },
-  statCardTitle: { fontSize: 13, fontWeight: '800', color: '#1D4ED8', marginBottom: 4 },
-  statMainVal: { fontSize: 20, fontWeight: '900', color: '#1E40AF', marginBottom: 4 },
+  statCardTitle: { fontSize: 13, lineHeight: 18, fontWeight: '800', color: '#1D4ED8', marginBottom: 4, includeFontPadding: false },
+  statMainVal: { fontSize: 20, lineHeight: 26, fontWeight: '900', color: '#1E40AF', marginBottom: 4, includeFontPadding: false },
   statRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  statSubText: { fontSize: 12, color: '#3B82F6', fontWeight: '600' },
-  statRateText: { fontSize: 13, fontWeight: '800', color: '#1E40AF' },
+  statSubText: { fontSize: 12, lineHeight: 16, color: '#3B82F6', fontWeight: '600', includeFontPadding: false },
+  statRateText: { fontSize: 13, lineHeight: 18, fontWeight: '800', color: '#1E40AF', includeFontPadding: false },
 
   teamStatsWrapper: { gap: 8, marginBottom: 16 },
   teamRowCard: { backgroundColor: '#F8FAFC', borderRadius: 12, padding: 14, borderWidth: 1, borderColor: '#E2E8F0' },
   teamRowHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 },
-  teamRowName: { fontSize: 14, fontWeight: '800', color: Colors.primary },
-  teamRowLink: { fontSize: 12, fontWeight: '800', color: '#2563EB', textDecorationLine: 'underline' },
-  teamRowVal: { fontSize: 15, fontWeight: '800', color: Colors.text },
+  teamRowName: { fontSize: 14, lineHeight: 18, fontWeight: '800', color: Colors.primary, includeFontPadding: false, flexShrink: 1 },
+  teamRowLink: { fontSize: 12, lineHeight: 16, fontWeight: '800', color: '#2563EB', textDecorationLine: 'underline', includeFontPadding: false, flexShrink: 0 },
+  teamRowVal: { fontSize: 15, lineHeight: 20, fontWeight: '800', color: Colors.text, includeFontPadding: false },
   teamRowBody: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  teamRowValText: { fontSize: 12, color: '#475569' },
-  teamRowBadge: { backgroundColor: '#EFF6FF', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6, borderWidth: 1, borderColor: '#BFDBFE' },
-  teamRowBadgeText: { fontSize: 11, fontWeight: '800', color: '#1D4ED8' },
+  teamRowValText: { fontSize: 12, lineHeight: 16, color: '#475569', includeFontPadding: false, flexShrink: 1 },
+  teamRowBadge: { backgroundColor: '#EFF6FF', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6, borderWidth: 1, borderColor: '#BFDBFE', flexShrink: 0 },
+  teamRowBadgeText: { fontSize: 11, lineHeight: 14, fontWeight: '800', color: '#1D4ED8', includeFontPadding: false },
 
   emptyBox: { padding: 16, backgroundColor: '#F8FAFC', borderRadius: 10, alignItems: 'center', marginBottom: 16 },
   emptyText: { color: Colors.textMuted },

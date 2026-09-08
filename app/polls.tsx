@@ -17,7 +17,8 @@ import { useRouter, useFocusEffect } from 'expo-router';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
 import { Colors } from '../constants/Colors';
-import StickyAdBanner from '../components/StickyAdBanner'; // 💡 스티커 광고 배너 Import
+import StickyAdBanner from '../components/StickyAdBanner';
+import { getSafeTeamName } from '../lib/utils';
 
 interface PollOption {
   id: string;
@@ -466,7 +467,7 @@ export default function PollsScreen() {
                   <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 6, marginBottom: 12 }}>
                     {myTeams.map(t => (
                       <TouchableOpacity key={t.id} style={[styles.chipBtn, newTeamId === t.id && styles.chipBtnActiveTeam]} onPress={() => setNewTeamId(t.id)}>
-                        <Text style={[styles.chipText, newTeamId === t.id && { color: '#FFF' }]}>{t.name}</Text>
+                        <Text style={[styles.chipText, newTeamId === t.id && { color: '#FFF' }]}>{getSafeTeamName(t)}</Text>
                       </TouchableOpacity>
                     ))}
                   </ScrollView>

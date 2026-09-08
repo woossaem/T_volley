@@ -20,13 +20,22 @@
           "photosPermission": "프로필 사진 등록 및 변경을 위해 사진앨범 접근 권한이 필요합니다.",
           "cameraPermission": "프로필 사진 직접 촬영 및 등록을 위해 카메라 접근 권한이 필요합니다."
         }
+      ],
+      [
+        "expo-splash-screen",
+        {
+          "backgroundColor": "#0F172A",
+          "image": "./assets/icon.png",
+          "imageWidth": 200,
+          "resizeMode": "contain"
+        }
       ]
     ],
     "android": {
       "package": "com.rudolfuu.tvolley",
       "versionCode": 4,
       "adaptiveIcon": {
-        "foregroundImage": "./assets/adaptive-icon.png",
+        "foregroundImage": "./assets/icon.png",
         "backgroundColor": "#0F172A"
       }
     },

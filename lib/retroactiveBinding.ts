@@ -215,6 +215,16 @@ export async function bindTempPlayerIds(matchId: string, replacements: PlayerIdR
   const valid = replacements.filter((r) => isTempSlotId(r.fromId) && r.toId && r.fromId !== r.toId);
   if (!matchId || valid.length === 0) return { error: null };
 
+  const { error: rpcError } = await supabase.rpc('bind_match_guest_players', {
+    p_match_id: matchId,
+    p_bindings: valid.map((r) => ({
+      from_id: r.fromId,
+      to_id: r.toId,
+      to_name: r.toName || '',
+    })),
+  });
+  if (!rpcError) return { error: null };
+
   await updateMatchSetsPlayerIds(matchId, valid);
   await updateMatchScoreLogsAndRosters(matchId, valid);
   await updateSetLineupsPlayerIds(matchId, valid);

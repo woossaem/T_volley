@@ -12,6 +12,7 @@ import {
 import { supabase } from '../lib/supabase';
 import { Colors } from '../constants/Colors';
 import StickyAdBanner from './StickyAdBanner';
+import { getSafeDisplayName } from '../lib/utils';
 
 interface MemberInfo {
   user_id: string;
@@ -325,7 +326,7 @@ export default function MatchEvaluationModal({
                                 isFocused && styles.memberChipTextFocused,
                                 userEval && userEval.score > 0 && styles.memberChipTextPraised,
                               ]}>
-                                {badgeIco}{m.full_name}{userEval && userEval.score > 0 ? ' 🍇' : ''}
+                                {badgeIco}{getSafeDisplayName(m)}{userEval && userEval.score > 0 ? ' 🍇' : ''}
                               </Text>
                             </TouchableOpacity>
                           );
@@ -339,7 +340,7 @@ export default function MatchEvaluationModal({
                               <Text style={styles.swiperArrowText}>‹</Text>
                             </TouchableOpacity>
                             <Text style={styles.focusedUserNameText}>
-                              👤 {activeUser.full_name} 선생님 ({activeUserIdx + 1}/{matchMembers.length})
+                              👤 {getSafeDisplayName(activeUser)} 선생님 ({activeUserIdx + 1}/{matchMembers.length})
                             </Text>
                             <TouchableOpacity onPress={() => navigateUser(1)} style={styles.swiperArrowBtn}>
                               <Text style={styles.swiperArrowText}>›</Text>

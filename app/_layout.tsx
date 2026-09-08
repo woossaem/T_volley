@@ -3,16 +3,25 @@ import { View, Text, StyleSheet, Animated, Alert, Image } from 'react-native';
 import { Stack } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Updates from 'expo-updates';
+import * as SplashScreen from 'expo-splash-screen';
 import { AuthProvider, useAuth } from '../contexts/AuthContext';
 import { registerForPushNotificationsAsync } from '../lib/notificationService';
 import { getCurrentSeasonInfo } from '../lib/season';
-import { APP_VERSION } from '../constants/Version'; // 💡 공통 버전 변수 Import
+import { APP_VERSION } from '../constants/Version';
+import { safeInset } from '../lib/nativeSafe';
+
+try {
+  SplashScreen.preventAutoHideAsync();
+} catch {
+  // native splash already gone
+}
 
 function RootLayoutContent() {
   const { session } = useAuth();
   const [isSplashDone, setIsSplashDone] = useState(false);
   const fadeAnim = useRef(new Animated.Value(1)).current;
   const insets = useSafeAreaInsets();
+  const safeBottom = safeInset(insets.bottom);
 
   const currentSeason = getCurrentSeasonInfo();
 
@@ -51,6 +60,7 @@ function RootLayoutContent() {
   }, [session]);
 
   useEffect(() => {
+    void SplashScreen.hideAsync().catch(() => {});
     const timer = setTimeout(() => {
       Animated.timing(fadeAnim, {
         toValue: 0,
@@ -85,11 +95,11 @@ function RootLayoutContent() {
       {!isSplashDone && (
         <Animated.View style={[styles.splashOverlay, { opacity: fadeAnim }]}>
           <View style={styles.centerContent}>
-            <View style={styles.logoCircle}>
+            <View style={styles.logoBadge}>
               <Image
                 source={require('../assets/icon.png')}
                 style={styles.logoImage}
-                resizeMode="cover"
+                resizeMode="contain"
               />
             </View>
 
@@ -105,7 +115,7 @@ function RootLayoutContent() {
             <Text style={styles.subTitle}>초등교사 배구 네트워크 • 티볼리</Text>
           </View>
 
-          <View style={[styles.absoluteBottom, { bottom: Math.max(insets.bottom + 24, 60) }]}>
+          <View style={[styles.absoluteBottom, { bottom: Math.max(safeBottom + 24, 60) }]}>
             <View style={styles.splashNoticeChip}>
               <Text style={styles.splashNoticeText}>부상 없이 즐겁게! 깨끗한 교사 배구 문화 🏐</Text>
             </View>
@@ -144,14 +154,15 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  logoCircle: {
-    width: 90,
-    height: 90,
-    borderRadius: 45,
+  logoBadge: {
+    width: 112,
+    height: 112,
+    borderRadius: 24,
     borderWidth: 2,
     borderColor: '#3B82F6',
     overflow: 'hidden',
     marginBottom: 20,
+    backgroundColor: '#0F172A',
     shadowColor: '#3B82F6',
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.4,

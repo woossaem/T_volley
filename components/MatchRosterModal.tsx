@@ -12,22 +12,14 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Colors } from '../constants/Colors';
 import { supabase } from '../lib/supabase';
-import { bindTempPlayerIds, collectTempIdsFromValue, listTempSlotsFromLineup, type PlayerIdReplacement } from '../lib/retroactiveBinding';
-import { formatTempPlayerLabel, TEMP_POSITION_ABBREV, parseTempPositionKey } from '../lib/tempPlayer';
-import { resolveTeamName } from '../lib/nameUtils';
+import { bindTempPlayerIds, type PlayerIdReplacement } from '../lib/retroactiveBinding';
+import { buildGuestCards, type GuestCard } from '../lib/guestRoster';
+import { getSafeDisplayName, getSafeTeamName } from '../lib/utils';
 
 export interface RosterMember {
   user_id: string;
   full_name: string;
 }
-
-type SlotPick = {
-  tempId: string;
-  side: 'host' | 'away';
-  setNumber: number;
-  slotIndex: number;
-  label: string;
-};
 
 interface Props {
   visible: boolean;
@@ -55,12 +47,12 @@ export default function MatchRosterModal({
   const insets = useSafeAreaInsets();
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [slots, setSlots] = useState<SlotPick[]>([]);
+  const [cards, setCards] = useState<GuestCard[]>([]);
   const [picks, setPicks] = useState<Record<string, string>>({});
   const [activeTempId, setActiveTempId] = useState<string | null>(null);
 
-  const hostName = resolveTeamName(hostTeamName, '주최팀');
-  const awayName = resolveTeamName(awayTeamName, '상대팀');
+  const hostName = getSafeTeamName(hostTeamName || '주최팀');
+  const awayName = getSafeTeamName(awayTeamName || '상대팀');
 
   useEffect(() => {
     if (!visible || !matchId) return;
@@ -73,41 +65,27 @@ export default function MatchRosterModal({
           .select('set_number, host_lineup, away_lineup')
           .eq('match_id', matchId)
           .order('set_number', { ascending: true });
-        const collected: SlotPick[] = [];
-        (sets || []).forEach((row: any) => {
-          const setNumber = Number(row.set_number) || 1;
-          collected.push(...listTempSlotsFromLineup(row.host_lineup, 'host', setNumber));
-          collected.push(...listTempSlotsFromLineup(row.away_lineup, 'away', setNumber));
-        });
         const { data: match } = await supabase
           .from('matches')
           .select('host_roster, away_roster, score_logs')
           .eq('id', matchId)
           .maybeSingle();
-        if (collected.length === 0) {
-          collected.push(...listTempSlotsFromLineup(match?.host_roster, 'host', 1));
-          collected.push(...listTempSlotsFromLineup(match?.away_roster, 'away', 1));
+        let scoreLogs = match?.score_logs;
+        if (!Array.isArray(scoreLogs) || scoreLogs.length === 0) {
+          const { data: ev } = await supabase
+            .from('match_events')
+            .select('player_id, event_type, is_canceled')
+            .eq('match_id', matchId);
+          scoreLogs = ev || [];
         }
-        const extra = new Set<string>();
-        collectTempIdsFromValue(match?.host_roster, extra);
-        collectTempIdsFromValue(match?.away_roster, extra);
-        collectTempIdsFromValue(match?.score_logs, extra);
-        extra.forEach((tempId) => {
-          if (collected.some((s) => s.tempId === tempId)) return;
-          collected.push({
-            side: tempId.includes('_a') ? 'away' : 'host',
-            setNumber: 1,
-            slotIndex: collected.length,
-            tempId,
-            label: formatTempPlayerLabel(tempId),
-          });
-        });
-        const uniq = new Map<string, SlotPick>();
-        collected.forEach((s) => {
-          if (!uniq.has(s.tempId)) uniq.set(s.tempId, s);
+        const next = buildGuestCards({
+          sets: sets || [],
+          hostRoster: match?.host_roster,
+          awayRoster: match?.away_roster,
+          scoreLogs,
         });
         if (!cancelled) {
-          setSlots(Array.from(uniq.values()));
+          setCards(next);
           setPicks({});
           setActiveTempId(null);
         }
@@ -120,25 +98,25 @@ export default function MatchRosterModal({
   }, [visible, matchId]);
 
   const membersOf = (side: 'host' | 'away') => (side === 'host' ? hostMembers : awayMembers);
-  const activeSlot = slots.find((s) => s.tempId === activeTempId) || null;
+  const activeCard = cards.find((c) => c.tempId === activeTempId) || null;
 
   const handleSave = async () => {
     if (!matchId) return;
     const replacements: PlayerIdReplacement[] = [];
-    slots.forEach((slot) => {
-      const toId = picks[slot.tempId];
+    cards.forEach((card) => {
+      const toId = picks[card.tempId];
       if (!toId) return;
-      const member = membersOf(slot.side).find((m) => m.user_id === toId);
-      replacements.push({ fromId: slot.tempId, toId, toName: member?.full_name || null });
+      const member = membersOf(card.side).find((m) => m.user_id === toId);
+      replacements.push({ fromId: card.tempId, toId, toName: member ? getSafeDisplayName(member) : null });
     });
     if (replacements.length === 0) {
-      Alert.alert('알림', '교체할 미가입 자리를 선택해 주세요.');
+      Alert.alert('알림', '연동할 게스트를 선택해 주세요.');
       return;
     }
     setSaving(true);
     try {
       await bindTempPlayerIds(matchId, replacements);
-      Alert.alert('저장 완료', '미가입 선수 기록이 선택한 유저에게 소급 연동되었습니다.');
+      Alert.alert('저장 완료', '게스트 기록이 선택한 유저 계정으로 일괄 소급 연동되었습니다.');
       onSaved?.();
       onClose();
     } catch (err: any) {
@@ -152,9 +130,9 @@ export default function MatchRosterModal({
     <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
       <View style={[styles.overlay, { paddingTop: insets.top + 12, paddingBottom: insets.bottom + 12 }]}>
         <View style={styles.card}>
-          <Text style={styles.title}>선수 명단 수정</Text>
-          <Text style={styles.sub} numberOfLines={2}>
-            미가입 포지션 기록을 가입 유저 이름으로 연동합니다.
+          <Text style={styles.title} numberOfLines={1} ellipsizeMode="tail">오늘 출전 게스트 연동</Text>
+          <Text style={styles.sub} numberOfLines={2} ellipsizeMode="tail">
+            게스트 한 명의 전 세트·전 포지션 기록을 가입 유저 한 계정으로 일괄 연동합니다.
           </Text>
 
           {loading ? (
@@ -164,35 +142,38 @@ export default function MatchRosterModal({
           ) : (
             <ScrollView style={styles.scroll} showsVerticalScrollIndicator={false}>
               <View style={styles.teamRow}>
-                <Text style={styles.teamName} numberOfLines={1}>{hostName}</Text>
+                <Text style={styles.teamName} numberOfLines={1} ellipsizeMode="tail">{hostName}</Text>
                 <Text style={styles.vs}>VS</Text>
-                <Text style={[styles.teamName, styles.teamNameRight]} numberOfLines={1}>{awayName}</Text>
+                <Text style={[styles.teamName, styles.teamNameRight]} numberOfLines={1} ellipsizeMode="tail">{awayName}</Text>
               </View>
 
-              {slots.length === 0 ? (
-                <Text style={styles.empty}>소급할 미가입 자리가 없습니다.</Text>
+              {cards.length === 0 ? (
+                <Text style={styles.empty}>소급할 게스트가 없습니다.</Text>
               ) : (
-                slots.map((slot) => {
-                  const picked = picks[slot.tempId];
-                  const pickedName = membersOf(slot.side).find((m) => m.user_id === picked)?.full_name;
-                  const abbrev = parseTempPositionKey(slot.tempId);
+                cards.map((guest) => {
+                  const picked = picks[guest.tempId];
+                  const pickedMember = membersOf(guest.side).find((m) => m.user_id === picked);
+                  const pickedName = pickedMember ? getSafeDisplayName(pickedMember) : undefined;
                   return (
                     <TouchableOpacity
-                      key={slot.tempId}
-                      style={[styles.slotRow, activeTempId === slot.tempId && styles.slotRowActive]}
-                      onPress={() => setActiveTempId(slot.tempId)}
+                      key={guest.tempId}
+                      style={[styles.slotRow, activeTempId === guest.tempId && styles.slotRowActive]}
+                      onPress={() => setActiveTempId(guest.tempId)}
                       activeOpacity={0.8}
                       hitSlop={HIT_SLOP}
                     >
                       <View style={styles.slotLeft}>
-                        <Text style={styles.slotMeta} numberOfLines={1}>
-                          {slot.side === 'host' ? hostName : awayName} · {slot.setNumber}세트
+                        <Text style={styles.slotMeta} numberOfLines={1} ellipsizeMode="tail">
+                          {guest.side === 'host' ? hostName : awayName}
                         </Text>
-                        <Text style={styles.slotLabel} numberOfLines={1}>
-                          {abbrev ? `${TEMP_POSITION_ABBREV[abbrev]} ` : ''}{slot.label || formatTempPlayerLabel(slot.tempId)}
+                        <Text style={styles.slotLabel} numberOfLines={1} ellipsizeMode="tail">
+                          [{guest.name}]
+                        </Text>
+                        <Text style={styles.slotSummary} numberOfLines={1} ellipsizeMode="tail">
+                          {guest.summary}
                         </Text>
                       </View>
-                      <Text style={styles.slotPick} numberOfLines={1}>
+                      <Text style={styles.slotPick} numberOfLines={1} ellipsizeMode="tail">
                         {pickedName || '유저 선택'}
                       </Text>
                     </TouchableOpacity>
@@ -200,29 +181,29 @@ export default function MatchRosterModal({
                 })
               )}
 
-              {activeSlot ? (
+              {activeCard ? (
                 <View style={styles.memberBox}>
-                  <Text style={styles.memberTitle}>
-                    {activeSlot.side === 'host' ? hostName : awayName} 명단
+                  <Text style={styles.memberTitle} numberOfLines={1} ellipsizeMode="tail">
+                    {activeCard.side === 'host' ? hostName : awayName} 명단
                   </Text>
                   <View style={styles.memberWrap}>
-                    {membersOf(activeSlot.side).map((m) => {
-                      const selected = picks[activeSlot.tempId] === m.user_id;
+                    {membersOf(activeCard.side).map((m) => {
+                      const selected = picks[activeCard.tempId] === m.user_id;
                       return (
                         <TouchableOpacity
                           key={m.user_id}
                           style={[styles.memberChip, selected && styles.memberChipOn]}
-                          onPress={() => setPicks((prev) => ({ ...prev, [activeSlot.tempId]: m.user_id }))}
+                          onPress={() => setPicks((prev) => ({ ...prev, [activeCard.tempId]: m.user_id }))}
                           hitSlop={HIT_SLOP}
                           activeOpacity={0.8}
                         >
-                          <Text style={[styles.memberChipText, selected && styles.memberChipTextOn]} numberOfLines={1}>
-                            {m.full_name}
+                          <Text style={[styles.memberChipText, selected && styles.memberChipTextOn]} numberOfLines={1} ellipsizeMode="tail">
+                            {getSafeDisplayName(m)}
                           </Text>
                         </TouchableOpacity>
                       );
                     })}
-                    {membersOf(activeSlot.side).length === 0 ? (
+                    {membersOf(activeCard.side).length === 0 ? (
                       <Text style={styles.empty}>등록된 팀원이 없습니다.</Text>
                     ) : null}
                   </View>
@@ -242,7 +223,7 @@ export default function MatchRosterModal({
               hitSlop={HIT_SLOP}
               activeOpacity={0.85}
             >
-              {saving ? <ActivityIndicator color="#FFF" /> : <Text style={styles.saveBtnText}>저장</Text>}
+              {saving ? <ActivityIndicator color="#FFF" /> : <Text style={styles.saveBtnText}>일괄 연동</Text>}
             </TouchableOpacity>
           </View>
         </View>
@@ -279,8 +260,9 @@ const styles = StyleSheet.create({
   slotRowActive: { borderColor: '#2563EB', backgroundColor: '#EFF6FF' },
   slotLeft: { flex: 1, flexShrink: 1, marginRight: 8 },
   slotMeta: { fontSize: 10, fontWeight: '700', color: '#64748B', lineHeight: 14, includeFontPadding: false },
-  slotLabel: { fontSize: 13, fontWeight: '800', color: Colors.text, lineHeight: 18, includeFontPadding: false },
-  slotPick: { maxWidth: '38%', flexShrink: 1, fontSize: 12, fontWeight: '800', color: '#2563EB', lineHeight: 16, includeFontPadding: false },
+  slotLabel: { fontSize: 14, fontWeight: '800', color: Colors.text, lineHeight: 18, includeFontPadding: false },
+  slotSummary: { fontSize: 11, fontWeight: '600', color: '#475569', lineHeight: 16, includeFontPadding: false, marginTop: 2 },
+  slotPick: { maxWidth: '32%', flexShrink: 1, fontSize: 12, fontWeight: '800', color: '#2563EB', lineHeight: 16, includeFontPadding: false },
   memberBox: { marginTop: 8, backgroundColor: '#F8FAFC', borderRadius: 12, padding: 10, borderWidth: 1, borderColor: '#E2E8F0' },
   memberTitle: { fontSize: 12, fontWeight: '800', color: Colors.text, marginBottom: 8, lineHeight: 16, includeFontPadding: false },
   memberWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },

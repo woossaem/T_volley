@@ -18,6 +18,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
 import { Colors } from '../constants/Colors';
 import { parseRosterUserIds, safeIncludes } from '../lib/roster';
+import { getSafeDisplayName, getSafeTeamName } from '../lib/utils';
 import { isOfficialMatch } from '../lib/officialMatch';
 import { addMatchPlayerStats, emptyPlayerCareerStats } from '../lib/playerStats';
 import { hydrateMatchesWithSetScores } from '../lib/matchSets';
@@ -98,7 +99,7 @@ export default function MyTeamDetailScreen() {
   const [customRegionText, setCustomRegionText] = useState('');
 
   const userId = session?.user?.id;
-  const currentUserName = session?.user?.user_metadata?.full_name || '선생님';
+  const currentUserName = getSafeDisplayName(session?.user?.user_metadata);
 
   const parseTeamName = (rawName: any): string => {
     if (!rawName) return '동호회 팀';
@@ -230,11 +231,15 @@ export default function MyTeamDetailScreen() {
     try {
       const { data: memData } = await supabase
         .from('team_members')
-        .select(`user_id, profiles (id, full_name, school_name, position)`)
+        .select(`user_id, profiles (*)`)
         .eq('team_id', teamId)
         .eq('is_active', true);
 
-      const memList: TeamMember[] = (memData || []).map((item: any) => item.profiles).filter((m: any) => m && m.id);
+      const memList: TeamMember[] = (memData || []).map((item: any) => {
+        const p = item.profiles;
+        if (!p || !p.id) return null;
+        return { ...p, full_name: getSafeDisplayName(p) };
+      }).filter((m: any) => m && m.id);
 
       const currentLeaderId = selectedTeam?.leader_id;
       memList.sort((a, b) => {
@@ -254,7 +259,7 @@ export default function MyTeamDetailScreen() {
 
       const rankMap: { [key: string]: MemberIntraStat } = {};
       memList.forEach(m => {
-        rankMap[m.id] = { userId: m.id, fullName: m.full_name, schoolName: m.school_name, total: 0, wins: 0, draws: 0, losses: 0, winRate: 0 };
+        rankMap[m.id] = { userId: m.id, fullName: getSafeDisplayName(m), schoolName: m.school_name, total: 0, wins: 0, draws: 0, losses: 0, winRate: 0 };
       });
 
       memList.forEach(mUser => {
@@ -467,7 +472,7 @@ export default function MyTeamDetailScreen() {
         is_read: false,
       });
 
-      Alert.alert('제안 완료 🚩', `'${selectedTargetMember.full_name}' 선생님에게 회장직 이양 제안을 전달했습니다.`);
+      Alert.alert('제안 완료 🚩', `'${getSafeDisplayName(selectedTargetMember)}' 선생님에게 회장직 이양 제안을 전달했습니다.`);
       setLeaderModalVisible(false);
     } catch (err: any) {
       Alert.alert('오류', err.message);
@@ -487,7 +492,7 @@ export default function MyTeamDetailScreen() {
         await supabase.from('notifications').insert({
           user_id: selectedTeam.leader_id!,
           title: `💡 [${selectedTeam.name}] 팀 회장 추천 도착`,
-          message: `💡 '${currentUserName}' 선생님이 '${selectedTargetMember.full_name}' 선생님을 [${selectedTeam.name}] 팀의 차기 회장으로 추천하셨습니다.`,
+          message: `💡 '${currentUserName}' 선생님이 '${getSafeDisplayName(selectedTargetMember)}' 선생님을 [${getSafeTeamName(selectedTeam)}] 팀의 차기 회장으로 추천하셨습니다.`,
           is_read: false,
         });
       } else {
@@ -499,7 +504,7 @@ export default function MyTeamDetailScreen() {
         });
       }
 
-      Alert.alert('추천 완료 💡', `'${selectedTargetMember.full_name}' 선생님 추천 알림이 전달되었습니다.`);
+      Alert.alert('추천 완료 💡', `'${getSafeDisplayName(selectedTargetMember)}' 선생님 추천 알림이 전달되었습니다.`);
       setLeaderModalVisible(false);
     } catch (err: any) {
       Alert.alert('오류', err.message);
@@ -521,7 +526,7 @@ export default function MyTeamDetailScreen() {
 
     Alert.alert(
       '⚠️ 팀원 방출 확인',
-      `'${targetMember.full_name}' 선생님을 '${selectedTeam.name}' 팀에서 정말로 방출하시겠습니까?`,
+      `'${getSafeDisplayName(targetMember)}' 선생님을 '${getSafeTeamName(selectedTeam)}' 팀에서 정말로 방출하시겠습니까?`,
       [
         { text: '취소', style: 'cancel' },
         {
@@ -539,7 +544,7 @@ export default function MyTeamDetailScreen() {
                 is_read: false,
               });
 
-              Alert.alert('방출 완료', `'${targetMember.full_name}' 선생님이 팀에서 제외되었습니다.`);
+              Alert.alert('방출 완료', `'${getSafeDisplayName(targetMember)}' 선생님이 팀에서 제외되었습니다.`);
               await fetchTeamMembersAndIntraStats(selectedTeam.id, selectedTeam.name);
             } catch (err: any) {
               Alert.alert('오류', err.message);
@@ -681,7 +686,7 @@ export default function MyTeamDetailScreen() {
             {myTeams.map((team) => {
               const isSelected = selectedTeam?.id === team.id;
               const icon = getTeamIcon(team.team_type);
-              const displayName = team.name || '동호회 팀';
+              const displayName = getSafeTeamName(team);
               const teamIsDormant = team.status === 'dormant';
 
               return (
@@ -745,7 +750,7 @@ export default function MyTeamDetailScreen() {
                     )}
                   </View>
 
-                  <Text style={styles.teamTitle}>{selectedTeam.name}</Text>
+                  <Text style={styles.teamTitle}>{getSafeTeamName(selectedTeam)}</Text>
                 </View>
 
                 {members.length >= 3 ? (
@@ -758,7 +763,12 @@ export default function MyTeamDetailScreen() {
               <View style={styles.leaderBarContainer}>
                 <View style={styles.leaderBarInfo}>
                   <Text style={styles.leaderBarTitle}>
-                    🚩 현 회장: {selectedTeam.leader_id ? (members.find(m => m.id === selectedTeam.leader_id)?.full_name || '등록됨') + ' 선생님' : '대표 공석'}
+                    🚩 현 회장: {selectedTeam.leader_id
+                      ? `${(() => {
+                          const leader = members.find((m) => m.id === selectedTeam.leader_id);
+                          return leader ? getSafeDisplayName(leader) : '등록됨';
+                        })()} 선생님`
+                      : '대표 공석'}
                   </Text>
                 </View>
                 <TouchableOpacity style={styles.claimLeaderBtn} onPress={openLeaderManagementModal}>
@@ -829,7 +839,7 @@ export default function MyTeamDetailScreen() {
             </View>
 
             <View style={styles.statsSection}>
-              <Text style={styles.sectionTitle}>⚔️ [{selectedTeam.name}] 팀 내전 개인 MVP 랭킹</Text>
+              <Text style={styles.sectionTitle}>⚔️ [{getSafeTeamName(selectedTeam)}] 팀 내전 개인 MVP 랭킹</Text>
               <Text style={{ fontSize: 12, color: Colors.textMuted, marginBottom: 12, marginTop: 4 }}>팀 내 청백전 결과를 바탕으로 매겨진 팀원 랭킹표입니다.</Text>
 
               {memberIntraRankings.length === 0 ? (
@@ -898,7 +908,7 @@ export default function MyTeamDetailScreen() {
                       <View style={{ flex: 1, marginRight: 6 }}>
                         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
                           <Text style={styles.memberName}>
-                            {m.full_name} 선생님 {isMe && '(나)'}
+                            {getSafeDisplayName(m)} 선생님 {isMe && '(나)'}
                           </Text>
                           {isLeader && (
                             <View style={styles.leaderBadge}>
@@ -951,7 +961,7 @@ export default function MyTeamDetailScreen() {
       <Modal visible={leaderModalVisible} animationType="slide" transparent={true}>
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>🚩 [{selectedTeam?.name}] 대표/회장 관리</Text>
+            <Text style={styles.modalTitle}>🚩 [{getSafeTeamName(selectedTeam)}] 대표/회장 관리</Text>
             <Text style={styles.modalSub}>원하시는 팀 회장 관리 메뉴를 선택해 주세요.</Text>
 
             <View style={styles.actionTabRow}>
@@ -1008,7 +1018,7 @@ export default function MyTeamDetailScreen() {
                         onPress={() => setSelectedTargetMember(m)}
                       >
                         <Text style={[styles.memberPickerText, isSelected && styles.memberPickerTextActive]}>
-                          👤 {m.full_name} 선생님 ({m.school_name || '학교 미설정'})
+                          👤 {getSafeDisplayName(m)} 선생님 ({m.school_name || '학교 미설정'})
                         </Text>
                         {isSelected && <Text style={{ color: '#2563EB', fontWeight: '900' }}>✓ 선택됨</Text>}
                       </TouchableOpacity>
@@ -1095,7 +1105,7 @@ export default function MyTeamDetailScreen() {
       <Modal visible={regionModalVisible} animationType="slide" transparent={true}>
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>📍 [{selectedTeam?.name}] 연고 지역 변경</Text>
+            <Text style={styles.modalTitle}>📍 [{getSafeTeamName(selectedTeam)}] 연고 지역 변경</Text>
             <Text style={{ fontSize: 12, color: Colors.textMuted, marginBottom: 12 }}>
               팀이 주 활동지로 등록할 지역을 선택하거나 직접 입력해 주세요.
             </Text>

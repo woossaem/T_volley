@@ -29,7 +29,7 @@ interface Props {
 }
 
 export default function ScoreTimeline({
-  events,
+  events = [],
   canControl,
   displayHostName,
   displayAwayName,
@@ -42,7 +42,7 @@ export default function ScoreTimeline({
   const setKey = Number(currentSetIndex);
 
   const currentSetEvents = useMemo(() => {
-    return events.filter((e) => Number(e.set_index) === setKey);
+    return (events || []).filter((e) => Number(e?.set_index) === setKey);
   }, [events, setKey]);
 
   useEffect(() => {
@@ -184,7 +184,19 @@ const styles = StyleSheet.create({
   nodeHost: { backgroundColor: '#38BDF8', borderWidth: 2, borderColor: '#0C4A6E' },
   nodeAway: { backgroundColor: '#FB7185', borderWidth: 2, borderColor: '#4C0519' },
   nodeCanceled: { backgroundColor: '#64748B', borderColor: '#1E293B' },
-  chip: { paddingHorizontal: 6, paddingVertical: 4, borderRadius: 6, borderWidth: 1, minWidth: 68, alignItems: 'center', elevation: 2 },
+  chip: {
+    paddingHorizontal: 6,
+    paddingVertical: 4,
+    borderRadius: 6,
+    borderWidth: 1,
+    minWidth: 68,
+    alignItems: 'center',
+    shadowColor: '#000000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.2,
+    shadowRadius: 2,
+    elevation: 2,
+  },
   hostBg: { backgroundColor: '#0C4A6E', borderColor: '#0284C7' },
   awayBg: { backgroundColor: '#4C0519', borderColor: '#BE123C' },
   canceledBg: { backgroundColor: '#1E293B', borderColor: '#334155' },

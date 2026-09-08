@@ -142,8 +142,8 @@ const styles = StyleSheet.create({
 });
 
 /** 현재 세트 득점 흐름을 16~20px 수평 레벨바로 표시 */
-export function MomentumLevelBar({ events }: { events: MatchEvent[] }) {
-  const flow = events.filter(
+export function MomentumLevelBar({ events = [] }: { events?: MatchEvent[] }) {
+  const flow = (events || []).filter(
     (e) => !e.is_canceled && (e.event_type === 'score' || e.event_type === 'fault')
   );
   if (flow.length === 0) {

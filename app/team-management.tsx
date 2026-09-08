@@ -17,6 +17,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
 import { Colors } from '../constants/Colors';
 import StickyAdBanner from '../components/StickyAdBanner';
+import { getSafeTeamName } from '../lib/utils';
 
 interface OfficialSchool { id: string; region: string; name: string; formatted: string; }
 interface TeamData { id: string; name: string; region: string; pin_code?: string | null; }
@@ -293,7 +294,7 @@ export default function TeamManagementScreen() {
                     {myJoinedTeams.map((t) => (
                       <View key={t.id || t.name} style={styles.joinedTeamItem}>
                         <Text style={styles.joinedTeamName}>
-                          {t.is_primary ? '⭐ ' : ''}{getTeamIcon(t.team_type)} {t.name} ({t.team_type === 'club' ? '동호회' : '학교팀'})
+                          {t.is_primary ? '⭐ ' : ''}{getTeamIcon(t.team_type)} {getSafeTeamName(t)} ({t.team_type === 'club' ? '동호회' : '학교팀'})
                         </Text>
                         <TouchableOpacity onPress={() => router.push({ pathname: '/my-team-detail', params: { teamId: t.id } })}>
                           <Text style={{ fontSize: 12, color: Colors.primary, fontWeight: '700' }}>관리 ➔</Text>
@@ -333,7 +334,7 @@ export default function TeamManagementScreen() {
                         <Text style={styles.inlineSuggestionHeader}>💡 검색된 기존 팀 목록 (터치하여 선택)</Text>
                         {filteredJoinTeams.map((t) => (
                           <TouchableOpacity key={t.id} style={styles.inlineSuggestionItem} onPress={() => selectJoinTeam(t)}>
-                            <Text style={styles.inlineSuggestionText}>🛡️ {t.name}</Text>
+                            <Text style={styles.inlineSuggestionText}>🛡️ {getSafeTeamName(t)}</Text>
                             <Text style={styles.inlineSuggestionBadge}>{t.region}</Text>
                           </TouchableOpacity>
                         ))}

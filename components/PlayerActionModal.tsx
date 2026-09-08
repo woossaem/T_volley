@@ -2,7 +2,19 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, Modal, ScrollView } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import CourtGrid, { CourtSlotPlayer } from './CourtGrid';
-import { ANONYMOUS_PLAYER_NAME, DEFAULT_LINE_COUNT, isAnonymousPlayer, makeTempSlotId, positionKeyFromCourtIndex } from '../lib/roster';
+import { safeInset } from '../lib/nativeSafe';
+import {
+  ANONYMOUS_PLAYER_NAME,
+  assignedUserId,
+  DEFAULT_LINE_COUNT,
+  displaySlotPlayerName,
+  formatTempGuestLabel,
+  formatTempPlayerLabel,
+  isRegisteredUserId,
+  isTempSlotId,
+  nextTempGuestId,
+} from '../lib/roster';
+import { getSafeDisplayName, getSafeTeamName } from '../lib/utils';
 
 export interface Member {
   user_id: string;
@@ -17,12 +29,19 @@ export interface CourtLayout {
   backCount?: number;
 }
 
+export interface LineupApplyPayload {
+  courtIds: Array<string | null>;
+  benchIds: string[];
+  sub?: { out: Member; in: Member };
+}
+
 interface Props {
   visible: boolean;
   mode: 'score' | 'sub' | 'edit';
   teamName: string;
   opponentTeamName?: string;
   boardSide?: 'left' | 'right';
+  usedGuestIds?: Array<string | null | undefined>;
   courtMembers: Member[];
   benchMembers: Member[];
   opponentCourtMembers?: Member[];
@@ -31,22 +50,27 @@ interface Props {
   onClose: () => void;
   onScoreConfirm: (member: Member | null, kind?: ScoreKind) => void;
   onSubConfirm: (outMember: Member, inMember: Member) => void;
+  onLineupApply?: (payload: LineupApplyPayload) => void;
 }
 
 function asMember(player: CourtSlotPlayer): Member {
-  return { user_id: player.user_id || makeTempSlotId(positionKeyFromCourtIndex(0)), full_name: player.full_name };
+  return {
+    user_id: player.user_id || '',
+    full_name: getSafeDisplayName(player),
+  };
 }
 
-function padCourt(members: Member[], layout?: CourtLayout): CourtSlotPlayer[] {
+function padCourt(members: Member[] | null | undefined, layout?: CourtLayout, fillEmpty = true): CourtSlotPlayer[] {
   const total =
     (layout?.frontCount ?? DEFAULT_LINE_COUNT) +
     (layout?.middleCount ?? DEFAULT_LINE_COUNT) +
     (layout?.backCount ?? DEFAULT_LINE_COUNT);
-  const next: CourtSlotPlayer[] = [...members];
+  const next: CourtSlotPlayer[] = (members || []).map((m) => ({
+    user_id: assignedUserId(m.user_id),
+    full_name: m.full_name,
+  }));
   while (next.length < total) {
-    const idx = next.length;
-    const pos = positionKeyFromCourtIndex(idx);
-    next.push({ user_id: makeTempSlotId(pos, `pad${idx}`), full_name: ANONYMOUS_PLAYER_NAME });
+    next.push({ user_id: fillEmpty ? '' : null, full_name: ANONYMOUS_PLAYER_NAME });
   }
   return next.slice(0, total);
 }
@@ -57,6 +81,7 @@ export default function PlayerActionModal({
   teamName,
   opponentTeamName,
   boardSide = 'left',
+  usedGuestIds = [],
   courtMembers,
   benchMembers,
   opponentCourtMembers = [],
@@ -65,59 +90,168 @@ export default function PlayerActionModal({
   onClose,
   onScoreConfirm,
   onSubConfirm,
+  onLineupApply,
 }: Props) {
   const insets = useSafeAreaInsets();
-  const [step, setStep] = useState(1);
-  const [outMember, setOutMember] = useState<Member | null>(null);
+  const [selectedIndex, setSelectedIndex] = useState<number | null>(null);
+  const [courtSlots, setCourtSlots] = useState<CourtSlotPlayer[]>([]);
+  const [benchList, setBenchList] = useState<Member[]>([]);
+  const [benchWidth, setBenchWidth] = useState(0);
+  const [benchContentWidth, setBenchContentWidth] = useState(0);
 
   useEffect(() => {
-    if (visible) {
-      setStep(1);
-      setOutMember(null);
-    }
+    if (!visible) return;
+    setSelectedIndex(null);
+    setCourtSlots(padCourt(courtMembers || [], courtLayout, mode !== 'sub'));
+    setBenchList(benchMembers || []);
   }, [visible]);
 
   const isScoreMode = mode === 'score' || mode === 'edit';
   const isSubMode = mode === 'sub';
   const isLeftTeam = boardSide === 'left';
   const oppName = opponentTeamName || '상대';
-  const leftName = boardSide === 'left' ? teamName : oppName;
-  const rightName = boardSide === 'left' ? oppName : teamName;
+  const safeTeamName = getSafeTeamName(teamName);
+  const leftName = boardSide === 'left' ? safeTeamName : getSafeTeamName(oppName);
+  const rightName = boardSide === 'left' ? getSafeTeamName(oppName) : safeTeamName;
   const leftKind: ScoreKind = boardSide === 'left' ? 'kill' : 'fault';
   const rightKind: ScoreKind = boardSide === 'left' ? 'fault' : 'kill';
 
   let title = '';
-  if (mode === 'score') title = `${teamName} +1점  원인 선택`;
-  else if (mode === 'edit') title = `기록 선수 수정 · ${teamName}`;
-  else title = `${teamName} 선수 교체`;
+  if (mode === 'score') title = `${safeTeamName} +1점  원인 선택`;
+  else if (mode === 'edit') title = `기록 선수 수정 · ${safeTeamName}`;
+  else title = `${safeTeamName} 선수 교체`;
 
-  const subHint = mode === 'sub'
-    ? (step === 1 ? '코트에서 나올 선수를 선택하세요.' : '코트로 들어갈 대기 선수를 선택하세요.')
-    : '';
-
-  const ownCourt = useMemo(() => padCourt(courtMembers, courtLayout), [courtMembers, courtLayout]);
-  const oppCourt = useMemo(() => padCourt(opponentCourtMembers, opponentCourtLayout), [opponentCourtMembers, opponentCourtLayout]);
+  const ownCourt = useMemo(() => padCourt(courtMembers, courtLayout, true), [courtMembers, courtLayout]);
+  const oppCourt = useMemo(() => padCourt(opponentCourtMembers, opponentCourtLayout, true), [opponentCourtMembers, opponentCourtLayout]);
   const leftCourt = boardSide === 'left' ? ownCourt : oppCourt;
   const rightCourt = boardSide === 'left' ? oppCourt : ownCourt;
   const leftLayout = boardSide === 'left' ? courtLayout : opponentCourtLayout;
   const rightLayout = boardSide === 'left' ? opponentCourtLayout : courtLayout;
 
-  const confirmKind = (player: CourtSlotPlayer | null, kind: ScoreKind) => {
-    if (!player || isAnonymousPlayer(player)) {
-      onScoreConfirm(player ? { user_id: asMember(player).user_id, full_name: ANONYMOUS_PLAYER_NAME } : null, kind);
-      return;
-    }
-    onScoreConfirm(asMember(player), kind);
+  const allUsedIds = useMemo(
+    () => [
+      ...usedGuestIds,
+      ...courtSlots.map((s) => s.user_id),
+      ...benchList.map((m) => m.user_id),
+    ],
+    [usedGuestIds, courtSlots, benchList],
+  );
+
+  const makeGuestMember = (): Member => {
+    const id = nextTempGuestId(allUsedIds);
+    return { user_id: id, full_name: formatTempGuestLabel(id) || formatTempPlayerLabel(id) };
   };
 
-  const benchForSub = (benchMembers.length > 0 ? benchMembers : courtMembers.filter((m) => m.user_id !== outMember?.user_id))
-    .filter((m) => !isAnonymousPlayer(m));
+  const confirmKind = (player: CourtSlotPlayer | null, kind: ScoreKind) => {
+    const id = assignedUserId(player?.user_id);
+    if (!id) {
+      onScoreConfirm(null, kind);
+      return;
+    }
+    const name = isRegisteredUserId(id)
+      ? getSafeDisplayName(player)
+      : displaySlotPlayerName(id, getSafeDisplayName(player));
+    onScoreConfirm({ user_id: id, full_name: name }, kind);
+  };
+
+  const commitLineup = (
+    nextCourt: CourtSlotPlayer[],
+    nextBench: Member[],
+    sub?: { out: Member; in: Member },
+  ) => {
+    setCourtSlots(nextCourt);
+    setBenchList(nextBench);
+    const courtIds = nextCourt.map((s) => assignedUserId(s.user_id));
+    const benchIds = nextBench.map((m) => m.user_id).filter(Boolean);
+    if (onLineupApply) {
+      onLineupApply({ courtIds, benchIds, sub });
+      return;
+    }
+    if (sub) onSubConfirm(sub.out, sub.in);
+  };
+
+  const onSubSlotPress = (_player: CourtSlotPlayer, idx: number) => {
+    if (selectedIndex == null) {
+      setSelectedIndex(idx);
+      return;
+    }
+    if (selectedIndex === idx) {
+      setSelectedIndex(null);
+      return;
+    }
+    const next = [...courtSlots];
+    const a = next[selectedIndex];
+    next[selectedIndex] = next[idx];
+    next[idx] = a;
+    commitLineup(next, benchList);
+    setSelectedIndex(null);
+  };
+
+  const onBenchPress = (member: Member) => {
+    if (selectedIndex == null) return;
+    const slot = courtSlots[selectedIndex];
+    const slotId = assignedUserId(slot?.user_id);
+    const next = [...courtSlots];
+    next[selectedIndex] = { user_id: member.user_id, full_name: member.full_name };
+    let nextBench = benchList.filter((m) => m.user_id !== member.user_id);
+    if (!slotId) {
+      commitLineup(next, nextBench);
+    } else {
+      const out = asMember(slot);
+      if (out.user_id) nextBench = [...nextBench, out];
+      commitLineup(next, nextBench, { out, in: member });
+    }
+    setSelectedIndex(null);
+  };
+
+  const onSendToBench = () => {
+    if (selectedIndex == null) return;
+    const slot = courtSlots[selectedIndex];
+    const slotId = assignedUserId(slot?.user_id);
+    if (!slotId) return;
+    const out = asMember(slot);
+    const next = [...courtSlots];
+    next[selectedIndex] = { user_id: null, full_name: '' };
+    const alreadyOnBench = benchList.some((m) => m.user_id === out.user_id);
+    const nextBench = alreadyOnBench ? benchList : [...benchList, out];
+    commitLineup(next, nextBench);
+  };
+
+  const onAddNewGuest = () => {
+    const guest = makeGuestMember();
+    if (selectedIndex != null) {
+      const slot = courtSlots[selectedIndex];
+      const slotId = assignedUserId(slot?.user_id);
+      const next = [...courtSlots];
+      next[selectedIndex] = { user_id: guest.user_id, full_name: guest.full_name };
+      if (!slotId) {
+        commitLineup(next, benchList);
+      } else {
+        const out = asMember(slot);
+        const nextBench = out.user_id && !benchList.some((m) => m.user_id === out.user_id)
+          ? [...benchList, out]
+          : benchList;
+        commitLineup(next, nextBench, { out, in: guest });
+      }
+      setSelectedIndex(null);
+      return;
+    }
+    commitLineup(courtSlots, [...benchList, guest]);
+  };
 
   const netGuide = (
     <View style={[styles.netGuide, isLeftTeam ? styles.netGuideA : styles.netGuideB]}>
       <Text style={styles.netGuideText}>N{'\n'}E{'\n'}T</Text>
     </View>
   );
+
+  const benchOverflow = benchContentWidth > benchWidth + 8;
+  const selectedOccupied = selectedIndex != null && !!assignedUserId(courtSlots[selectedIndex]?.user_id);
+  const subHint = selectedIndex == null
+    ? '선수를 고른 뒤 다른 슬롯을 누르면 자리가 바뀝니다. 빈자리는 벤치에서 투입하세요.'
+    : selectedOccupied
+      ? '다른 슬롯을 누르면 스왑, 벤치를 누르면 교체됩니다. [퇴장]으로 벤치에 내릴 수 있습니다.'
+      : '하단 벤치 또는 [+ 신규 게스트]를 누르면 이 자리에 투입됩니다.';
 
   return (
     <Modal visible={visible} transparent animationType="fade">
@@ -126,8 +260,8 @@ export default function PlayerActionModal({
           styles.overlay,
           isSubMode && (isLeftTeam ? styles.overlayLeft : styles.overlayRight),
           isSubMode && {
-            paddingLeft: isLeftTeam ? Math.max(insets.left, 16) : 8,
-            paddingRight: isLeftTeam ? 8 : Math.max(insets.right, 16),
+            paddingLeft: isLeftTeam ? Math.max(safeInset(insets.left), 16) : 8,
+            paddingRight: isLeftTeam ? 8 : Math.max(safeInset(insets.right), 16),
           },
         ]}
         activeOpacity={1}
@@ -142,7 +276,7 @@ export default function PlayerActionModal({
           ]}
         >
           <Text style={styles.title}>{title}</Text>
-          {subHint ? <Text style={styles.subHint}>{subHint}</Text> : null}
+          {isSubMode ? <Text style={styles.subHint}>{subHint}</Text> : null}
 
           {isScoreMode ? (
             <View style={styles.dualCourt}>
@@ -161,14 +295,14 @@ export default function PlayerActionModal({
                       >
                         <View style={[styles.kindCardRow, !isLeft && styles.kindCardRowReverse]}>
                           <View style={[styles.teamChip, isLeft ? styles.teamChipA : styles.teamChipB]}>
-                            <Text style={styles.teamChipText} numberOfLines={1}>{pane.name}</Text>
+                            <Text style={styles.teamChipText} numberOfLines={1}>{getSafeTeamName(pane.name)}</Text>
                           </View>
                           <View style={styles.actionCol}>
                             <Text style={[styles.actionLabel, !isKill && styles.actionLabelFault]}>
                               {isKill ? '득점' : '범실'}
                             </Text>
                             <Text style={styles.kindCardSub}>
-                              {isKill ? '(직접 득점 +1)' : `(상대 실수로 ${teamName} +1)`}
+                              {isKill ? '(직접 득점 +1)' : `(상대 실수로 ${safeTeamName} +1)`}
                             </Text>
                           </View>
                         </View>
@@ -194,52 +328,82 @@ export default function PlayerActionModal({
                 );
               })}
             </View>
-          ) : step === 1 ? (
-            <View style={styles.courtWrap}>
-              <View style={styles.subCourtRow}>
-                {!isLeftTeam ? netGuide : null}
-                <View style={styles.subCourtGrid}>
-                  <CourtGrid
-                    court={ownCourt}
-                    teamLabel="나올 선수"
-                    compact
-                    tone="slate"
-                    hideNet
-                    layout="columns"
-                    courtSide={boardSide}
-                    accent={isLeftTeam ? '#0284C7' : '#E11D48'}
-                    frontCount={courtLayout?.frontCount}
-                    middleCount={courtLayout?.middleCount}
-                    backCount={courtLayout?.backCount}
-                    selectedId={outMember?.user_id}
-                    onSlotPress={(player) => {
-                      if (isAnonymousPlayer(player)) return;
-                      setOutMember(asMember(player));
-                      setStep(2);
-                    }}
-                  />
+          ) : (
+            <View style={styles.subBody}>
+              <View style={styles.courtWrap}>
+                <View style={styles.subCourtRow}>
+                  {!isLeftTeam ? netGuide : null}
+                  <View style={styles.subCourtGrid}>
+                    <CourtGrid
+                      court={courtSlots}
+                      teamLabel="코트"
+                      compact
+                      tone="slate"
+                      hideNet
+                      layout="columns"
+                      courtSide={boardSide}
+                      accent={isLeftTeam ? '#0284C7' : '#E11D48'}
+                      frontCount={courtLayout?.frontCount}
+                      middleCount={courtLayout?.middleCount}
+                      backCount={courtLayout?.backCount}
+                      selectedIndex={selectedIndex}
+                      emptySlotLabel="+ 빈자리"
+                      onSlotPress={onSubSlotPress}
+                    />
+                  </View>
+                  {isLeftTeam ? netGuide : null}
                 </View>
-                {isLeftTeam ? netGuide : null}
+              </View>
+
+              <View style={styles.benchWrap}>
+                <View style={styles.benchHeader}>
+                  <Text style={styles.benchLabel}>벤치 대기 명단</Text>
+                  {selectedOccupied ? (
+                    <TouchableOpacity style={styles.exitBtn} onPress={onSendToBench} hitSlop={8}>
+                      <Text style={styles.exitBtnText} numberOfLines={1} ellipsizeMode="tail">퇴장 (벤치로 이동)</Text>
+                    </TouchableOpacity>
+                  ) : null}
+                </View>
+                <View
+                  style={styles.benchScrollWrap}
+                  onLayout={(e) => setBenchWidth(e.nativeEvent.layout.width)}
+                >
+                  <ScrollView
+                    horizontal
+                    showsHorizontalScrollIndicator
+                    style={styles.benchScroll}
+                    contentContainerStyle={styles.benchRow}
+                    onContentSizeChange={(w) => setBenchContentWidth(w)}
+                  >
+                    {benchList.map((m) => (
+                      <TouchableOpacity
+                        key={m.user_id}
+                        style={[styles.benchChip, selectedIndex == null && styles.benchChipDim]}
+                        onPress={() => onBenchPress(m)}
+                        hitSlop={8}
+                      >
+                        <Text style={styles.benchChipText} numberOfLines={1} ellipsizeMode="tail">
+                          {isTempSlotId(m.user_id)
+                            ? formatTempPlayerLabel(m.user_id, getSafeDisplayName(m))
+                            : getSafeDisplayName(m)}
+                        </Text>
+                      </TouchableOpacity>
+                    ))}
+                    <TouchableOpacity style={styles.benchChipAnon} onPress={onAddNewGuest} hitSlop={8}>
+                      <Text style={styles.benchChipAnonText} numberOfLines={1} ellipsizeMode="tail">+ 신규 게스트</Text>
+                    </TouchableOpacity>
+                  </ScrollView>
+                  {benchOverflow ? (
+                    <View pointerEvents="none" style={styles.benchFade}>
+                      <View style={styles.benchFadeSoft} />
+                      <View style={styles.benchFadeHard}>
+                        <Text style={styles.benchFadeArrow}>›</Text>
+                      </View>
+                    </View>
+                  ) : null}
+                </View>
               </View>
             </View>
-          ) : (
-            <ScrollView style={{ maxHeight: 140 }} showsVerticalScrollIndicator={false}>
-              <View style={styles.grid}>
-                {benchForSub.length === 0 ? (
-                  <Text style={styles.emptyText}>들어갈 대기 선수가 없습니다.</Text>
-                ) : (
-                  benchForSub.map((m) => (
-                    <TouchableOpacity
-                      key={m.user_id}
-                      style={styles.playerBtn}
-                      onPress={() => onSubConfirm(outMember!, m)}
-                    >
-                      <Text style={styles.playerText}>{m.full_name}</Text>
-                    </TouchableOpacity>
-                  ))
-                )}
-              </View>
-            </ScrollView>
           )}
 
           {isScoreMode && (
@@ -261,14 +425,15 @@ const styles = StyleSheet.create({
   contentSub: { width: '55%', maxWidth: 420 },
   contentSubLeft: { alignSelf: 'flex-start', borderColor: '#0284C7', borderWidth: 1.5 },
   contentSubRight: { alignSelf: 'flex-end', borderColor: '#E11D48', borderWidth: 1.5 },
-  subCourtRow: { flexDirection: 'row', alignItems: 'stretch', minHeight: 132 },
-  subCourtGrid: { flex: 1, minWidth: 0 },
-  netGuide: { width: 18, borderRadius: 4, alignItems: 'center', justifyContent: 'center', marginHorizontal: 3 },
+  subBody: { flexShrink: 0 },
+  subCourtRow: { flexDirection: 'row', alignItems: 'stretch', minHeight: 132, flexShrink: 0 },
+  subCourtGrid: { flex: 1, minWidth: 0, flexShrink: 0 },
+  netGuide: { width: 18, borderRadius: 4, alignItems: 'center', justifyContent: 'center', marginHorizontal: 3, flexShrink: 0 },
   netGuideA: { backgroundColor: '#0284C7' },
   netGuideB: { backgroundColor: '#E11D48' },
   netGuideText: { color: '#F8FAFC', fontSize: 9, lineHeight: 11, fontWeight: '800', textAlign: 'center', includeFontPadding: false },
   title: { fontSize: 16, fontWeight: '700', color: '#F8FAFC', marginBottom: 10, textAlign: 'center' },
-  subHint: { fontSize: 12, color: '#94A3B8', textAlign: 'center', marginBottom: 8, fontWeight: '600' },
+  subHint: { fontSize: 12, color: '#94A3B8', textAlign: 'center', marginBottom: 8, fontWeight: '600', lineHeight: 16, includeFontPadding: false },
   dualCourt: { flexDirection: 'row', alignItems: 'stretch', gap: 0 },
   courtPane: { flex: 1, minWidth: 0 },
   verticalNet: { width: 6, alignSelf: 'stretch', backgroundColor: '#3B82F6', borderRadius: 3, marginHorizontal: 6, marginTop: 52 },
@@ -285,11 +450,42 @@ const styles = StyleSheet.create({
   actionLabel: { color: '#F8FAFC', fontSize: 18, fontWeight: '800' },
   actionLabelFault: { color: '#F59E0B' },
   kindCardSub: { color: '#64748B', fontSize: 11, fontWeight: '600', marginTop: 2 },
-  courtWrap: { backgroundColor: '#1E293B', borderRadius: 12, borderWidth: 1, borderColor: '#334155', overflow: 'hidden', padding: 4, paddingBottom: 12, minHeight: 148 },
-  grid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, justifyContent: 'center' },
-  playerBtn: { backgroundColor: '#334155', paddingHorizontal: 16, paddingVertical: 12, borderRadius: 8, minWidth: 96, alignItems: 'center' },
-  playerText: { color: '#F8FAFC', fontSize: 13, fontWeight: '700' },
+  courtWrap: { backgroundColor: '#1E293B', borderRadius: 12, borderWidth: 1, borderColor: '#334155', overflow: 'hidden', padding: 4, paddingBottom: 12, minHeight: 148, flexShrink: 0 },
   skipBtn: { marginTop: 10, paddingVertical: 10, backgroundColor: '#334155', borderRadius: 8, alignItems: 'center' },
   skipBtnText: { color: '#94A3B8', fontSize: 13, fontWeight: '600' },
-  emptyText: { color: '#94A3B8', padding: 16, textAlign: 'center' },
+  emptyText: { color: '#94A3B8', padding: 8, textAlign: 'center', fontSize: 12, fontWeight: '600' },
+  tagPopover: {
+    marginTop: 8,
+    backgroundColor: '#0F172A',
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#FBBF24',
+    padding: 8,
+    flexShrink: 0,
+    gap: 6,
+  },
+  tagPopoverTitle: { color: '#FDE68A', fontSize: 11, fontWeight: '800', textAlign: 'center', lineHeight: 16, includeFontPadding: false },
+  tagNewBtn: { backgroundColor: '#334155', borderRadius: 8, paddingVertical: 8, paddingHorizontal: 10, alignItems: 'center' },
+  tagNewBtnText: { color: '#F8FAFC', fontSize: 12, fontWeight: '800', lineHeight: 16, includeFontPadding: false },
+  tagChipRow: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: 2 },
+  tagChip: { backgroundColor: '#1E293B', borderRadius: 999, borderWidth: 1, borderColor: '#FBBF24', paddingHorizontal: 10, paddingVertical: 6 },
+  tagChipText: { color: '#FDE68A', fontSize: 12, fontWeight: '900', lineHeight: 16, includeFontPadding: false },
+  tagClose: { color: '#94A3B8', fontSize: 11, fontWeight: '700', textAlign: 'center', lineHeight: 16, includeFontPadding: false },
+  benchWrap: { marginTop: 8, flexShrink: 0 },
+  benchHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 4, flexShrink: 0 },
+  benchLabel: { color: '#94A3B8', fontSize: 11, fontWeight: '800', lineHeight: 16, includeFontPadding: false, flexShrink: 1 },
+  exitBtn: { backgroundColor: '#7F1D1D', borderRadius: 8, paddingHorizontal: 10, paddingVertical: 6, borderWidth: 1, borderColor: '#F87171', flexShrink: 0 },
+  exitBtnText: { color: '#FECACA', fontSize: 11, fontWeight: '900', lineHeight: 16, includeFontPadding: false },
+  benchScrollWrap: { position: 'relative', flexShrink: 0 },
+  benchScroll: { flexGrow: 0, flexShrink: 0, maxHeight: 52 },
+  benchRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingRight: 36, minHeight: 44 },
+  benchFade: { position: 'absolute', right: 0, top: 0, bottom: 0, width: 32, flexDirection: 'row', flexShrink: 0 },
+  benchFadeSoft: { flex: 1, backgroundColor: 'rgba(30, 41, 59, 0.35)' },
+  benchFadeHard: { width: 20, backgroundColor: 'rgba(30, 41, 59, 0.92)', alignItems: 'center', justifyContent: 'center' },
+  benchFadeArrow: { color: '#FDE68A', fontSize: 18, fontWeight: '900', lineHeight: 20, includeFontPadding: false },
+  benchChip: { backgroundColor: '#334155', borderRadius: 8, paddingHorizontal: 12, paddingVertical: 10, minWidth: 72, alignItems: 'center', borderWidth: 1, borderColor: '#64748B', flexShrink: 0 },
+  benchChipDim: { opacity: 0.7 },
+  benchChipText: { color: '#F8FAFC', fontSize: 12, fontWeight: '800', lineHeight: 16, includeFontPadding: false },
+  benchChipAnon: { backgroundColor: '#422006', borderRadius: 8, paddingHorizontal: 10, paddingVertical: 10, minWidth: 88, alignItems: 'center', borderWidth: 1, borderColor: '#FBBF24', flexShrink: 0 },
+  benchChipAnonText: { color: '#FDE68A', fontSize: 12, fontWeight: '900', lineHeight: 16, includeFontPadding: false },
 });

@@ -28,11 +28,23 @@ import MatchEvaluationModal from '../components/MatchEvaluationModal';
 import MatchCommentModal from '../components/MatchCommentModal';
 import MatchPostgameReportModal from '../components/MatchPostgameReportModal'; // 💡 경기 결과 분석 리포트 모달 추가
 import MatchCard, { MatchData, ApplicationData } from '../components/MatchCard';
+import GuestTeamNameModal from '../components/GuestTeamNameModal';
+import GuestTeamBindModal from '../components/GuestTeamBindModal';
 import { buildTeamStatusByName, isActiveTeamStatus } from '../lib/teamStatus';
-import { parseSetFormation, parseSetFormationMap, parseSetRosterMap, safeIncludes, safeNameText, seedNextSetFormation, teamsInclude, nameIncludesQuery, ensureTempIdsInCourt, type SetFormation } from '../lib/roster';
+import { parseSetFormation, parseSetFormationMap, parseSetRosterMap, persistCourtSlots, safeIncludes, safeNameText, seedNextSetFormation, teamsInclude, nameIncludesQuery, collectFormationSlotIds, ensureTempIdsInCourt, type SetFormation } from '../lib/roster';
+import { getSafeDisplayName, getSafeTeamName } from '../lib/utils';
 import { resolveTeamName, resolveTeamNameOrNull, collectTeamNameAliases } from '../lib/nameUtils';
 import { insertMatchIgnoringUnknownColumns, updateMatchIgnoringUnknownColumns } from '../lib/matchWrite';
 import { approveRetroTeamClaim, bindTempPlayerIds, collectTempReplacements, findTeamByName, requestRetroTeamClaim } from '../lib/retroactiveBinding';
+import {
+  bindGuestMatchToRegisteredTeam,
+  convertOpenMatchToGuest,
+  canConvertMatchToGuest,
+  DEFAULT_GUEST_TEAM_NAME,
+  finalizeGuestMatchAsOfficial,
+  isGuestBindPending,
+  isSoloGuestMatch,
+} from '../lib/guestMatch';
 import {
   dynamicScoresFromSets,
   fetchMatchSets,
@@ -80,7 +92,7 @@ export default function MatchesScreen() {
   
   const { session } = useAuth();
   const currentUserId = session?.user?.id;
-  const currentUserName = session?.user?.user_metadata?.full_name || '선생님';
+  const currentUserName = getSafeDisplayName(session?.user?.user_metadata);
   
   const [matches, setMatches] = useState<MatchData[]>([]);
   const [myApplications, setMyApplications] = useState<ApplicationData[]>([]);
@@ -113,6 +125,10 @@ export default function MatchesScreen() {
   const [selectedMatch, setSelectedMatch] = useState<MatchData | null>(null);
   const [matchApplicants, setMatchApplicants] = useState<ApplicationData[]>([]);
   const [modalVisible, setModalVisible] = useState(false);
+  const [guestNameModalVisible, setGuestNameModalVisible] = useState(false);
+  const [guestNameTargetMatch, setGuestNameTargetMatch] = useState<MatchData | null>(null);
+  const [guestBindModalVisible, setGuestBindModalVisible] = useState(false);
+  const [guestBindTargetMatch, setGuestBindTargetMatch] = useState<MatchData | null>(null);
 
   const [mercenaryModalVisible, setMercenaryModalVisible] = useState(false);
   const [targetMercenaryMatch, setTargetMercenaryMatch] = useState<MatchData | null>(null);
@@ -311,7 +327,7 @@ export default function MatchesScreen() {
           user_id: item.user_id,
           content: item.content,
           created_at: item.created_at,
-          full_name: item.profiles?.full_name || '선생님',
+          full_name: getSafeDisplayName(item.profiles || item),
           badgeType: item.badge_type,
           badgeLabel: item.badge_label,
         })));
@@ -344,7 +360,7 @@ export default function MatchesScreen() {
           user_id: data.user_id,
           content: data.content,
           created_at: data.created_at,
-          full_name: data.profiles?.full_name || currentUserName,
+          full_name: getSafeDisplayName(data.profiles || { full_name: currentUserName }),
           badgeType: data.badge_type,
           badgeLabel: data.badge_label,
         };
@@ -377,13 +393,13 @@ export default function MatchesScreen() {
       if (tData) {
         const { data: mData } = await supabase
           .from('team_members')
-          .select('user_id, profiles(full_name)')
+          .select('user_id, profiles(*)')
           .eq('team_id', tData.id)
           .eq('is_active', true);
 
         members = (mData || []).map((m: any) => ({
           user_id: m.user_id,
-          full_name: m.profiles?.full_name || '팀원',
+          full_name: getSafeDisplayName(m.profiles || m),
         }));
       }
 
@@ -439,8 +455,8 @@ export default function MatchesScreen() {
       if (hostTeamName) {
         const { data: hTeam } = await supabase.from('teams').select('id').eq('name', hostTeamName).maybeSingle();
         if (hTeam) {
-          const { data: hMembers } = await supabase.from('team_members').select('user_id, profiles(full_name)').eq('team_id', hTeam.id).eq('is_active', true);
-          formattedH = (hMembers || []).map((m: any) => ({ user_id: m.user_id, full_name: m.profiles?.full_name || '팀원' }));
+          const { data: hMembers } = await supabase.from('team_members').select('user_id, profiles(*)').eq('team_id', hTeam.id).eq('is_active', true);
+          formattedH = (hMembers || []).map((m: any) => ({ user_id: m.user_id, full_name: getSafeDisplayName(m.profiles || m) }));
           setHostMembers(formattedH);
         }
       }
@@ -448,8 +464,8 @@ export default function MatchesScreen() {
       if (awayTeamName) {
         const { data: aTeam } = await supabase.from('teams').select('id').eq('name', awayTeamName).maybeSingle();
         if (aTeam) {
-          const { data: aMembers } = await supabase.from('team_members').select('user_id, profiles(full_name)').eq('team_id', aTeam.id).eq('is_active', true);
-          formattedA = (aMembers || []).map((m: any) => ({ user_id: m.user_id, full_name: m.profiles?.full_name || '팀원' }));
+          const { data: aMembers } = await supabase.from('team_members').select('user_id, profiles(*)').eq('team_id', aTeam.id).eq('is_active', true);
+          formattedA = (aMembers || []).map((m: any) => ({ user_id: m.user_id, full_name: getSafeDisplayName(m.profiles || m) }));
           setAwayMembers(formattedA);
         }
       }
@@ -755,7 +771,7 @@ export default function MatchesScreen() {
     setActionLoading(true);
     try {
       const updateData = {
-        status: 'pending_result',
+        status: isSoloGuestMatch(selectedMatchForResult) ? 'completed' : 'pending_result',
         winner_team: selectedWinner,
         result_submitter_team: myTeamInMatch,
         set_scores: formattedScores,
@@ -763,6 +779,9 @@ export default function MatchesScreen() {
         away_roster: JSON.stringify(awayRosters),
         host_youtube_url: hostYoutube.trim() || null,
         away_youtube_url: awayYoutube.trim() || null,
+        ...(isSoloGuestMatch(selectedMatchForResult)
+          ? { approved_by_name: currentUserName, submitted_by_name: currentUserName }
+          : {}),
       };
 
       const { error: updateError } = await updateMatchIgnoringUnknownColumns(selectedMatchForResult.id, updateData);
@@ -775,17 +794,22 @@ export default function MatchesScreen() {
 
       const resultMsg = selectedWinner === 'draw' ? '무승부' : `'${selectedWinner}' 승리`;
       const scoreMsg = formattedScores ? ` (${formattedScores})` : '';
-      
-      if (otherTeam) {
-        await sendNotificationToTeam(
-          otherTeam, 
-          '⚠️ [경기 결과 수정 승인 요청]', 
-          `'${myTeamInMatch}'팀 (${currentUserName} 선생님) 이 경기 결과를 [${resultMsg}]${scoreMsg}로 제출했습니다. 동의해 주세요.`
-        );
-      }
 
-      Alert.alert('수정 전달 완료', `'${currentUserName}' 선생님의 명의로 상대 팀에 승인 요청이 전송되었습니다.`);
-      setResultModalVisible(false);
+      if (isSoloGuestMatch(selectedMatchForResult)) {
+        Alert.alert('결과 확정', '게스트 팀 경기는 상대 승인 없이 최종 결과가 확정되었습니다. 개인 스탯에는 바로 반영되고, 팀 랭킹은 상대 팀 소급 연동·승인 후 반영됩니다.');
+        setResultModalVisible(false);
+      } else {
+        if (otherTeam) {
+          await sendNotificationToTeam(
+            otherTeam, 
+            '⚠️ [경기 결과 수정 승인 요청]', 
+            `'${myTeamInMatch}'팀 (${currentUserName} 선생님) 이 경기 결과를 [${resultMsg}]${scoreMsg}로 제출했습니다. 동의해 주세요.`
+          );
+        }
+
+        Alert.alert('수정 전달 완료', `'${currentUserName}' 선생님의 명의로 상대 팀에 승인 요청이 전송되었습니다.`);
+        setResultModalVisible(false);
+      }
     } catch (err: any) {
       Alert.alert('오류', err.message);
     } finally { 
@@ -875,6 +899,13 @@ export default function MatchesScreen() {
         frontCount: formation.frontCount,
         middleCount: formation.middleCount,
         backCount: formation.backCount,
+        forceFillGuests: true,
+        usedIds: [
+          ...(formation.bench || []),
+          ...(formation.late || []),
+          ...collectFormationSlotIds(selectedMatchForResult.host_roster),
+          ...collectFormationSlotIds(selectedMatchForResult.away_roster),
+        ],
       }),
     };
     const members = isHost ? hostMembers : awayMembers;
@@ -886,6 +917,11 @@ export default function MatchesScreen() {
       ? { host_roster: JSON.stringify(carried) }
       : { away_roster: JSON.stringify(carried) };
     await supabase.from('matches').update(payload).eq('id', selectedMatchForResult.id);
+    await supabase.from('match_sets').update(
+      isHost
+        ? { host_lineup: persistCourtSlots(filled.court) }
+        : { away_lineup: persistCourtSlots(filled.court) },
+    ).eq('match_id', selectedMatchForResult.id).eq('set_number', setIndex + 1);
     if (replacements.length > 0) await bindTempPlayerIds(selectedMatchForResult.id, replacements);
     setSelectedMatchForResult((prev) => prev ? { ...prev, ...payload } : prev);
     setMatches((prev) => prev.map((m) => m.id === selectedMatchForResult.id ? { ...m, ...payload } : m));
@@ -946,6 +982,87 @@ export default function MatchesScreen() {
     }
   };
 
+  const openConvertToGuestMatch = (match: MatchData) => {
+    setGuestNameTargetMatch(match);
+    setGuestNameModalVisible(true);
+  };
+
+  const handleConvertToGuestMatch = async (awayTeamName: string) => {
+    const target = guestNameTargetMatch || selectedMatch;
+    if (!target) return;
+    setActionLoading(true);
+    try {
+      const hostTeam = await findTeamByName(target.host_team_name);
+      const result = await convertOpenMatchToGuest({
+        matchId: target.id,
+        awayTeamName,
+        hostTeamId: hostTeam?.id || null,
+      });
+      if (result.error) return Alert.alert('알림', result.error.message);
+      const patched = {
+        ...target,
+        ...result.data,
+        away_team_name: awayTeamName.trim() || DEFAULT_GUEST_TEAM_NAME,
+        away_team_id: null,
+        status: 'matched',
+        is_guest_match: true,
+        is_official: false,
+      } as MatchData;
+      setMatches((prev) => prev.map((m) => (m.id === target.id ? { ...m, ...patched } : m)));
+      setGuestNameModalVisible(false);
+      setGuestNameTargetMatch(null);
+      setModalVisible(false);
+      Alert.alert('게스트 팀으로 변경', '상대 신청/승인 없이 바로 경기를 진행할 수 있습니다. 어웨이 명단에 게스트 1~9가 배정되었습니다.');
+    } catch (err: any) {
+      Alert.alert('오류', err.message);
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const openBindGuestTeam = (match: MatchData) => {
+    setGuestBindTargetMatch(match);
+    setGuestBindModalVisible(true);
+  };
+
+  const handleBindGuestTeam = async (team: { id: string; name: string }) => {
+    if (!guestBindTargetMatch) return;
+    setActionLoading(true);
+    try {
+      const result = await bindGuestMatchToRegisteredTeam({
+        matchId: guestBindTargetMatch.id,
+        teamId: team.id,
+        teamName: team.name,
+        submitterName: currentUserName,
+      });
+      if (result.error) return Alert.alert('알림', result.error.message);
+      setMatches((prev) => prev.map((m) => m.id === guestBindTargetMatch.id
+        ? {
+          ...m,
+          away_team_id: team.id,
+          away_team_name: team.name,
+          is_guest_match: true,
+          is_official: false,
+          status: result.needsResultConfirm ? 'pending_result' : m.status,
+          result_submitter_team: result.needsResultConfirm ? m.host_team_name : m.result_submitter_team,
+          submitted_by_name: result.needsResultConfirm ? currentUserName : m.submitted_by_name,
+        }
+        : m));
+      setGuestBindModalVisible(false);
+      setGuestBindTargetMatch(null);
+      Alert.alert(
+        '상대 팀 지정 완료',
+        result.needsResultConfirm
+          ? `'${getSafeTeamName(team)}' 팀에게 결과 승인/재수정 요청을 보냈습니다. 상대가 승인해야 공식 랭킹에 반영됩니다.`
+          : `'${getSafeTeamName(team)}' 팀을 상대 팀으로 지정했습니다. 경기 종료 후 상대의 승인 또는 재수정이 필요합니다.`,
+      );
+    } catch (err: any) {
+      Alert.alert('오류', err.message);
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
   const openResultModal = async (match: MatchData) => {
     setSelectedMatchForResult(match);
     setIsRosterOnlyMode(false);
@@ -975,6 +1092,22 @@ export default function MatchesScreen() {
             setActionLoading(true);
             try {
               if (isApproved) {
+                if (isGuestBindPending(match)) {
+                  const finalized = await finalizeGuestMatchAsOfficial({
+                    matchId: match.id,
+                    approvedByName: currentUserName,
+                  });
+                  if (finalized.error) throw finalized.error;
+                  setMatches(prev => prev.map(m => m.id === match.id
+                    ? { ...m, status: 'completed', is_guest_match: false, is_official: true, approved_by_name: currentUserName }
+                    : m));
+                  const otherTeam = teamsInclude(myTeams, match.host_team_name) ? match.away_team_name : match.host_team_name;
+                  if (otherTeam) {
+                    await sendNotificationToTeam(otherTeam, '✅ [결과 승인 완료]', `'${currentUserName}' 선생님이 결과를 승인하여 공식 랭킹에 반영되었습니다.`);
+                  }
+                  Alert.alert('승인 완료', '공식 전적으로 랭킹에 반영되었습니다.');
+                  setMainTab('completed');
+                } else {
                 await supabase.from('matches').update({
                   status: 'completed',
                   approved_by_name: currentUserName,
@@ -988,6 +1121,7 @@ export default function MatchesScreen() {
                 }
                 Alert.alert('승인 완료', '공식 전적으로 랭킹에 반영되었습니다.');
                 setMainTab('completed'); 
+                } 
               } else {
                 await supabase.from('matches').delete().eq('id', match.id);
                 setMatches(prev => prev.filter(m => m.id !== match.id));
@@ -1249,6 +1383,8 @@ export default function MatchesScreen() {
               onOpenReportModal={openReportModal} // 💡 분석 리포트 모달 콜백 전달
               onClaimRetroMatch={handleClaimRetroMatch}
               onApproveRetroClaim={handleApproveRetroClaim}
+              onConvertToGuestMatch={openConvertToGuestMatch}
+              onBindGuestTeam={openBindGuestTeam}
               teamStatusByName={teamStatusByName}
               teamTypeByName={teamTypeByName}
             />
@@ -1440,6 +1576,17 @@ export default function MatchesScreen() {
               })
             )}
             <TouchableOpacity style={styles.closeBtn} onPress={() => setModalVisible(false)}><Text style={styles.closeBtnText}>닫기</Text></TouchableOpacity>
+            {selectedMatch && canConvertMatchToGuest(selectedMatch) ? (
+              <TouchableOpacity
+                style={[styles.closeBtn, { backgroundColor: '#1E3A5F', marginTop: 8 }]}
+                onPress={() => {
+                  setModalVisible(false);
+                  openConvertToGuestMatch(selectedMatch);
+                }}
+              >
+                <Text style={[styles.closeBtnText, { color: '#FFFFFF' }]}>게스트 팀으로 변경</Text>
+              </TouchableOpacity>
+            ) : null}
           </View>
         </View>
       </Modal>
@@ -1494,6 +1641,28 @@ export default function MatchesScreen() {
           setProfileModalVisible(false);
           setSelectedUserIdForModal(null);
         }}
+      />
+
+      <GuestTeamNameModal
+        visible={guestNameModalVisible}
+        defaultValue={DEFAULT_GUEST_TEAM_NAME}
+        loading={actionLoading}
+        onClose={() => {
+          setGuestNameModalVisible(false);
+          setGuestNameTargetMatch(null);
+        }}
+        onConfirm={handleConvertToGuestMatch}
+      />
+      <GuestTeamBindModal
+        visible={guestBindModalVisible}
+        excludeTeamName={guestBindTargetMatch?.host_team_name}
+        excludeTeamId={guestBindTargetMatch?.host_team_id}
+        loading={actionLoading}
+        onClose={() => {
+          setGuestBindModalVisible(false);
+          setGuestBindTargetMatch(null);
+        }}
+        onConfirm={handleBindGuestTeam}
       />
     </SafeAreaView>
   );

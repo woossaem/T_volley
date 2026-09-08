@@ -21,6 +21,9 @@ import { supabase } from '../lib/supabase';
 import { Colors } from '../constants/Colors';
 import StickyAdBanner from '../components/StickyAdBanner';
 import { isActiveTeamStatus } from '../lib/teamStatus';
+import { getSafeTeamName } from '../lib/utils';
+import { insertMatchIgnoringUnknownColumns } from '../lib/matchWrite';
+import { DEFAULT_GUEST_TEAM_NAME, guestMatchWritePayload } from '../lib/guestMatch';
 
 const MATCH_FORMATS = ['3세트 매치', '5세트 매치', '2시간 교류전', '기타'];
 
@@ -55,6 +58,9 @@ export default function CreateMatchScreen() {
   const [needMercenary, setNeedMercenary] = useState(false);
   const [mercenaryDetails, setMercenaryDetails] = useState('');
 
+  const [isGuestMatch, setIsGuestMatch] = useState(false);
+  const [guestTeamName, setGuestTeamName] = useState(DEFAULT_GUEST_TEAM_NAME);
+
   // 💡 항목별 최근 5개 기록 저장 (중복 제거)
   const [recentLocations, setRecentLocations] = useState<string[]>([]);
   const [recentDescriptions, setRecentDescriptions] = useState<string[]>([]);
@@ -76,7 +82,7 @@ export default function CreateMatchScreen() {
     try {
       const { data, error } = await supabase
         .from('team_members')
-        .select(`team_id, teams (id, name, region, status)`)
+        .select(`team_id, teams (*)`)
         .eq('user_id', userId)
         .eq('is_active', true);
 
@@ -85,7 +91,7 @@ export default function CreateMatchScreen() {
       const teamsList: MyTeamData[] = (data || [])
         .map((item: any) => (Array.isArray(item.teams) ? item.teams[0] : item.teams))
         .filter((t: any) => t && isActiveTeamStatus(t.status))
-        .map((t: any) => ({ id: t.id, name: t.name, region: t.region }));
+        .map((t: any) => ({ id: t.id, name: getSafeTeamName(t), region: t.region }));
 
       if (teamsList.length === 0) {
         Alert.alert('알림', '활동 중인 소속 팀이 없습니다. 휴면/삭제된 팀으로는 신규 매치를 등록할 수 없습니다.');
@@ -121,7 +127,7 @@ export default function CreateMatchScreen() {
 
   useEffect(() => {
     if (selectedTeam) {
-      setMyGymName(`${selectedTeam.name} 체육관`);
+      setMyGymName(`${getSafeTeamName(selectedTeam)} 체육관`);
     }
   }, [selectedTeam]);
 
@@ -169,39 +175,59 @@ export default function CreateMatchScreen() {
   const handleCreateMatch = async () => {
     if (!selectedTeam) return;
     if (!location.trim()) return Alert.alert('알림', '장소(체육관)를 입력해 주세요.');
-    if (!contactInfo.trim()) return Alert.alert('알림', '매칭 성사 후 연락할 수 있는 연락망을 입력해 주세요.');
-    if (needMercenary && !mercenaryDetails.trim()) return Alert.alert('알림', '용병 모집 조건(필요 포지션, 인원 등)을 작성해 주세요.');
+    if (!isGuestMatch && !contactInfo.trim()) return Alert.alert('알림', '매칭 성사 후 연락할 수 있는 연락망을 입력해 주세요.');
+    if (!isGuestMatch && needMercenary && !mercenaryDetails.trim()) return Alert.alert('알림', '용병 모집 조건(필요 포지션, 인원 등)을 작성해 주세요.');
     if (!userId) return;
 
     setLoading(true);
     try {
-      const { error } = await supabase.from('matches').insert({
+      const teamName = getSafeTeamName(selectedTeam);
+      const guestPayload = isGuestMatch
+        ? guestMatchWritePayload({
+            awayTeamName: guestTeamName,
+            hostTeamId: selectedTeam.id,
+          })
+        : {};
+
+      const { error } = await insertMatchIgnoringUnknownColumns({
         host_user_id: userId,
-        host_team_name: selectedTeam.name,
+        host_team_name: teamName,
+        host_team_id: selectedTeam.id,
         region: selectedTeam.region || '천안',
         match_date: formattedDate,
         match_time: formattedTime,
         location: location.trim(),
         format,
         description: description.trim(),
-        contact_info: contactInfo.trim(),
+        contact_info: contactInfo.trim() || null,
         status: 'open',
-        need_mercenary: needMercenary,
-        mercenary_details: needMercenary ? mercenaryDetails.trim() : null,
+        need_mercenary: isGuestMatch ? false : needMercenary,
+        mercenary_details: isGuestMatch || !needMercenary ? null : mercenaryDetails.trim(),
+        ...guestPayload,
       });
 
       if (error) throw error;
 
-      const notiTitle = needMercenary ? '🛡️ [팀/용병 모집 알림] 신규 경기 등록' : '🛡️ [팀 모집 알림] 신규 경기 등록';
-      const notiBody = needMercenary
-        ? `'${selectedTeam.name}' 팀의 신규 경기 및 용병 모집글이 등록되었습니다. (${formattedDate} ${formattedTime})`
-        : `'${selectedTeam.name}' 팀의 새로운 경기 모집글이 등록되었습니다. (${formattedDate} ${formattedTime})`;
+      const notiTitle = isGuestMatch
+        ? '🛡️ [게스트 팀 경기] 바로 진행 가능'
+        : needMercenary
+        ? '🛡️ [팀/용병 모집 알림] 신규 경기 등록'
+        : '🛡️ [팀 모집 알림] 신규 경기 등록';
+      const notiBody = isGuestMatch
+        ? `'${teamName}' 팀이 미가입 게스트 팀(${String(guestPayload.away_team_name || DEFAULT_GUEST_TEAM_NAME)})과 경기를 등록했습니다. 신청/승인 없이 바로 전광판에서 진행할 수 있습니다.`
+        : needMercenary
+        ? `'${teamName}' 팀의 신규 경기 및 용병 모집글이 등록되었습니다. (${formattedDate} ${formattedTime})`
+        : `'${teamName}' 팀의 새로운 경기 모집글이 등록되었습니다. (${formattedDate} ${formattedTime})`;
 
-      await sendTeamNotification(selectedTeam.name, notiTitle, notiBody);
+      await sendTeamNotification(teamName, notiTitle, notiBody);
 
-      Alert.alert('등록 완료! 🏐', '경기 모집글이 등록되었으며, 팀원들에게 알림이 발송되었습니다.', [
-        { text: '확인', onPress: () => router.replace('/matches') },
-      ]);
+      Alert.alert(
+        '등록 완료! 🏐',
+        isGuestMatch
+          ? '게스트 팀 경기가 등록되었습니다. 상대 신청/승인 없이 바로 진행할 수 있습니다.'
+          : '경기 모집글이 등록되었으며, 팀원들에게 알림이 발송되었습니다.',
+        [{ text: '확인', onPress: () => router.replace('/matches') }],
+      );
     } catch (err: any) {
       Alert.alert('오류', '경기 등록 중 문제가 발생했습니다: ' + err.message);
     } finally {
@@ -266,7 +292,7 @@ export default function CreateMatchScreen() {
                     onPress={() => setSelectedTeam(team)}
                   >
                     <Text style={[styles.teamChipText, selectedTeam?.id === team.id && styles.teamChipTextActive]}>
-                      🛡️ {team.name}
+                      🛡️ {getSafeTeamName(team)}
                     </Text>
                   </TouchableOpacity>
                 ))}
@@ -274,7 +300,7 @@ export default function CreateMatchScreen() {
             ) : (
               <View style={styles.hostInfo}>
                 <Text style={styles.hostInfoText}>초청 팀 ({selectedTeam?.region})</Text>
-                <Text style={styles.hostTeamName}>🛡️ {selectedTeam?.name}</Text>
+                <Text style={styles.hostTeamName}>🛡️ {getSafeTeamName(selectedTeam)}</Text>
               </View>
             )}
           </View>
@@ -339,6 +365,43 @@ export default function CreateMatchScreen() {
             </View>
           </View>
 
+          <View style={[styles.formGroup, styles.guestBox]}>
+            <TouchableOpacity
+              style={[styles.guestToggleBtn, isGuestMatch && styles.guestToggleBtnActive]}
+              onPress={() => {
+                setIsGuestMatch((prev) => {
+                  const next = !prev;
+                  if (next) {
+                    setNeedMercenary(false);
+                    if (!guestTeamName.trim()) setGuestTeamName(DEFAULT_GUEST_TEAM_NAME);
+                  }
+                  return next;
+                });
+              }}
+              activeOpacity={0.85}
+            >
+              <Text style={[styles.guestToggleText, isGuestMatch && styles.guestToggleTextActive]}>
+                {isGuestMatch ? '✓ 미가입 게스트 팀과 경기' : '+ 미가입 게스트 팀과 경기'}
+              </Text>
+            </TouchableOpacity>
+            <Text style={styles.guestHint}>
+              상대 팀이 아직 앱에 없으면 팀명을 자유롭게 입력하세요. 신청/승인 없이 바로 경기 가능 상태가 됩니다.
+            </Text>
+            {isGuestMatch && (
+              <View style={{ marginTop: 10 }}>
+                <Text style={styles.subInputLabel}>상대 게스트 팀명</Text>
+                <TextInput
+                  style={[styles.input, { backgroundColor: '#FFFFFF' }]}
+                  placeholder={DEFAULT_GUEST_TEAM_NAME}
+                  placeholderTextColor="#94A3B8"
+                  value={guestTeamName}
+                  onChangeText={setGuestTeamName}
+                />
+              </View>
+            )}
+          </View>
+
+          {!isGuestMatch && (
           <View style={[styles.formGroup, styles.mercenaryBox]}>
             <View style={styles.switchRow}>
               <View style={{ flex: 1, paddingRight: 8 }}>
@@ -366,6 +429,7 @@ export default function CreateMatchScreen() {
               </View>
             )}
           </View>
+          )}
 
           {/* 남기고 싶은 말 영역 */}
           <View style={styles.formGroup}>
@@ -411,7 +475,13 @@ export default function CreateMatchScreen() {
           </View>
 
           <TouchableOpacity style={[styles.submitBtn, loading && styles.btnDisabled]} onPress={handleCreateMatch} disabled={loading} activeOpacity={0.85}>
-            {loading ? <ActivityIndicator color="#FFFFFF" /> : <Text style={styles.submitBtnText}>모집글 등록하기</Text>}
+            {loading ? (
+              <ActivityIndicator color="#FFFFFF" />
+            ) : (
+              <Text style={styles.submitBtnText}>
+                {isGuestMatch ? '게스트 팀 경기 등록하기' : '모집글 등록하기'}
+              </Text>
+            )}
           </TouchableOpacity>
         </ScrollView>
       </KeyboardAvoidingView>
@@ -495,6 +565,20 @@ const styles = StyleSheet.create({
   chipText: { fontSize: 12, color: '#64748B', fontWeight: '600' },
   chipTextActive: { color: '#2563EB', fontWeight: '800' },
 
+  guestBox: { backgroundColor: '#F8FAFC', padding: 12, borderRadius: 12, borderWidth: 1, borderColor: '#CBD5E1' },
+  guestToggleBtn: {
+    borderRadius: 10,
+    paddingVertical: 12,
+    alignItems: 'center',
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: '#94A3B8',
+    borderStyle: 'dashed',
+  },
+  guestToggleBtnActive: { backgroundColor: '#1E3A5F', borderColor: '#1E3A5F', borderStyle: 'solid' },
+  guestToggleText: { fontSize: 13, fontWeight: '800', color: '#334155' },
+  guestToggleTextActive: { color: '#FFFFFF' },
+  guestHint: { fontSize: 11, color: '#64748B', marginTop: 8, fontWeight: '600', lineHeight: 16 },
   mercenaryBox: { backgroundColor: '#EFF6FF', padding: 12, borderRadius: 12, borderWidth: 1, borderColor: '#BFDBFE' },
   switchRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   mercenaryTitle: { fontSize: 12, fontWeight: '800', color: '#1D4ED8' },

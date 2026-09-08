@@ -22,6 +22,7 @@ import MatchCommentModal from '../components/MatchCommentModal';
 import UserProfileModal from '../components/UserProfileModal';
 import MatchPostgameReportModal from '../components/MatchPostgameReportModal'; // 💡 신규 임포트
 import { parseSetRosterMap, safeIncludes, safeNameText, teamsInclude } from '../lib/roster';
+import { getSafeDisplayName, getSafeTeamName } from '../lib/utils';
 import { evaluateSetOutcome } from '../lib/playerStats';
 import {
   collectLineupPlayerIds,
@@ -120,7 +121,7 @@ export default function IntramuralScreen() {
   const params = useLocalSearchParams<{ openMatchId?: string }>();
   const { session } = useAuth();
   const currentUserId = session?.user?.id;
-  const currentUserName = session?.user?.user_metadata?.full_name || '선생님';
+  const currentUserName = getSafeDisplayName(session?.user?.user_metadata);
 
   const [matches, setMatches] = useState<MatchData[]>([]);
   const [myTeams, setMyTeams] = useState<string[]>([]);
@@ -263,8 +264,8 @@ export default function IntramuralScreen() {
     try {
       const { data: teamData } = await supabase.from('teams').select('id').eq('name', tName).maybeSingle();
       if (!teamData) return;
-      const { data: members } = await supabase.from('team_members').select('user_id, profiles(full_name)').eq('team_id', teamData.id).eq('is_active', true);
-      setIntraMembers((members || []).map((m: any) => ({ user_id: m.user_id, full_name: m.profiles?.full_name || '팀원' })));
+      const { data: members } = await supabase.from('team_members').select('user_id, profiles(*)').eq('team_id', teamData.id).eq('is_active', true);
+      setIntraMembers((members || []).map((m: any) => ({ user_id: m.user_id, full_name: getSafeDisplayName(m.profiles || m) })));
     } catch (err) {}
   };
 
@@ -309,7 +310,7 @@ export default function IntramuralScreen() {
           user_id: item.user_id,
           content: item.content,
           created_at: item.created_at,
-          full_name: item.profiles?.full_name || '팀원',
+          full_name: getSafeDisplayName(item.profiles || item),
           badgeType: item.badge_type,
           badgeLabel: item.badge_label,
         })));
@@ -342,7 +343,7 @@ export default function IntramuralScreen() {
           user_id: data.user_id,
           content: data.content,
           created_at: data.created_at,
-          full_name: data.profiles?.full_name || currentUserName,
+          full_name: getSafeDisplayName(data.profiles || { full_name: currentUserName }),
           badgeType: data.badge_type,
           badgeLabel: data.badge_label,
         };
@@ -954,7 +955,7 @@ export default function IntramuralScreen() {
                         onPress={() => toggleIntraSetRoster(m.user_id)}
                       >
                         <Text style={[styles.rosterChipText, isA && { color: '#1D4ED8', fontWeight: '800' }, isB && { color: '#BE123C', fontWeight: '800' }]}>
-                          {isA ? `🔵 ${displayTeamA} ` : isB ? `🔴 ${displayTeamB} ` : '🪑 대기 '}{m.full_name}
+                          {isA ? `🔵 ${getSafeTeamName(displayTeamA)} ` : isB ? `🔴 ${getSafeTeamName(displayTeamB)} ` : '🪑 대기 '}{getSafeDisplayName(m)}
                         </Text>
                       </TouchableOpacity>
                     );

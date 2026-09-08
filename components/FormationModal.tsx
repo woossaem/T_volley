@@ -6,6 +6,7 @@ import {
   clampLineCount,
   DEFAULT_LINE_COUNT,
   displaySlotPlayerName,
+  fillEmptySlotsWithGuests,
   isAnonymousSlotId,
   isTempSlotId,
   LINE_MAX,
@@ -13,6 +14,7 @@ import {
   lineSlotLabels,
   type SetFormation,
 } from '../lib/roster';
+import { getSafeDisplayName } from '../lib/utils';
 
 export interface FormationMember {
   user_id: string;
@@ -46,6 +48,8 @@ interface Props {
   hostSide?: FormationSideInput;
   awaySide?: FormationSideInput;
   onSaveDual?: (host: SetFormation, away: SetFormation) => void;
+  /** 매치 전역에서 이미 쓰인 ID (게스트 채번 충돌 방지) */
+  usedMatchIds?: Array<string | null | undefined>;
 }
 
 interface SideState {
@@ -90,11 +94,20 @@ function syncDuties(st: SideState, members: FormationMember[]): SideState {
   return { ...st, bench, late };
 }
 
-function hydrateSide(members: FormationMember[], initial: SetFormation): SideState {
+function hydrateSide(
+  members: FormationMember[],
+  initial: SetFormation,
+  usedIds: Array<string | null | undefined> = [],
+): SideState {
   const nextFront = clampLineCount(initial?.frontCount, DEFAULT_LINE_COUNT);
   const nextMiddle = clampLineCount(initial?.middleCount, DEFAULT_LINE_COUNT);
   const nextBack = clampLineCount(initial?.backCount, DEFAULT_LINE_COUNT);
-  const court = padCourtSlots(initial?.court || [], nextFront + nextMiddle + nextBack);
+  const padded = padCourtSlots(initial?.court || [], nextFront + nextMiddle + nextBack);
+  const court = fillEmptySlotsWithGuests(
+    padded,
+    [...usedIds, ...(initial?.bench || []), ...(initial?.late || [])],
+    nextFront + nextMiddle + nextBack,
+  );
   return syncDuties(
     {
       frontCount: nextFront,
@@ -137,6 +150,7 @@ export default function FormationModal({
   hostSide,
   awaySide,
   onSaveDual,
+  usedMatchIds = [],
 }: Props) {
   const dual = !!(hostSide && awaySide);
   const [hostState, setHostState] = useState<SideState>(EMPTY_SIDE);
@@ -165,10 +179,22 @@ export default function FormationModal({
   useEffect(() => {
     if (!visible) return;
     if (dual && hostSide && awaySide) {
-      setHostState(hydrateSide(hostSide.members, hostSide.initial));
-      setAwayState(hydrateSide(awaySide.members, awaySide.initial));
+      const hostHydrated = hydrateSide(hostSide.members, hostSide.initial, [
+        ...usedMatchIds,
+        ...(awaySide.initial?.court || []),
+        ...(awaySide.initial?.bench || []),
+        ...(awaySide.initial?.late || []),
+      ]);
+      const awayHydrated = hydrateSide(awaySide.members, awaySide.initial, [
+        ...usedMatchIds,
+        ...hostHydrated.court,
+        ...(hostSide.initial?.bench || []),
+        ...(hostSide.initial?.late || []),
+      ]);
+      setHostState(hostHydrated);
+      setAwayState(awayHydrated);
     } else {
-      setHostState(hydrateSide(members, initial));
+      setHostState(hydrateSide(members, initial, usedMatchIds));
       setAwayState(EMPTY_SIDE);
     }
     setHolding(null);
@@ -180,7 +206,7 @@ export default function FormationModal({
     if (!real) return '';
     if (isTempSlotId(real)) return displaySlotPlayerName(real);
     const map = side === 'host' ? hostMemberMap : awayMemberMap;
-    return map.get(real)?.full_name || hostMemberMap.get(real)?.full_name || awayMemberMap.get(real)?.full_name || '선수';
+    return getSafeDisplayName(map.get(real) || hostMemberMap.get(real) || awayMemberMap.get(real));
   };
 
   const getState = (side: SideKey) => (side === 'host' ? hostState : awayState);
@@ -507,7 +533,7 @@ export default function FormationModal({
                 disabled={locked}
               >
                 <Text style={styles.playerChipText} numberOfLines={1}>
-                  {p.full_name}
+                  {getSafeDisplayName(p)}
                 </Text>
               </TouchableOpacity>
             );
@@ -518,14 +544,17 @@ export default function FormationModal({
     );
   };
 
-  const toFormation = (st: SideState): SetFormation => ({
-    court: padCourtSlots(st.court, st.frontCount + st.middleCount + st.backCount),
-    bench: st.bench,
-    late: st.late,
-    frontCount: st.frontCount,
-    middleCount: st.middleCount,
-    backCount: st.backCount,
-  });
+  const toFormation = (st: SideState, extraUsed: Array<string | null | undefined> = []): SetFormation => {
+    const total = st.frontCount + st.middleCount + st.backCount;
+    return {
+      court: fillEmptySlotsWithGuests(padCourtSlots(st.court, total), extraUsed, total),
+      bench: st.bench,
+      late: st.late,
+      frontCount: st.frontCount,
+      middleCount: st.middleCount,
+      backCount: st.backCount,
+    };
+  };
 
   const targeting = intent && (intent.type === 'fill' || intent.type === 'swap') ? intent : null;
 
@@ -574,7 +603,6 @@ export default function FormationModal({
         highlightIndex={highlightFor(side)}
         interactive={opts.interactive}
         disabled={!opts.interactive}
-        emptySlotLabel="+ 빈자리"
         onSlotPress={(p, idx) => handleSlotPress(side, p, idx)}
       />
     );
@@ -645,8 +673,31 @@ export default function FormationModal({
             <TouchableOpacity
               style={styles.saveBtn}
               onPress={() => {
-                if (dual && onSaveDual) onSaveDual(toFormation(hostState), toFormation(awayState));
-                else onSave(toFormation(hostState));
+                if (dual && onSaveDual) {
+                  const hostForm = toFormation(hostState, [
+                    ...usedMatchIds,
+                    ...awayState.court,
+                    ...awayState.bench,
+                    ...awayState.late,
+                    ...hostState.bench,
+                    ...hostState.late,
+                  ]);
+                  const awayForm = toFormation(awayState, [
+                    ...usedMatchIds,
+                    ...hostForm.court,
+                    ...hostState.bench,
+                    ...hostState.late,
+                    ...awayState.bench,
+                    ...awayState.late,
+                  ]);
+                  onSaveDual(hostForm, awayForm);
+                } else {
+                  onSave(toFormation(hostState, [
+                    ...usedMatchIds,
+                    ...hostState.bench,
+                    ...hostState.late,
+                  ]));
+                }
               }}
             >
               <Text style={styles.saveText}>이 세트 포메이션 저장</Text>

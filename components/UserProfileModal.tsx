@@ -9,19 +9,24 @@ import {
   Image,
   ScrollView,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { supabase } from '../lib/supabase';
 import { Colors } from '../constants/Colors';
 import StickyAdBanner from './StickyAdBanner';
 import BadgeCollectionModal from './BadgeCollectionModal';
 import { getAllBadgesWithStatus } from '../lib/badgeUtils';
 import { formatTeamDisplayName } from '../lib/teamStatus';
-import { addMatchPlayerStats, emptyPlayerCareerStats } from '../lib/playerStats';
 import { hydrateMatchesWithSetScores } from '../lib/matchSets';
+import { buildPersonalReportAnalytics, type PersonalReportAnalytics } from '../lib/personalReportAnalytics';
+import ReportScopeTabs, { type ReportScopeTab } from './ReportScopeTabs';
+import { PersonalReportSection } from './PersonalReportModal';
+import { getSafeDisplayName } from '../lib/utils';
 
 interface UserProfileModalProps {
   visible: boolean;
   userId: string | null;
   isMyTeamMember?: boolean; // 💡 내 팀원 여부 (true면 실명 노출, false/undefined면 마스킹)
+  officialOnly?: boolean;
   onClose: () => void;
 }
 
@@ -49,36 +54,30 @@ const maskName = (name?: string): string => {
 export default function UserProfileModal({ 
   visible, 
   userId, 
-  isMyTeamMember = false, 
+  isMyTeamMember = false,
+  officialOnly = false,
   onClose 
 }: UserProfileModalProps) {
+  const insets = useSafeAreaInsets();
   const [loading, setLoading] = useState(true);
   const [profile, setProfile] = useState<UserProfileData | null>(null);
   const [invitedCount, setInvitedCount] = useState<number>(0);
   const [grapeBoardModalVisible, setGrapeBoardModalVisible] = useState(false);
   const [badgeModalVisible, setBadgeModalVisible] = useState(false);
-
-  const [stats, setStats] = useState({
-    total: 0,
-    wins: 0,
-    draws: 0,
-    losses: 0,
-    winRate: 0,
-    points: 0,
-    faults: 0,
-    setsPlayed: 0,
-    setWins: 0,
-    setDraws: 0,
-    setLosses: 0,
-    setWinRate: 0,
-  });
+  const [reportScope, setReportScope] = useState<ReportScopeTab>('official');
+  const [selectedTeamName, setSelectedTeamName] = useState<string | null>(null);
+  const [allMatches, setAllMatches] = useState<any[]>([]);
+  const [profilesMap, setProfilesMap] = useState<Record<string, string>>({});
   const [userTeams, setUserTeams] = useState<{ id: string; name: string; status?: string }[]>([]);
 
   useEffect(() => {
     if (visible && userId) {
+      setReportScope('official');
+      setSelectedTeamName(null);
       fetchUserData();
     } else {
       setProfile(null);
+      setAllMatches([]);
     }
   }, [visible, userId]);
 
@@ -122,48 +121,19 @@ export default function UserProfileModal({
       });
       setUserTeams(teamsList);
 
+      const { data: allProfs } = await supabase.from('profiles').select('*');
+      const pMap: Record<string, string> = {};
+      (allProfs || []).forEach((p: any) => {
+        if (p?.id) pMap[p.id] = getSafeDisplayName(p);
+      });
+      setProfilesMap(pMap);
+
       const { data: allMatchesRaw } = await supabase
         .from('matches')
         .select('*, match_sets(*)')
         .in('status', ['completed', 'friendly', 'intramural']);
-      const allMatches = await hydrateMatchesWithSetScores(allMatchesRaw || []);
-
-      const matchIds = allMatches.map((m: any) => m.id).filter(Boolean);
-      const eventByMatch = new Map<string, any[]>();
-      for (let i = 0; i < matchIds.length; i += 80) {
-        const chunk = matchIds.slice(i, i + 80);
-        const { data: evRows } = await supabase
-          .from('match_events')
-          .select('match_id, player_id, player_name, event_type, is_canceled, set_index, host_score, away_score, team_type')
-          .in('match_id', chunk)
-          .eq('player_id', userId);
-        (evRows || []).forEach((e: any) => {
-          const list = eventByMatch.get(e.match_id) || [];
-          list.push(e);
-          eventByMatch.set(e.match_id, list);
-        });
-      }
-
-      const career = emptyPlayerCareerStats();
-      (allMatches || []).forEach((m: any) => {
-        addMatchPlayerStats(career, userId, m, eventByMatch.get(m.id) || m.match_events || [], prof?.full_name);
-      });
-
-      setStats({
-        total: career.setsPlayed,
-        wins: career.setWins,
-        draws: career.setDraws,
-        losses: career.setLosses,
-        winRate: career.setWinRate,
-        points: career.points,
-        faults: career.faults,
-        setsPlayed: career.setsPlayed,
-        setWins: career.setWins,
-        setDraws: career.setDraws,
-        setLosses: career.setLosses,
-        setWinRate: career.setWinRate,
-      });
-
+      const hydrated = await hydrateMatchesWithSetScores(allMatchesRaw || []);
+      setAllMatches(hydrated);
     } catch (err) {
       console.error('상대 프로필 조회 오류:', err);
     } finally {
@@ -180,7 +150,7 @@ export default function UserProfileModal({
   }, [invitedCount]);
 
   // 💡 내 팀원이면 실명, 타 팀원이면 홍*동 처리
-  const rawName = profile?.full_name || '선생님';
+  const rawName = getSafeDisplayName(profile);
   const displayName = isMyTeamMember ? rawName : maskName(rawName);
 
   const avatarIco = profile?.avatar_icon || '🏐';
@@ -196,12 +166,47 @@ export default function UserProfileModal({
     ? profile.region.split(',').map((r, idx) => `${idx + 1}순위 ${r.trim()}`).join(' · ')
     : '활동 지역 미설정';
 
+  const analytics = useMemo<PersonalReportAnalytics | null>(() => {
+    if (!userId || !profile) return null;
+    const built = buildPersonalReportAnalytics({
+      userId,
+      playerName: getSafeDisplayName(profile),
+      matches: allMatches,
+      profilesMap,
+      teamName: selectedTeamName,
+    });
+    const maskPartner = (name: string) => {
+      if (isMyTeamMember) return name;
+      if (!name || name === '데이터 없음' || name === '팀원') return name;
+      return maskName(name);
+    };
+    return {
+      ...built,
+      official: { ...built.official, bestPartnerName: maskPartner(built.official.bestPartnerName) },
+      intramural: { ...built.intramural, bestPartnerName: maskPartner(built.intramural.bestPartnerName) },
+    };
+  }, [userId, profile, allMatches, profilesMap, selectedTeamName, isMyTeamMember]);
+
+  const showIntramural = !!(analytics?.intramural && (
+    analytics.intramural.myGames > 0
+    || ((analytics.intramural.setsWon || 0) + (analytics.intramural.setsDrawn ?? 0) + (analytics.intramural.setsLost || 0)) > 0
+  ));
+  const intramuralView = reportScope === 'intramural' && showIntramural;
+  const activeSlice = intramuralView ? analytics?.intramural : analytics?.official;
+
   const userParams = useMemo(() => ({
-    stats,
+    stats: {
+      total: analytics?.official.myGames || 0,
+      wins: analytics?.official.setsWon || 0,
+      draws: analytics?.official.setsDrawn || 0,
+      losses: analytics?.official.setsLost || 0,
+      winRate: 0,
+      recent5: analytics?.official.recent5 || [],
+    },
     userActivityStats: { recordCount: 0, praiseCount: grapeCount },
     invitedCount,
     gender,
-  }), [stats, grapeCount, invitedCount, gender]);
+  }), [analytics, grapeCount, invitedCount, gender]);
 
   const userBadges = useMemo(() => {
     const all = getAllBadgesWithStatus(userParams);
@@ -210,7 +215,7 @@ export default function UserProfileModal({
 
   return (
     <Modal visible={visible} animationType="slide" transparent={true} onRequestClose={onClose}>
-      <View style={styles.modalOverlay}>
+      <View style={[styles.modalOverlay, { paddingTop: Math.max(insets.top, 16), paddingBottom: Math.max(insets.bottom, 16) }]}>
         <View style={styles.modalContent}>
           {loading ? (
             <ActivityIndicator color={Colors.primary} size="large" style={{ marginVertical: 30 }} />
@@ -306,35 +311,47 @@ export default function UserProfileModal({
                 </View>
 
                 <View style={styles.statsCard}>
-                  <Text style={styles.statsCardTitle}>🏆 개인 세트 전적</Text>
-                  <Text style={styles.statsMainText}>
-                    {stats.wins}승 {stats.draws}무 {stats.losses}패
+                  <Text style={styles.statsCardTitle}>📊 개인 출전 성적</Text>
+                  <Text style={styles.statsSubText}>
+                    {selectedTeamName
+                      ? `[${formatTeamDisplayName(selectedTeamName)}] 교류전·청백전을 나눠 봅니다`
+                      : '교류전·청백전을 나눠 봅니다. 팀을 고르면 참여율도 나옵니다.'}
                   </Text>
-                  <View style={styles.statsRow}>
-                    <Text style={styles.statsSubText}>총 {stats.total}경기 출전</Text>
-                    <Text style={styles.statsWinRateText}>승률 {stats.winRate}%</Text>
-                  </View>
-                  <View style={styles.detailStatGrid}>
-                    <View style={styles.detailStatChip}>
-                      <Text style={styles.detailStatLabel}>득점</Text>
-                      <Text style={styles.detailStatValue}>{stats.points}</Text>
-                    </View>
-                    <View style={styles.detailStatChip}>
-                      <Text style={styles.detailStatLabel}>범실</Text>
-                      <Text style={[styles.detailStatValue, { color: '#BE123C' }]}>{stats.faults}</Text>
-                    </View>
-                    <View style={styles.detailStatChip}>
-                      <Text style={styles.detailStatLabel}>출전 세트</Text>
-                      <Text style={styles.detailStatValue}>{stats.setsPlayed}</Text>
-                    </View>
-                    <View style={styles.detailStatChip}>
-                      <Text style={styles.detailStatLabel}>세트 전적</Text>
-                      <Text style={styles.detailStatValue}>{stats.setWins}승 {stats.setDraws}무 {stats.setLosses}패</Text>
-                    </View>
-                    <View style={styles.detailStatChip}>
-                      <Text style={styles.detailStatLabel}>세트 승률</Text>
-                      <Text style={styles.detailStatValue}>{stats.setWinRate}%</Text>
-                    </View>
+                  {userTeams.length > 0 ? (
+                    <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.teamChipRow}>
+                      <TouchableOpacity
+                        style={[styles.teamChip, !selectedTeamName && styles.teamChipActive]}
+                        onPress={() => setSelectedTeamName(null)}
+                      >
+                        <Text style={[styles.teamChipText, !selectedTeamName && styles.teamChipTextActive]}>전체</Text>
+                      </TouchableOpacity>
+                      {userTeams.map((t) => {
+                        const active = selectedTeamName === t.name;
+                        return (
+                          <TouchableOpacity
+                            key={t.id}
+                            style={[styles.teamChip, active && styles.teamChipActive]}
+                            onPress={() => setSelectedTeamName(t.name)}
+                          >
+                            <Text style={[styles.teamChipText, active && styles.teamChipTextActive]} numberOfLines={1}>
+                              {formatTeamDisplayName(t.name, t.status)}
+                            </Text>
+                          </TouchableOpacity>
+                        );
+                      })}
+                    </ScrollView>
+                  ) : null}
+                  <ReportScopeTabs
+                    value={reportScope}
+                    onChange={setReportScope}
+                    showIntramural
+                  />
+                  <View style={{ marginTop: 8 }}>
+                    <PersonalReportSection
+                      slice={activeSlice}
+                      intramural={!!intramuralView}
+                      hideAttendance={!selectedTeamName}
+                    />
                   </View>
                 </View>
               </ScrollView>
@@ -345,7 +362,7 @@ export default function UserProfileModal({
             </>
           )}
 
-          <TouchableOpacity style={styles.closeBtn} onPress={onClose}>
+          <TouchableOpacity style={styles.closeBtn} onPress={onClose} hitSlop={8}>
             <Text style={styles.closeBtnText}>닫기</Text>
           </TouchableOpacity>
         </View>
@@ -423,7 +440,7 @@ export default function UserProfileModal({
 
 const styles = StyleSheet.create({
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center', padding: 16 },
-  modalContent: { backgroundColor: Colors.surface, borderRadius: 20, padding: 16, width: '100%', maxHeight: '85%', elevation: 5 },
+  modalContent: { backgroundColor: Colors.surface, borderRadius: 20, padding: 16, width: '100%', maxHeight: '90%', elevation: 5 },
   
   profileHeaderCard: { alignItems: 'center', backgroundColor: '#F8FAFC', padding: 12, borderRadius: 16, borderWidth: 1, borderColor: '#E2E8F0', marginBottom: 8 },
   avatarCircle: { width: 60, height: 60, borderRadius: 30, backgroundColor: '#EFF6FF', alignItems: 'center', justifyContent: 'center', marginBottom: 6, borderWidth: 2, borderColor: '#BFDBFE', overflow: 'hidden' },
@@ -467,16 +484,21 @@ const styles = StyleSheet.create({
   protectionNoticeBox: { backgroundColor: '#F8FAFC', borderRadius: 8, padding: 8, borderWidth: 1, borderColor: '#E2E8F0', marginBottom: 8 },
   protectionNoticeText: { fontSize: 10, color: '#64748B', lineHeight: 14, fontWeight: '600' },
 
-  statsCard: { backgroundColor: '#EFF6FF', borderRadius: 14, padding: 12, borderWidth: 1, borderColor: '#BFDBFE', marginBottom: 6 },
-  statsCardTitle: { fontSize: 12, fontWeight: '800', color: '#1D4ED8', marginBottom: 4 },
-  statsMainText: { fontSize: 18, fontWeight: '900', color: '#1E40AF', marginBottom: 4 },
-  statsRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  statsSubText: { fontSize: 12, color: '#3B82F6', fontWeight: '600' },
-  statsWinRateText: { fontSize: 13, fontWeight: '800', color: '#1E40AF' },
-  detailStatGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 10 },
-  detailStatChip: { width: '48%', backgroundColor: '#FFFFFF', borderRadius: 10, paddingVertical: 8, paddingHorizontal: 10, borderWidth: 1, borderColor: '#BFDBFE' },
-  detailStatLabel: { fontSize: 10, fontWeight: '800', color: '#3B82F6', marginBottom: 2 },
-  detailStatValue: { fontSize: 16, fontWeight: '900', color: '#1E3A8A' },
+  statsCard: { backgroundColor: '#FFFFFF', borderRadius: 14, padding: 12, borderWidth: 1, borderColor: '#E2E8F0', marginBottom: 6 },
+  statsCardTitle: { fontSize: 12, lineHeight: 16, fontWeight: '800', color: '#1D4ED8', marginBottom: 2, includeFontPadding: false },
+  statsSubText: { fontSize: 11, lineHeight: 15, color: '#64748B', fontWeight: '600', includeFontPadding: false, marginBottom: 8 },
+  teamChipRow: { gap: 6, paddingBottom: 4 },
+  teamChip: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 14,
+    backgroundColor: '#F8FAFC',
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+  },
+  teamChipActive: { backgroundColor: '#EFF6FF', borderColor: '#3B82F6' },
+  teamChipText: { fontSize: 11, fontWeight: '700', color: '#64748B' },
+  teamChipTextActive: { color: '#1D4ED8', fontWeight: '800' },
 
   scrollArea: { flexShrink: 1, flexGrow: 0 },
   adWrapper: { marginTop: 6, marginBottom: 0, borderRadius: 10, overflow: 'hidden' },

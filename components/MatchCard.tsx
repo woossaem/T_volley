@@ -5,9 +5,11 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Colors } from '../constants/Colors';
 import { formatTeamDisplayName } from '../lib/teamStatus';
 import { teamsInclude } from '../lib/roster';
+import { getSafeTeamName } from '../lib/utils';
 import { resolveTeamName, getTeamIcon, isSameName } from '../lib/nameUtils';
 import { listMatchSetRows } from '../lib/matchSets';
 import { isUnofficialMatch } from '../lib/officialMatch';
+import { canConvertMatchToGuest, isGuestBindPending, isGuestMatch, isSoloGuestMatch } from '../lib/guestMatch';
 
 export interface MatchData {
   id: string;
@@ -40,6 +42,8 @@ export interface MatchData {
   host_youtube_url?: string | null;
   away_youtube_url?: string | null;
   is_official?: boolean | null;
+  is_guest_match?: boolean | null;
+  host_team_id?: string | null;
   away_team_id?: string | null;
   retro_claim_status?: string | null;
   retro_claim_team_name?: string | null;
@@ -77,6 +81,8 @@ interface MatchCardProps {
   onOpenReportModal?: (match: MatchData) => void; // 💡 에러 해결: Props 타입 추가
   onClaimRetroMatch?: (match: MatchData) => void;
   onApproveRetroClaim?: (match: MatchData, approved: boolean) => void;
+  onConvertToGuestMatch?: (match: MatchData) => void;
+  onBindGuestTeam?: (match: MatchData) => void;
   teamStatusByName?: Record<string, string>;
   teamTypeByName?: Record<string, string>;
 }
@@ -103,6 +109,8 @@ export default function MatchCard({
   onOpenReportModal,
   onClaimRetroMatch,
   onApproveRetroClaim,
+  onConvertToGuestMatch,
+  onBindGuestTeam,
   teamStatusByName,
   teamTypeByName,
 }: MatchCardProps) {
@@ -111,8 +119,9 @@ export default function MatchCard({
   const openScoreboard = () => router.push({ pathname: '/scoreboard', params: { matchId: match.id } });
 
   const displayTeamName = (name?: string | null) => {
-    const resolved = resolveTeamName(name);
-    return formatTeamDisplayName(resolved, resolved ? teamStatusByName?.[resolved] : undefined);
+    const resolved = getSafeTeamName(name);
+    const statusKey = resolveTeamName(name);
+    return formatTeamDisplayName(resolved, statusKey ? teamStatusByName?.[statusKey] : undefined);
   };
 
   const hostName = resolveTeamName(match.host_team_name);
@@ -157,16 +166,20 @@ export default function MatchCard({
   const isLive = isMatched || (isIntramural && !match.winner_team);
   const isRecruiting = isOpen;
   const unofficial = isUnofficialMatch(match);
+  const guestMatch = isGuestMatch(match);
+  const soloGuest = isSoloGuestMatch(match);
+  const guestBindPending = isGuestBindPending(match);
   const matchingAwayTeam = myTeams.find((t) => isSameName(t, awayName));
   const canClaimRetro = !!(
     unofficial
+    && !guestMatch
     && !match.away_team_id
     && matchingAwayTeam
     && match.retro_claim_status !== 'pending'
     && match.retro_claim_status !== 'approved'
     && onClaimRetroMatch
   );
-  const claimPending = unofficial && match.retro_claim_status === 'pending';
+  const claimPending = unofficial && !guestMatch && match.retro_claim_status === 'pending';
   const canApproveRetro = !!(
     isHost
     && claimPending
@@ -174,6 +187,8 @@ export default function MatchCard({
     && currentUserId
     && currentUserId === match.host_user_id
   );
+  const canConvertToGuest = !!(isHost && onConvertToGuestMatch && canConvertMatchToGuest(match));
+  const canBindGuestTeam = !!(isHost && soloGuest && onBindGuestTeam);
 
   return (
     <View style={[styles.matchCard, { paddingBottom: 14 + Math.min(insets.bottom, 0) }]}>
@@ -361,7 +376,9 @@ export default function MatchCard({
           <View style={styles.actionStack}>
             <View style={[styles.infoBanner, (isFriendly || unofficial) && styles.infoBannerFriendly, isIntramural && styles.infoBannerIntramural]}>
               <Text style={[styles.infoBannerText, (isFriendly || unofficial) && styles.infoBannerTextFriendly, isIntramural && styles.infoBannerTextIntramural]} numberOfLines={2}>
-                {unofficial
+                {guestMatch
+                  ? `👤 게스트 팀 · 팀 랭킹 유예 · ${isDrawResult ? '무승부' : `${match.winner_team} 승리!`}`
+                  : unofficial
                   ? `🤝 비공식 · 랭킹 제외 · ${isDrawResult ? '무승부' : `${match.winner_team} 승리!`}`
                   : isFriendly
                   ? `🤝 친선: ${isDrawResult ? '무승부' : `${match.winner_team} 승리!`}`
@@ -436,18 +453,49 @@ export default function MatchCard({
                 </TouchableOpacity>
               </View>
             ) : null}
+            {canBindGuestTeam ? (
+              <TouchableOpacity
+                style={styles.guestBindBtn}
+                onPress={() => onBindGuestTeam?.(match)}
+                activeOpacity={0.85}
+                hitSlop={8}
+              >
+                <Text style={styles.guestBindBtnText} numberOfLines={1}>상대 팀 소급 연동</Text>
+              </TouchableOpacity>
+            ) : null}
           </View>
         )}
 
         {isLive && (
-          <TouchableOpacity
-            style={styles.liveMainBtn}
-            onPress={openScoreboard}
-            activeOpacity={0.85}
-            hitSlop={8}
-          >
-            <Text style={styles.liveMainBtnText} numberOfLines={1}>⚡ 실시간 전광판 / 기록 진입</Text>
-          </TouchableOpacity>
+          <View style={styles.actionStack}>
+            <TouchableOpacity
+              style={styles.liveMainBtn}
+              onPress={openScoreboard}
+              activeOpacity={0.85}
+              hitSlop={8}
+            >
+              <Text style={styles.liveMainBtnText} numberOfLines={1}>⚡ 실시간 전광판 / 기록 진입</Text>
+            </TouchableOpacity>
+            {guestMatch ? (
+              <View style={[styles.infoBanner, styles.infoBannerFriendly]}>
+                <Text style={[styles.infoBannerText, styles.infoBannerTextFriendly]} numberOfLines={2}>
+                  {guestBindPending
+                    ? '👤 상대 팀 지정됨 · 종료 후 상대 승인/재수정 필요 · 팀 랭킹 유예'
+                    : '👤 게스트 팀 경기 · 팀 랭킹 유예 · 상대 승인 없이 종료 가능'}
+                </Text>
+              </View>
+            ) : null}
+            {canBindGuestTeam ? (
+              <TouchableOpacity
+                style={styles.guestBindBtn}
+                onPress={() => onBindGuestTeam?.(match)}
+                activeOpacity={0.85}
+                hitSlop={8}
+              >
+                <Text style={styles.guestBindBtnText} numberOfLines={1}>상대 팀 소급 연동</Text>
+              </TouchableOpacity>
+            ) : null}
+          </View>
         )}
 
         {isPending && (
@@ -458,7 +506,9 @@ export default function MatchCard({
               </Text>
               {match.submitted_by_name && (
                 <Text style={styles.auditSubText}>
-                  (제출자: {match.submitted_by_name} 선생님 ➔ 상대팀 승인 대기)
+                  {guestBindPending
+                    ? `(제출자: ${match.submitted_by_name} 선생님 ➔ 상대팀 승인 또는 재수정)`
+                    : `(제출자: ${match.submitted_by_name} 선생님 ➔ 상대팀 승인 대기)`}
                 </Text>
               )}
             </View>
@@ -471,30 +521,63 @@ export default function MatchCard({
                 >
                   <Text style={styles.resultBtnText} numberOfLines={1}>✅ 승인</Text>
                 </TouchableOpacity>
-                <TouchableOpacity
-                  style={[styles.cancelAppBtn, styles.flex3]}
-                  onPress={() => onApproveResult(match, false)}
-                  hitSlop={8}
-                >
-                  <Text style={styles.cancelAppBtnText} numberOfLines={1}>❌ 거절</Text>
-                </TouchableOpacity>
+                {guestBindPending ? (
+                  <TouchableOpacity
+                    style={[styles.subActionBtn, styles.flex3]}
+                    onPress={() => onOpenResultModal(match)}
+                    hitSlop={8}
+                  >
+                    <Text style={styles.subActionBtnText} numberOfLines={1}>재수정</Text>
+                  </TouchableOpacity>
+                ) : (
+                  <TouchableOpacity
+                    style={[styles.cancelAppBtn, styles.flex3]}
+                    onPress={() => onApproveResult(match, false)}
+                    hitSlop={8}
+                  >
+                    <Text style={styles.cancelAppBtnText} numberOfLines={1}>❌ 거절</Text>
+                  </TouchableOpacity>
+                )}
               </View>
             ) : (
-              <Text style={styles.pendingWaitText}>⏳ 상대팀 승인 대기 중입니다</Text>
+              <View style={styles.actionStack}>
+                <Text style={styles.pendingWaitText}>⏳ 상대팀 승인 대기 중입니다</Text>
+                {guestBindPending ? (
+                  <TouchableOpacity
+                    style={styles.subActionBtn}
+                    onPress={() => onOpenResultModal(match)}
+                    hitSlop={8}
+                  >
+                    <Text style={styles.subActionBtnText} numberOfLines={1}>✏️ 결과 재수정</Text>
+                  </TouchableOpacity>
+                ) : null}
+              </View>
             )}
           </View>
         )}
 
         {isRecruiting && (
           isHost ? (
-            <TouchableOpacity
-              style={styles.hostManageBtn}
-              onPress={() => onOpenApplicantModal(match)}
-              activeOpacity={0.85}
-              hitSlop={8}
-            >
-              <Text style={styles.hostManageBtnText} numberOfLines={1}>📋 신청 현황 / 승인</Text>
-            </TouchableOpacity>
+            <View style={styles.actionStack}>
+              <TouchableOpacity
+                style={styles.hostManageBtn}
+                onPress={() => onOpenApplicantModal(match)}
+                activeOpacity={0.85}
+                hitSlop={8}
+              >
+                <Text style={styles.hostManageBtnText} numberOfLines={1}>📋 신청 현황 / 승인</Text>
+              </TouchableOpacity>
+              {canConvertToGuest ? (
+                <TouchableOpacity
+                  style={styles.guestConvertBtn}
+                  onPress={() => onConvertToGuestMatch?.(match)}
+                  activeOpacity={0.85}
+                  hitSlop={8}
+                >
+                  <Text style={styles.guestConvertBtnText} numberOfLines={1}>게스트 팀으로 변경</Text>
+                </TouchableOpacity>
+              ) : null}
+            </View>
           ) : myApp && myApp.application_type !== 'mercenary' ? (
             <View style={styles.appliedBadge}>
               <Text style={styles.appliedBadgeText} numberOfLines={1}>✅ 신청 완료</Text>
@@ -649,6 +732,29 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   hostManageBtnText: { color: '#FFFFFF', fontSize: 13, fontWeight: '800', lineHeight: 18, includeFontPadding: false },
+  guestConvertBtn: {
+    backgroundColor: '#F8FAFC',
+    borderRadius: 10,
+    minHeight: 44,
+    paddingHorizontal: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: '#94A3B8',
+    borderStyle: 'dashed',
+  },
+  guestConvertBtnText: { color: '#334155', fontSize: 13, fontWeight: '800', lineHeight: 18, includeFontPadding: false },
+  guestBindBtn: {
+    backgroundColor: '#EFF6FF',
+    borderRadius: 10,
+    minHeight: 44,
+    paddingHorizontal: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: '#93C5FD',
+  },
+  guestBindBtnText: { color: '#1D4ED8', fontSize: 13, fontWeight: '800', lineHeight: 18, includeFontPadding: false },
   liveMainBtn: {
     backgroundColor: '#2563EB',
     borderRadius: 10,

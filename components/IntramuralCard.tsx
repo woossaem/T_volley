@@ -2,6 +2,7 @@ import React from 'react';
 import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { listMatchSetRows } from '../lib/matchSets';
+import { getSafeTeamName } from '../lib/utils';
 
 interface IntramuralMatch {
   id: string;
@@ -48,7 +49,7 @@ export default function IntramuralCard({
       <View style={styles.cardMetaRow}>
         <View style={styles.headerLeft}>
           <View style={styles.regionTagPill}>
-            <Text style={styles.regionTagPillText} numberOfLines={1}>⚔️ {teamIcon} {match.host_team_name}</Text>
+            <Text style={styles.regionTagPillText} numberOfLines={1}>⚔️ {teamIcon} {getSafeTeamName(match.host_team_name)}</Text>
           </View>
           <View style={[styles.statusBadge, isFinished ? styles.statusFinished : styles.statusLive]}>
             <Text style={[styles.statusText, isFinished ? styles.statusTextFinished : styles.statusTextLive]} numberOfLines={1}>
@@ -71,13 +72,13 @@ export default function IntramuralCard({
 
       <View style={styles.scoreboardRow}>
         <View style={styles.teamColLeft}>
-          <Text style={styles.teamName} numberOfLines={1}>{teamA}</Text>
+          <Text style={styles.teamName} numberOfLines={1}>{getSafeTeamName(teamA)}</Text>
         </View>
         <View style={styles.vsPill}>
           <Text style={styles.vsPillText}>VS</Text>
         </View>
         <View style={styles.teamColRight}>
-          <Text style={styles.teamName} numberOfLines={1}>{teamB}</Text>
+          <Text style={styles.teamName} numberOfLines={1}>{getSafeTeamName(teamB)}</Text>
         </View>
       </View>
 

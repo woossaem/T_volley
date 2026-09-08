@@ -12,8 +12,8 @@ import {
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Colors } from '../constants/Colors';
 import FormationModal from './FormationModal';
-import { isAnonymousSlotId, parseSetFormation, safeIncludes, safeNameText, type SetFormation } from '../lib/roster';
-import { resolveTeamName } from '../lib/nameUtils';
+import { collectFormationSlotIds, isAnonymousSlotId, resolveFormationFromSources, safeIncludes, type SetFormation } from '../lib/roster';
+import { getSafeDisplayName, getSafeTeamName } from '../lib/utils';
 
 interface DynamicSetScore {
   hostScore: number;
@@ -55,6 +55,18 @@ interface MatchResultModalProps {
   onPersistFormation?: (isHost: boolean, setIndex: number, formation: SetFormation) => void;
   onOpenRosterReplace?: () => void;
   actionLoading: boolean;
+}
+
+function lineupFromMatch(match: any, setIndex: number, side: 'host' | 'away') {
+  const rows = Array.isArray(match?.match_sets)
+    ? match.match_sets
+    : Array.isArray(match?.sets)
+      ? match.sets
+      : [];
+  const row = rows.find((r: any) => Number(r.set_number ?? r.setNumber) === setIndex + 1)
+    || rows[setIndex];
+  if (!row) return undefined;
+  return side === 'host' ? (row.host_lineup ?? row.hostLineup) : (row.away_lineup ?? row.awayLineup);
 }
 
 const getChosung = (str: string) => {
@@ -214,7 +226,7 @@ export default function MatchResultModal({
     const queryChosung = getChosung(query);
 
     return members.filter(m => {
-      const name = m.full_name.toLowerCase();
+      const name = getSafeDisplayName(m).toLowerCase();
       const chosung = getChosung(name);
       return name.includes(query) || chosung.includes(queryChosung);
     });
@@ -259,7 +271,7 @@ export default function MatchResultModal({
                     status === 'bench' && styles.chipTextBench,
                   ]}
                 >
-                  {status === 'court' ? '🔵 코트 ' : status === 'bench' ? '⚪ 벤치 ' : '🪑 '}{m.full_name}
+                  {status === 'court' ? '🔵 코트 ' : status === 'bench' ? '⚪ 벤치 ' : '🪑 '}{getSafeDisplayName(m)}
                 </Text>
               </TouchableOpacity>
             );
@@ -296,7 +308,7 @@ export default function MatchResultModal({
                         status === 'bench' && styles.chipTextBench,
                       ]}
                     >
-                      {status === 'court' ? '🔵 코트 ' : status === 'bench' ? '⚪ 벤치 ' : '🪑 '}{m.full_name}
+                      {status === 'court' ? '🔵 코트 ' : status === 'bench' ? '⚪ 벤치 ' : '🪑 '}{getSafeDisplayName(m)}
                     </Text>
                   </TouchableOpacity>
                 );
@@ -336,7 +348,7 @@ export default function MatchResultModal({
                 <Text style={styles.inputLabel}>🎥 경기 중계/하이라이트 영상 (선택)</Text>
                 <TextInput
                   style={[styles.textInput, { marginBottom: 6 }]}
-                  placeholder={`[주최팀] ${safeNameText(match.host_team_name)} 영상 URL`}
+                  placeholder={`[주최팀] ${getSafeTeamName(match.host_team_name)} 영상 URL`}
                   placeholderTextColor="#94A3B8"
                   value={hostYoutube}
                   onChangeText={onChangeHostYoutube}
@@ -345,7 +357,7 @@ export default function MatchResultModal({
                 {match.away_team_name ? (
                   <TextInput
                     style={[styles.textInput, { marginBottom: 10 }]}
-                    placeholder={`[상대팀] ${safeNameText(match.away_team_name)} 영상 URL`}
+                    placeholder={`[상대팀] ${getSafeTeamName(match.away_team_name)} 영상 URL`}
                     placeholderTextColor="#94A3B8"
                     value={awayYoutube}
                     onChangeText={onChangeAwayYoutube}
@@ -367,7 +379,7 @@ export default function MatchResultModal({
                       </View>
 
                       <View style={styles.teamScoreCol}>
-                        <Text style={styles.teamScoreLabel} numberOfLines={1}>{safeNameText(match.host_team_name)}</Text>
+                        <Text style={styles.teamScoreLabel} numberOfLines={1}>{getSafeTeamName(match.host_team_name)}</Text>
                         <View style={styles.stepperRow}>
                           <TouchableOpacity style={styles.stepBtn} onPress={() => onUpdateScore(idx, true, -1)}>
                             <Text style={styles.stepBtnText}>-1</Text>
@@ -382,7 +394,7 @@ export default function MatchResultModal({
                       <Text style={styles.vsColon}>:</Text>
 
                       <View style={styles.teamScoreCol}>
-                        <Text style={styles.teamScoreLabel} numberOfLines={1}>{safeNameText(match.away_team_name) || '상대팀'}</Text>
+                        <Text style={styles.teamScoreLabel} numberOfLines={1}>{getSafeTeamName(match.away_team_name)}</Text>
                         <View style={styles.stepperRow}>
                           <TouchableOpacity style={styles.stepBtn} onPress={() => onUpdateScore(idx, false, -1)}>
                             <Text style={styles.stepBtnText}>-1</Text>
@@ -419,8 +431,8 @@ export default function MatchResultModal({
               ))}
             </View>
 
-            {renderRosterSection(hostRosterGroup, true, resolveTeamName(match.host_team_name, safeNameText(match.host_team_name)))}
-            {match.away_team_name ? renderRosterSection(awayRosterGroup, false, resolveTeamName(match.away_team_name, safeNameText(match.away_team_name))) : null}
+            {renderRosterSection(hostRosterGroup, true, getSafeTeamName(match.host_team_name || match))}
+            {match.away_team_name ? renderRosterSection(awayRosterGroup, false, getSafeTeamName(match.away_team_name)) : null}
 
             {!isRosterOnlyMode && (
               <>
@@ -431,7 +443,7 @@ export default function MatchResultModal({
                     onPress={() => onSelectWinner(match.host_team_name)}
                   >
                     <Text style={{ color: '#FFFFFF', fontSize: 15, fontWeight: '900', textAlign: 'center' }}>
-                      🥇 {safeNameText(match.host_team_name)} 승리
+                      🥇 {getSafeTeamName(match.host_team_name)} 승리
                     </Text>
                   </TouchableOpacity>
 
@@ -441,7 +453,7 @@ export default function MatchResultModal({
                       onPress={() => onSelectWinner(match.away_team_name)}
                     >
                       <Text style={{ color: '#FFFFFF', fontSize: 15, fontWeight: '900', textAlign: 'center' }}>
-                        🥇 {safeNameText(match.away_team_name)} 승리
+                        🥇 {getSafeTeamName(match.away_team_name)} 승리
                       </Text>
                     </TouchableOpacity>
                   ) : null}
@@ -477,13 +489,19 @@ export default function MatchResultModal({
       <FormationModal
         visible={formationSide !== null}
         teamName={formationSide === 'away'
-          ? resolveTeamName(match.away_team_name, safeNameText(match.away_team_name) || '상대팀')
-          : resolveTeamName(match.host_team_name, safeNameText(match.host_team_name))}
+          ? getSafeTeamName(match.away_team_name || '상대팀')
+          : getSafeTeamName(match.host_team_name || match)}
         members={formationSide === 'away' ? awayMembers : hostMembers}
-        initial={parseSetFormation(
-          formationSide === 'away' ? awaySetRosters : hostSetRosters,
+        initial={resolveFormationFromSources(
+          formationSide === 'away' ? match.away_roster : match.host_roster,
           activeSetTab,
+          lineupFromMatch(match, activeSetTab, formationSide === 'away' ? 'away' : 'host')
+            || (formationSide === 'away' ? awaySetRosters?.[activeSetTab] : hostSetRosters?.[activeSetTab]),
         )}
+        usedMatchIds={[
+          ...collectFormationSlotIds(match?.host_roster),
+          ...collectFormationSlotIds(match?.away_roster),
+        ]}
         onClose={() => setFormationSide(null)}
         onSave={(formation) => {
           const isHost = formationSide !== 'away';

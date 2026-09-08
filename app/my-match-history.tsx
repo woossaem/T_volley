@@ -7,6 +7,7 @@ import {
   ActivityIndicator,
   ScrollView,
   RefreshControl,
+  Alert,
   Modal,
   TextInput,
 } from 'react-native';
@@ -17,11 +18,14 @@ import { supabase } from '../lib/supabase';
 import { Colors } from '../constants/Colors';
 import StickyAdBanner from '../components/StickyAdBanner';
 import MatchPostgameReportModal from '../components/MatchPostgameReportModal';
+import GuestTeamBindModal from '../components/GuestTeamBindModal';
 import { buildTeamStatusByName, formatTeamDisplayName } from '../lib/teamStatus';
 import { parseRosterUserIds, safeIncludes, teamsInclude, nameIncludesQuery } from '../lib/roster';
 import { resolveTeamName, resolveTeamNameOrNull, getTeamIcon, isSameName, cleanRegionName, collectTeamNameAliases } from '../lib/nameUtils';
 import { formatSetScoreDisplay, formatSetScoresString, hydrateMatchesWithSetScores, listMatchSetRows } from '../lib/matchSets';
 import SetScoreStrip from '../components/SetScoreStrip';
+import { bindGuestMatchToRegisteredTeam, isGuestMatch, isSoloGuestMatch } from '../lib/guestMatch';
+import { getSafeTeamName } from '../lib/utils';
 
 interface MatchHistoryItem {
   id: string;
@@ -45,6 +49,10 @@ interface MatchHistoryItem {
   host_mercenary_roster?: string | null;
   away_mercenary_roster?: string | null;
   created_at: string;
+  is_guest_match?: boolean | null;
+  is_official?: boolean | null;
+  host_team_id?: string | null;
+  away_team_id?: string | null;
 }
 
 export default function MyMatchHistoryScreen() {
@@ -68,6 +76,9 @@ export default function MyMatchHistoryScreen() {
 
   const [reportModalVisible, setReportModalVisible] = useState(false);
   const [reportTargetMatch, setReportTargetMatch] = useState<MatchHistoryItem | null>(null);
+  const [guestBindModalVisible, setGuestBindModalVisible] = useState(false);
+  const [guestBindTargetMatch, setGuestBindTargetMatch] = useState<MatchHistoryItem | null>(null);
+  const [guestBindLoading, setGuestBindLoading] = useState(false);
 
   const parseMatchDate = (dateStr: string | undefined | null) => {
     if (!dateStr) return { year: 0, month: 0 };
@@ -163,6 +174,44 @@ export default function MyMatchHistoryScreen() {
     fetchData();
   };
 
+  const handleBindGuestTeam = async (team: { id: string; name: string }) => {
+    if (!guestBindTargetMatch) return;
+    setGuestBindLoading(true);
+    try {
+      const result = await bindGuestMatchToRegisteredTeam({
+        matchId: guestBindTargetMatch.id,
+        teamId: team.id,
+        teamName: team.name,
+      });
+      if (result.error) {
+        Alert.alert('알림', result.error.message);
+        return;
+      }
+      setRawMatches((prev) => prev.map((m) => m.id === guestBindTargetMatch.id
+        ? {
+          ...m,
+          away_team_id: team.id,
+          away_team_name: team.name,
+          is_guest_match: true,
+          is_official: false,
+          status: result.needsResultConfirm ? 'pending_result' : m.status,
+        }
+        : m));
+      setGuestBindModalVisible(false);
+      setGuestBindTargetMatch(null);
+      Alert.alert(
+        '상대 팀 지정 완료',
+        result.needsResultConfirm
+          ? `'${getSafeTeamName(team)}' 팀에게 결과 승인/재수정 요청을 보냈습니다. 상대가 승인해야 공식 랭킹에 반영됩니다.`
+          : `'${getSafeTeamName(team)}' 팀을 상대 팀으로 지정했습니다. 경기 종료 후 상대의 승인 또는 재수정이 필요합니다.`,
+      );
+    } catch (err: any) {
+      Alert.alert('오류', err.message);
+    } finally {
+      setGuestBindLoading(false);
+    }
+  };
+
   const processedMatches = useMemo(() => {
     return rawMatches.map((match) => {
       const hostList = parseRosterUserIds(match.host_roster);
@@ -236,6 +285,7 @@ export default function MyMatchHistoryScreen() {
         isIntra,
         isTournament,
         myResult: result,
+        canBindGuestTeam: isSoloGuestMatch(match) && (match.host_user_id === currentUserId || isMyTeamHost),
       };
     }).filter(Boolean);
   }, [rawMatches, myTeams, currentUserId]);
@@ -422,7 +472,7 @@ export default function MyMatchHistoryScreen() {
                   </View>
                 </View>
 
-                <View style={{ flexDirection: 'row', gap: 6, marginBottom: 8 }}>
+                <View style={{ flexDirection: 'row', gap: 6, marginBottom: 8, flexWrap: 'wrap' }}>
                   {match.isIntra ? (
                     <View style={[styles.typeTag, { backgroundColor: '#F3E8FF', borderColor: '#D8B4FE' }]}>
                       <Text style={{ fontSize: 10, fontWeight: '800', color: '#7E22CE' }}>⚔️ 자체 연습경기</Text>
@@ -434,6 +484,10 @@ export default function MyMatchHistoryScreen() {
                   ) : match.isMercenary ? (
                     <View style={[styles.typeTag, { backgroundColor: '#FEF3C7', borderColor: '#FDE68A' }]}>
                       <Text style={{ fontSize: 10, fontWeight: '800', color: '#B45309' }}>🙋‍♂️ 용병 출전</Text>
+                    </View>
+                  ) : isGuestMatch(match) ? (
+                    <View style={[styles.typeTag, { backgroundColor: '#F8FAFC', borderColor: '#94A3B8' }]}>
+                      <Text style={{ fontSize: 10, fontWeight: '800', color: '#334155' }}>👤 게스트 팀 · 랭킹 유예</Text>
                     </View>
                   ) : (
                     <View style={[styles.typeTag, { backgroundColor: '#EFF6FF', borderColor: '#BFDBFE' }]}>
@@ -482,6 +536,18 @@ export default function MyMatchHistoryScreen() {
                 >
                   <Text style={styles.reportBtnText}>📊 경기 결과 분석 리포트 보기 ›</Text>
                 </TouchableOpacity>
+                {match.canBindGuestTeam ? (
+                  <TouchableOpacity
+                    style={styles.guestBindBtn}
+                    onPress={() => {
+                      setGuestBindTargetMatch(match);
+                      setGuestBindModalVisible(true);
+                    }}
+                    activeOpacity={0.85}
+                  >
+                    <Text style={styles.guestBindBtnText}>상대 팀 소급 연동</Text>
+                  </TouchableOpacity>
+                ) : null}
               </View>
             );
           })
@@ -500,6 +566,18 @@ export default function MyMatchHistoryScreen() {
           match={reportTargetMatch}
         />
       )}
+
+      <GuestTeamBindModal
+        visible={guestBindModalVisible}
+        excludeTeamName={guestBindTargetMatch?.host_team_name}
+        excludeTeamId={guestBindTargetMatch?.host_team_id}
+        loading={guestBindLoading}
+        onClose={() => {
+          setGuestBindModalVisible(false);
+          setGuestBindTargetMatch(null);
+        }}
+        onConfirm={handleBindGuestTeam}
+      />
 
       <Modal visible={seasonPickerModalVisible} animationType="fade" transparent={true} onRequestClose={() => setSeasonPickerModalVisible(false)}>
         <View style={styles.modalOverlay}>
@@ -634,6 +712,8 @@ const styles = StyleSheet.create({
 
   reportBtn: { backgroundColor: '#FEFCE8', borderRadius: 8, paddingVertical: 8, alignItems: 'center', marginTop: 8, borderWidth: 1, borderColor: '#FDE047' },
   reportBtnText: { color: '#A16207', fontSize: 12, fontWeight: '800' },
+  guestBindBtn: { backgroundColor: '#EFF6FF', borderRadius: 8, paddingVertical: 8, alignItems: 'center', marginTop: 8, borderWidth: 1, borderColor: '#93C5FD' },
+  guestBindBtnText: { color: '#1D4ED8', fontSize: 12, fontWeight: '800' },
 
   emptyBox: { padding: 30, alignItems: 'center', backgroundColor: Colors.surface, borderRadius: 14, borderWidth: 1, borderColor: Colors.border, marginTop: 16 },
   emptyEmoji: { fontSize: 36, marginBottom: 8 },

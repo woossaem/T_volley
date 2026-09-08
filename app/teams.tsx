@@ -23,15 +23,17 @@ import StickyAdBanner from '../components/StickyAdBanner';
 import BatchProposalModal from '../components/BatchProposalModal';
 import { isActiveTeamStatus, isActiveMembership } from '../lib/teamStatus';
 import { isOfficialMatch } from '../lib/officialMatch';
+import { hydrateMatchesWithSetScores } from '../lib/matchSets';
+import { buildTeamReportAnalytics } from '../lib/teamReportAnalytics';
 import {
   resolveTeamName,
   resolveTeamNameOrNull,
-  resolveUserName,
   extractRow,
   cleanRegionName,
   getTeamIcon,
   isSameName,
 } from '../lib/nameUtils';
+import { getSafeDisplayName, getSafeTeamName } from '../lib/utils';
 
 interface TeamMemberObj {
   userId: string;
@@ -181,8 +183,8 @@ export default function AllTeamsListScreen() {
               id: p.id,
               team_id: p.team_id,
               user_id: p.user_id,
-              full_name: resolveUserName(profileObj, undefined, '선생님'),
-              team_name: resolveTeamName(teamObj, '소속팀'),
+              full_name: getSafeDisplayName(profileObj),
+              team_name: getSafeTeamName(teamObj),
             };
           });
           setPendingRequestsForMyTeams(formattedPendings);
@@ -191,8 +193,8 @@ export default function AllTeamsListScreen() {
         setPendingRequestsForMyTeams([]);
       }
 
-      const { data: mData } = await supabase.from('matches').select('*').eq('status', 'completed');
-      if (mData) setAllMatches(mData);
+      const { data: mData } = await supabase.from('matches').select('*, match_sets(*)').eq('status', 'completed');
+      if (mData) setAllMatches(await hydrateMatchesWithSetScores(mData));
 
       const { data, error } = await supabase
         .from('team_members')
@@ -230,7 +232,7 @@ export default function AllTeamsListScreen() {
           memberObjs: [] as TeamMemberObj[],
         };
 
-        const realName: string = resolveUserName(profileObj, undefined, '팀원');
+        const realName: string = getSafeDisplayName(profileObj);
         if (!existing.memberObjs.some(m => m.userId === uId)) {
           existing.memberObjs.push({
             userId: uId,
@@ -315,14 +317,14 @@ export default function AllTeamsListScreen() {
         is_read: false,
       });
 
-      Alert.alert('승인 완료 ✅', `'${req.full_name}' 선생님이 정식 멤버로 승인되었습니다.`);
+      Alert.alert('승인 완료 ✅', `'${getSafeDisplayName(req)}' 선생님이 정식 멤버로 승인되었습니다.`);
       fetchTeams();
     } catch (err: any) { Alert.alert('오류', err.message); } 
     finally { setActionLoading(false); }
   };
 
   const handleRejectPendingUser = async (req: PendingMemberReq) => {
-    Alert.alert('가입 요청 거절', `'${req.full_name}' 선생님의 가입 요청을 거절하시겠습니까?`, [
+    Alert.alert('가입 요청 거절', `'${getSafeDisplayName(req)}' 선생님의 가입 요청을 거절하시겠습니까?`, [
       { text: '취소', style: 'cancel' },
       {
         text: '거절하기', style: 'destructive',
@@ -511,93 +513,24 @@ export default function AllTeamsListScreen() {
   }, [teams, selectedRegion, sortType]);
 
   const calcStatsForMatches = (matchesList: any[], teamName: string) => {
-    let wins = 0, losses = 0, draws = 0;
-    let setsWon = 0, setsLost = 0, shutoutWins = 0, fullsetWins = 0;
-    const oppMap: { [oppName: string]: { wins: number; losses: number; draws: number; total: number } } = {};
-
-    matchesList.forEach((m: any) => {
-      const hName = resolveTeamName(m.host_team_name);
-      const aName = resolveTeamName(m.away_team_name);
-      const wName = resolveTeamName(m.winner_team);
-      const isHost = isSameName(hName, teamName);
-      const oppName = isHost ? aName : hName;
-      const isWin = isSameName(wName, teamName);
-      const isDraw = wName === 'draw' || wName === '무승부';
-
-      if (isWin) wins++;
-      else if (isDraw) draws++;
-      else losses++;
-
-      if (oppName) {
-        if (!oppMap[oppName]) oppMap[oppName] = { wins: 0, losses: 0, draws: 0, total: 0 };
-        oppMap[oppName].total++;
-        if (isWin) oppMap[oppName].wins++;
-        else if (isDraw) oppMap[oppName].draws++;
-        else oppMap[oppName].losses++;
-      }
-
-      let hostSetWon = 0, awaySetWon = 0;
-      if (m.set_scores) {
-        m.set_scores.split(', ').forEach((s: string) => {
-          const [h, a] = s.split(':').map(Number);
-          if (!isNaN(h) && !isNaN(a)) {
-            if (h > a) hostSetWon++;
-            else if (a > h) awaySetWon++;
-          }
-        });
-      }
-
-      const mySetWon = isHost ? hostSetWon : awaySetWon;
-      const oppSetWon = isHost ? awaySetWon : hostSetWon;
-      setsWon += mySetWon;
-      setsLost += oppSetWon;
-
-      if (isWin) {
-        if (oppSetWon === 0) shutoutWins++;
-        else fullsetWins++;
-      }
-    });
-
-    let nemesis = '없음', nemesisStat = '', victim = '없음', victimStat = '';
-    let maxLossDiff = -999, maxWinDiff = -999;
-
-    Object.entries(oppMap).forEach(([opp, stat]) => {
-      const winDiff = stat.wins - stat.losses;
-      const lossDiff = stat.losses - stat.wins;
-
-      if (stat.losses > stat.wins && lossDiff > maxLossDiff) {
-        maxLossDiff = lossDiff; nemesis = opp; nemesisStat = `${stat.losses}패 ${stat.wins}승 (${stat.total}전)`;
-      }
-
-      if (stat.wins > stat.losses && winDiff > maxWinDiff) {
-        maxWinDiff = winDiff; victim = opp; victimStat = `${stat.wins}승 ${stat.losses}패 (${stat.total}전)`;
-      }
-    });
-
-    const teamRecent5 = matchesList.slice(0, 5).map((m: any) => {
-      const isWin = isSameName(m.winner_team, teamName);
-      const isDraw = m.winner_team === 'draw' || m.winner_team === '무승부';
-      return isWin ? 'WIN' : isDraw ? 'DRAW' : 'LOSS';
-    });
-
-    const totalMatches = matchesList.length;
-
+    const built = buildTeamReportAnalytics(matchesList, teamName, 'official');
     return {
-      totalMatches,
-      totalWins: wins,
-      totalDraws: draws,
-      totalLosses: losses,
-      winRate: totalMatches > 0 ? Math.round((wins / totalMatches) * 100) : 0,
-      setsWon,
-      setsLost,
-      setDiff: setsWon - setsLost,
-      shutoutWins,
-      fullsetWins,
-      nemesis,
-      nemesisStat,
-      victim,
-      victimStat,
-      teamRecent5,
+      totalMatches: built.totalMatches,
+      totalWins: built.totalWins,
+      totalDraws: built.totalDraws,
+      totalLosses: built.totalLosses,
+      winRate: built.winRate,
+      setsWon: built.setsWon,
+      setsLost: built.setsLost,
+      setDiff: built.setDiff,
+      shutoutWins: built.shutoutWins,
+      fullsetWins: built.fullsetWins,
+      nemesis: built.nemesis,
+      nemesisStat: built.nemesisStat,
+      victim: built.victim,
+      victimStat: built.victimStat,
+      teamRecent5: built.teamRecent5,
+      officialInsights: built.officialInsights,
     };
   };
 
@@ -651,6 +584,7 @@ export default function AllTeamsListScreen() {
       victim: careerStats.victim,
       victimStat: careerStats.victimStat,
       teamRecent5: careerStats.teamRecent5,
+      officialInsights: careerStats.officialInsights,
       career: careerStats,
       seasons: seasonsStats,
     };
@@ -754,7 +688,7 @@ export default function AllTeamsListScreen() {
                       </TouchableOpacity>
 
                       <Text style={styles.teamName} numberOfLines={1}>
-                        {getTeamIcon(team.team_type)} {resolveTeamName(team)}
+                        {getTeamIcon(team.team_type)} {getSafeTeamName(team)}
                       </Text>
 
                       <View style={styles.rightBadgeContainer}>
@@ -852,7 +786,7 @@ export default function AllTeamsListScreen() {
                       </Text>
                       {pendingUsersForThisTeam.map((pReq) => (
                         <View key={pReq.id} style={styles.pendingUserRow}>
-                          <Text style={styles.pendingUserName}>👤 {pReq.full_name} 선생님</Text>
+                          <Text style={styles.pendingUserName}>👤 {getSafeDisplayName(pReq)} 선생님</Text>
                           <View style={styles.pendingBtnGroup}>
                             <TouchableOpacity
                               style={styles.approveBtn}
@@ -958,7 +892,7 @@ export default function AllTeamsListScreen() {
                           onPress={() => handleSelectSimilarTeam(t)}
                         >
                           <Text style={styles.dropdownItemText}>
-                            {getTeamIcon(t.team_type)} {resolveTeamName(t)} [{cleanRegionName(t.region)}] (터치 시 가입)
+                            {getTeamIcon(t.team_type)} {getSafeTeamName(t)} [{cleanRegionName(t.region)}] (터치 시 가입)
                           </Text>
                         </TouchableOpacity>
                       ))}

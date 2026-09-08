@@ -1,5 +1,5 @@
 import { listMatchSetRows } from './matchSets';
-import { resolvePlayerSetPlay, setLineupsAreEmpty, type ScoreLogLike } from './rankingService';
+import { parseMatchScoreLogs, resolvePlayerSetPlay, setLineupsAreEmpty, type ScoreLogLike } from './rankingService';
 import { isAnonymousSlotId, listHasUser, parseRosterUserIds, safeIncludes } from './roster';
 
 export interface PlayerCareerStats {
@@ -57,6 +57,33 @@ export function formatSetRecordLabel(wins: number, draws: number, losses: number
   return draws > 0 ? `${wins}승 ${draws}무 ${losses}패` : `${wins}승 ${losses}패`;
 }
 
+/** 경기 승수와 세트 승수 혼동 방지 */
+export function formatSetWinAppearance(setWins: number, setsPlayed: number): string {
+  return `${setWins}세트 승 (${setsPlayed}세트 출전)`;
+}
+
+export type SetFormMark = 'WIN' | 'DRAW' | 'LOSS';
+
+/** 출전 세트 결과를 최근 순으로 모은다. rankingService 파싱 본체는 호출만 한다. */
+export function collectPlayerSetForm(
+  matches: any[],
+  userId: string,
+  playerName?: string | null,
+): SetFormMark[] {
+  const form: SetFormMark[] = [];
+  if (!userId) return form;
+  (matches || []).forEach((match) => {
+    const logs = parseMatchScoreLogs(match);
+    readMatchSets(match, logs).forEach((set) => {
+      const play = resolvePlayerSetPlay(match, set.set_number, userId, playerName, logs);
+      if (!play.played) return;
+      const outcome = evaluateSetOutcome(set.host_score, set.away_score, play.side || 'host');
+      form.push(outcome === 'win' ? 'WIN' : outcome === 'draw' ? 'DRAW' : 'LOSS');
+    });
+  });
+  return form;
+}
+
 export function emptyPlayerCareerStats(): PlayerCareerStats {
   return { ...EMPTY_STATS };
 }
@@ -75,7 +102,7 @@ export function isPersonalFault(eventType?: string | null) {
 
 export function readMatchSets(
   match: any,
-  events?: PlayerEventLike[],
+  events?: ScoreLogLike[],
 ): Array<{ set_number: number; host_score: number; away_score: number }> {
   return listMatchSetRows({
     ...match,
@@ -91,7 +118,7 @@ export function addMatchPlayerStats(
   acc: PlayerCareerStats,
   userId: string,
   match: any,
-  events: PlayerEventLike[],
+  events: ScoreLogLike[],
   playerName?: string | null,
 ): PlayerCareerStats {
   if (!userId || !match) return acc;
@@ -149,7 +176,8 @@ export function addMatchPlayerStats(
 
   events.forEach((e) => {
     if (!e || e.is_canceled) return;
-    if (!e.player_id || isAnonymousSlotId(e.player_id) || e.player_id !== userId) return;
+    const eventPlayerId = String(e.player_id ?? e.playerId ?? '').trim();
+    if (!eventPlayerId || isAnonymousSlotId(eventPlayerId) || eventPlayerId !== userId) return;
     if (isPersonalKill(e.event_type)) acc.points += 1;
     if (isPersonalFault(e.event_type)) acc.faults += 1;
   });

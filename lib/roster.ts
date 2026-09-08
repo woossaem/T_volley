@@ -126,19 +126,34 @@ export const ANONYMOUS_PLAYER_NAME = '무기명';
 
 export {
   TEMP_SLOT_PREFIX,
+  TEMP_TAG_PREFIX,
+  TEMP_GUEST_PREFIX,
   isTempSlotId,
+  isTempTagId,
+  isTempGuestId,
   makeTempSlotId,
+  makeTempTagId,
+  makeTempGuestId,
   makeDeterministicTempSlotId,
   formatTempPlayerLabel,
+  formatTempTagLabel,
+  formatTempGuestLabel,
   formatPlayerDisplayName,
+  parseTempTag,
+  parseTempGuestNum,
+  nextTempTagId,
+  nextTempGuestId,
+  collectUsedTagNums,
+  tagSideFromLineSide,
   positionKeyFromCourtIndex,
   positionKeyFromSlotLabel,
 } from './tempPlayer';
+export type { TempTagSide, TempTagCode } from './tempPlayer';
 
 import {
   isTempSlotId,
   formatPlayerDisplayName,
-  makeDeterministicTempSlotId,
+  nextTempGuestId,
   positionKeyFromCourtIndex,
   type LineSide,
 } from './tempPlayer';
@@ -176,26 +191,53 @@ export function persistCourtSlots(court?: Array<string | null> | null): string[]
   return (court || []).map((id) => assignedUserId(id) ?? '');
 }
 
-/** 빈 슬롯에 세트·사이드 기준 고정 temp_ 식별자를 채운다. 기존 ID는 유지. */
-export function ensureTempIdsInCourt(
+/** 빈 슬롯만 게스트로 채번. 가입 유저/기존 temp_ ID는 그대로 둔다. */
+export function fillEmptySlotsWithGuests(
   court: Array<string | null | undefined> | null | undefined,
-  ctx: { side: LineSide; setIndex: number; frontCount?: number; middleCount?: number; backCount?: number },
+  usedIds?: Array<string | null | undefined>,
+  total?: number,
 ): Array<string | null> {
-  const front = clampLineCount(ctx.frontCount, DEFAULT_LINE_COUNT);
-  const middle = clampLineCount(ctx.middleCount, DEFAULT_LINE_COUNT);
-  const back = clampLineCount(ctx.backCount, DEFAULT_LINE_COUNT);
-  const total = front + middle + back;
+  const len = Math.max(total ?? 0, (court || []).length);
   const next: Array<string | null> = [];
-  for (let i = 0; i < Math.max(total, (court || []).length); i += 1) {
+  const usedPool: Array<string | null | undefined> = [...(usedIds || []), ...(court || [])];
+  for (let i = 0; i < len; i += 1) {
     const existing = assignedUserId(court?.[i] ?? null);
     if (existing) {
       next.push(existing);
       continue;
     }
-    const pos = positionKeyFromCourtIndex(i, front, middle, back);
-    next.push(makeDeterministicTempSlotId(pos, ctx.side, ctx.setIndex, i));
+    const guestId = nextTempGuestId([...usedPool, ...next]);
+    next.push(guestId);
   }
   return next;
+}
+
+/** 빈 슬롯에 게스트(temp_guest_N)를 순번 부여. 기존 가입 유저 ID는 유지. */
+export function ensureTempIdsInCourt(
+  court: Array<string | null | undefined> | null | undefined,
+  ctx: {
+    side: LineSide;
+    setIndex: number;
+    frontCount?: number;
+    middleCount?: number;
+    backCount?: number;
+    usedIds?: Array<string | null | undefined>;
+    forceFillGuests?: boolean;
+  },
+): Array<string | null> {
+  const front = clampLineCount(ctx.frontCount, DEFAULT_LINE_COUNT);
+  const middle = clampLineCount(ctx.middleCount, DEFAULT_LINE_COUNT);
+  const back = clampLineCount(ctx.backCount, DEFAULT_LINE_COUNT);
+  const total = front + middle + back;
+  const fillGuests = ctx.forceFillGuests === true || (ctx.setIndex ?? 0) === 0;
+  if (!fillGuests) {
+    const next: Array<string | null> = [];
+    for (let i = 0; i < Math.max(total, (court || []).length); i += 1) {
+      next.push(assignedUserId(court?.[i] ?? null));
+    }
+    return next;
+  }
+  return fillEmptySlotsWithGuests(court, ctx.usedIds, total);
 }
 
 export function isAnonymousPlayer(player?: { user_id?: string | null; full_name?: string | null } | null): boolean {
@@ -245,6 +287,20 @@ export function lineSlotLabels(row: CourtRow, count: number): string[] {
   const n = clampLineCount(count);
   if (row === 'middle') return MIDDLE_LINE_LABELS[n - 1];
   return (row === 'front' ? FRONT_LINE_LABELS : BACK_LINE_LABELS)[n - 1];
+}
+
+export function courtSlotLabelAt(
+  index: number,
+  frontCount = DEFAULT_LINE_COUNT,
+  middleCount = DEFAULT_LINE_COUNT,
+  backCount = DEFAULT_LINE_COUNT,
+): string {
+  const front = clampLineCount(frontCount, DEFAULT_LINE_COUNT);
+  const middle = clampLineCount(middleCount, DEFAULT_LINE_COUNT);
+  const back = clampLineCount(backCount, DEFAULT_LINE_COUNT);
+  if (index < front) return lineSlotLabels('front', front)[index] || '전위';
+  if (index < front + middle) return lineSlotLabels('middle', middle)[index - front] || '중위';
+  return lineSlotLabels('back', back)[index - front - middle] || '후위';
 }
 
 /** 코트 슬롯 순서: 전위 → 중위 → 후위, 각 라인 좌-중-우 (9인제 표준명) */
@@ -386,6 +442,18 @@ export function parseSetFormation(roster: unknown, setIndex: number): SetFormati
   return resolveFormationForSet(parseSetFormationMap(roster), setIndex);
 }
 
+/** 포메이션 맵 전역에 이미 쓰인 슬롯 ID (가입 유저 + temp_guest 포함) */
+export function collectFormationSlotIds(roster: unknown): string[] {
+  const ids: string[] = [];
+  Object.values(parseSetFormationMap(roster)).forEach((f) => {
+    [...(f.court || []), ...(f.bench || []), ...(f.late || [])].forEach((id) => {
+      const real = assignedUserId(id);
+      if (real) ids.push(real);
+    });
+  });
+  return ids;
+}
+
 function courtHasAssigned(court?: Array<string | null> | null): boolean {
   return (court || []).some((id) => !!assignedUserId(id));
 }
@@ -398,14 +466,16 @@ export function resolveFormationFromSources(
   extras?: Partial<Pick<SetFormation, 'bench' | 'late' | 'frontCount' | 'middleCount' | 'backCount'>>,
 ): SetFormation {
   const fromForm = parseSetFormation(roster, setIndex);
-  if (courtHasAssigned(fromForm.court)) {
+  const lineupSlots = asCourtSlots(lineupFallback || []);
+  const rosterCourt = fromForm.court || [];
+  const rosterLooksCompact = courtHasAssigned(rosterCourt) && rosterCourt.length > 0 && rosterCourt.length < lineupSlots.length;
+  if (courtHasAssigned(fromForm.court) && !rosterLooksCompact) {
     return {
       ...fromForm,
       bench: extras?.bench?.length ? extras.bench : fromForm.bench,
       late: extras?.late?.length ? extras.late : fromForm.late,
     };
   }
-  const lineupSlots = asCourtSlots(lineupFallback || []);
   if (courtHasAssigned(lineupSlots)) {
     return {
       court: lineupSlots,

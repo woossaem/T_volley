@@ -1,6 +1,12 @@
+import { getSafeDisplayName } from './utils';
+
 /** 미가입 선수 임시 식별자. 형식: temp_{position}_{token} */
 
 export const TEMP_SLOT_PREFIX = 'temp_';
+export const TEMP_TAG_PREFIX = 'temp_tag_';
+export const TEMP_GUEST_PREFIX = 'temp_guest_';
+export type TempTagSide = 'A' | 'B';
+export type TempTagCode = { side: TempTagSide; num: number; code: string };
 
 export type TempPositionKey = 'left' | 'right' | 'center' | 'setter' | 'libero';
 export type LineSide = 'host' | 'away';
@@ -40,6 +46,83 @@ const LABEL_TO_POSITION: Array<{ needle: string; key: TempPositionKey }> = [
 export function isTempSlotId(id?: string | null): boolean {
   if (!id) return false;
   return String(id).startsWith(TEMP_SLOT_PREFIX);
+}
+
+export function isTempTagId(id?: string | null): boolean {
+  if (!id) return false;
+  return String(id).startsWith(TEMP_TAG_PREFIX);
+}
+
+export function isTempGuestId(id?: string | null): boolean {
+  if (!id) return false;
+  return String(id).startsWith(TEMP_GUEST_PREFIX);
+}
+
+export function parseTempGuestNum(id?: string | null): number | null {
+  if (!isTempGuestId(id)) return null;
+  const n = Number(String(id).slice(TEMP_GUEST_PREFIX.length));
+  if (!Number.isFinite(n) || n < 1) return null;
+  return Math.round(n);
+}
+
+export function makeTempGuestId(num: number): string {
+  return `${TEMP_GUEST_PREFIX}${Math.max(1, Math.round(num))}`;
+}
+
+export function formatTempGuestLabel(id?: string | null): string | null {
+  const n = parseTempGuestNum(id);
+  return n ? `게스트 ${n}` : null;
+}
+
+export function nextTempGuestId(usedIds: Array<string | null | undefined>): string {
+  const used = new Set<number>();
+  (usedIds || []).forEach((id) => {
+    const n = parseTempGuestNum(id);
+    if (n) used.add(n);
+  });
+  let n = 1;
+  while (used.has(n)) n += 1;
+  return makeTempGuestId(n);
+}
+
+export function parseTempTag(id?: string | null): TempTagCode | null {
+  if (!isTempTagId(id)) return null;
+  const rest = String(id).slice(TEMP_TAG_PREFIX.length);
+  const m = rest.match(/^([AB])(\d+)$/i);
+  if (!m) return null;
+  const side = m[1].toUpperCase() as TempTagSide;
+  const num = Number(m[2]);
+  if (!Number.isFinite(num) || num < 1) return null;
+  return { side, num, code: `${side}${num}` };
+}
+
+export function makeTempTagId(side: TempTagSide, num: number): string {
+  return `${TEMP_TAG_PREFIX}${side}${Math.max(1, Math.round(num))}`;
+}
+
+export function formatTempTagLabel(id?: string | null): string | null {
+  const tag = parseTempTag(id);
+  return tag ? `#${tag.code}` : null;
+}
+
+export function tagSideFromLineSide(side?: LineSide | string | null): TempTagSide {
+  return side === 'away' ? 'B' : 'A';
+}
+
+export function collectUsedTagNums(ids: Array<string | null | undefined>, side: TempTagSide): number[] {
+  const nums = new Set<number>();
+  (ids || []).forEach((id) => {
+    const tag = parseTempTag(id);
+    if (tag && tag.side === side) nums.add(tag.num);
+  });
+  return Array.from(nums).sort((a, b) => a - b);
+}
+
+export function nextTempTagId(usedIds: Array<string | null | undefined>, side: TempTagSide): string {
+  const used = new Set(collectUsedTagNums(usedIds, side));
+  let n = 1;
+  while (used.has(n)) n += 1;
+  return makeTempTagId(side, n);
 }
 
 export function parseTempPositionKey(id?: string | null): TempPositionKey | null {
@@ -150,9 +233,9 @@ function soloPositionLabel(id?: string | null, fallbackLabel?: string | null): s
   return cleaned;
 }
 
-/** 리포트/타임라인 표기: 레프트 / 레프트1 / 무기명 */
+/** 리포트/타임라인 표기: 게스트 1 / #A1 / 레프트 / 무기명 */
 export function formatTempPlayerLabel(id?: string | null, fallbackLabel?: string | null): string {
-  return soloPositionLabel(id, fallbackLabel) || '무기명';
+  return formatTempGuestLabel(id) || formatTempTagLabel(id) || soloPositionLabel(id, fallbackLabel) || '무기명';
 }
 
 export function formatPlayerDisplayName(
@@ -167,16 +250,20 @@ export function formatPlayerDisplayName(
   ) {
     return formatTempPlayerLabel(playerId, fallbackLabel || playerName);
   }
-  const name = String(playerName || '').trim();
-  if (name && name !== '무기명') return name;
+  const name = getSafeDisplayName(playerName);
+  if (playerName && name && name !== '게스트' && name !== '선수') return name;
+  const trimmed = String(playerName || '').trim();
+  if (trimmed && trimmed !== '무기명') return trimmed;
   if (!playerId) return formatTempPlayerLabel(playerId, fallbackLabel);
-  return name || '무기명';
+  return trimmed || '무기명';
 }
 
 export function isPureAnonymousPlayer(playerId?: string | null, playerName?: string | null): boolean {
   const id = String(playerId ?? '').trim();
   if (!id || id.toLowerCase() === 'anonymous' || id.includes('anon:')) return true;
-  if (isTempSlotId(id) && !parseTempPositionKey(id)) return true;
+  if (isTempGuestId(id) && parseTempGuestNum(id)) return false;
+  if (isTempTagId(id) && parseTempTag(id)) return false;
+  if (isTempSlotId(id) && !parseTempPositionKey(id) && !isTempTagId(id) && !isTempGuestId(id)) return true;
   const label = formatPlayerDisplayName(playerId, playerName);
   return label === '[무기명]' || label === '무기명';
 }

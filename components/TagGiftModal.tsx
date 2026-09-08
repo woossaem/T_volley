@@ -9,6 +9,7 @@ import {
   ActivityIndicator,
 } from 'react-native';
 import { Colors } from '../constants/Colors';
+import { getSafeDisplayName } from '../lib/utils';
 
 interface TagItem {
   id: string;
@@ -128,7 +129,7 @@ export default function TagGiftModal({
                     <View style={{ flex: 1 }}>
                       <TouchableOpacity onPress={() => onAssignTag(m.user_id)}>
                         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                          <Text style={styles.memberTagRowName}>👤 {m.full_name}</Text>
+                          <Text style={styles.memberTagRowName}>👤 {getSafeDisplayName(m)}</Text>
                           {m.playedSetCount !== undefined && (
                             <View style={styles.setBadge}>
                               <Text style={styles.setBadgeText}>{m.playedSetCount}세트 출전</Text>
