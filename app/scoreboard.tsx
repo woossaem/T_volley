@@ -42,7 +42,6 @@ import {
   upsertMatchSets,
   lastScoreForSetFromEvents,
   fetchSetScoreFromDb,
-  writeLiveSetScore,
   type MatchSetRecord,
 } from '../lib/matchSets';
 
@@ -117,6 +116,42 @@ function scoreFromMatchSetRow(
     host: Number(setRow.hostScore ?? setRow.host_score) || 0,
     away: Number(setRow.awayScore ?? setRow.away_score) || 0,
   };
+}
+
+async function updateMatchSetScoreNow(
+  matchId: string,
+  setIndex: number,
+  host: number,
+  away: number,
+): Promise<{ host: number; away: number }> {
+  const setNumber = Math.max(1, setIndex + 1);
+  const hostScore = Number(host) || 0;
+  const awayScore = Number(away) || 0;
+  const { data: existing } = await supabase
+    .from('match_sets')
+    .select('id')
+    .eq('match_id', matchId)
+    .eq('set_number', setNumber)
+    .maybeSingle();
+  if (existing?.id) {
+    const { error } = await supabase
+      .from('match_sets')
+      .update({ host_score: hostScore, away_score: awayScore })
+      .eq('id', existing.id)
+      .eq('match_id', matchId)
+      .eq('set_number', setNumber);
+    if (error) throw error;
+  } else {
+    const { error } = await supabase.from('match_sets').insert({
+      match_id: matchId,
+      set_number: setNumber,
+      host_score: hostScore,
+      away_score: awayScore,
+      is_closed: false,
+    });
+    if (error) throw error;
+  }
+  return { host: hostScore, away: awayScore };
 }
 
 export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
@@ -301,7 +336,7 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
     if (!matchId) return lastScoreForSetFromEvents(allEvents, setIndex);
     const computed = lastScoreForSetFromEvents(allEvents, setIndex);
     try {
-      await writeLiveSetScore(matchId, setIndex, computed);
+      await updateMatchSetScoreNow(matchId, setIndex, computed.host, computed.away);
     } catch (e) {
       console.error('match_sets 점수 동기화 실패:', e);
     }
@@ -375,13 +410,16 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
         setEvents(mergedEvents);
 
         const applyIdx = currentSetIndexRef.current;
-        const fromDb = await fetchSetScoreFromDb(matchId, applyIdx);
-        if (fromDb) applySetScoreToState(applyIdx, fromDb);
-        else {
-          const setRec = loadedSets.find((s) => s.setNumber === applyIdx + 1) || loadedSets[applyIdx];
-          const fromSets = scoreFromMatchSetRow(setRec);
-          if (fromSets) setCurrentScores(fromSets);
-        }
+        const { data: liveSetRow } = await supabase
+          .from('match_sets')
+          .select('host_score, away_score, set_number')
+          .eq('match_id', matchId)
+          .eq('set_number', applyIdx + 1)
+          .maybeSingle();
+        applySetScoreToState(applyIdx, {
+          host: Number((liveSetRow as any)?.host_score) || 0,
+          away: Number((liveSetRow as any)?.away_score) || 0,
+        });
       }
     } catch (err: any) {
       console.error('스코어보드 실패:', err);
@@ -433,14 +471,25 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
       .subscribe();
 
     const setScoreChannel = supabase.channel(`match_sets_${matchId}`)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'match_sets', filter: `match_id=eq.${matchId}` }, (payload) => {
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'match_sets', filter: `match_id=eq.${matchId}` }, (payload) => {
         const row = payload?.new as { set_number?: number; host_score?: number; away_score?: number } | undefined;
         if (!row || row.set_number == null) return;
         const setNumber = Number(row.set_number);
-        if (!Number.isFinite(setNumber) || setNumber < 1) return;
-        const score = scoreFromMatchSetRow(row);
-        if (!score) return;
-        applySetScoreToState(setNumber - 1, score);
+        if (setNumber !== currentSetIndexRef.current + 1) return;
+        setCurrentScores({
+          host: Number(row.host_score) || 0,
+          away: Number(row.away_score) || 0,
+        });
+      })
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'match_sets', filter: `match_id=eq.${matchId}` }, (payload) => {
+        const row = payload?.new as { set_number?: number; host_score?: number; away_score?: number } | undefined;
+        if (!row || row.set_number == null) return;
+        const setNumber = Number(row.set_number);
+        if (setNumber !== currentSetIndexRef.current + 1) return;
+        setCurrentScores({
+          host: Number(row.host_score) || 0,
+          away: Number(row.away_score) || 0,
+        });
       })
       .subscribe();
 
@@ -574,10 +623,10 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
     if (matchId) await appendMatchScoreLog(matchId, scoreLog);
     if (matchId) {
       try {
-        const saved = await writeLiveSetScore(matchId, currentSetIndex, { host: newHostScore, away: newAwayScore });
+        const saved = await updateMatchSetScoreNow(matchId, currentSetIndex, newHostScore, newAwayScore);
         applySetScoreToState(currentSetIndex, saved);
       } catch (e) {
-        console.error('match_sets 점수 저장 실패:', e);
+        console.error('match_sets 점수 UPDATE 실패:', e);
       }
     }
   };
@@ -1118,20 +1167,23 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
     const target = pendingDeleteEvent;
     setPendingDeleteEvent(null);
     if (!target) return;
-    if (String(target.id).startsWith('temp-')) {
-      const nextEvents = events.filter((e) => e.id !== target.id);
-      setEvents(nextEvents);
-      recalcScores(nextEvents, currentSetIndex);
-      await persistRecalculatedSetScore(nextEvents, Math.max(0, Number(target.set_index) || 0));
-      return;
-    }
+    const targetSetIndex = Math.max(0, Number(target.set_index) || 0);
     const nextEvents = events.filter((e) => e.id !== target.id);
     setEvents(nextEvents);
-    const targetSetIndex = Math.max(0, Number(target.set_index) || 0);
     recalcScores(nextEvents, currentSetIndex);
-    resetSetUiState();
-    await supabase.from('match_events').delete().eq('id', target.id);
-    await persistRecalculatedSetScore(nextEvents, targetSetIndex);
+    if (!String(target.id).startsWith('temp-')) {
+      resetSetUiState();
+      await supabase.from('match_events').delete().eq('id', target.id);
+    }
+    const nextScore = lastScoreForSetFromEvents(nextEvents, targetSetIndex);
+    if (matchId) {
+      try {
+        const saved = await updateMatchSetScoreNow(matchId, targetSetIndex, nextScore.host, nextScore.away);
+        applySetScoreToState(targetSetIndex, saved);
+      } catch (e) {
+        console.error('match_sets 점수 재계산 UPDATE 실패:', e);
+      }
+    }
   };
 
   const handleUndoEvent = async () => {
@@ -1150,7 +1202,15 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
           setEvents(newEvents);
           recalcScores(newEvents, currentSetIndex);
           await supabase.from('match_events').update({ is_canceled: true }).eq('id', lastEvent.id);
-          await persistRecalculatedSetScore(newEvents, currentSetIndex);
+          const nextScore = lastScoreForSetFromEvents(newEvents, currentSetIndex);
+          if (matchId) {
+            try {
+              const saved = await updateMatchSetScoreNow(matchId, currentSetIndex, nextScore.host, nextScore.away);
+              applySetScoreToState(currentSetIndex, saved);
+            } catch (e) {
+              console.error('match_sets 점수 Undo UPDATE 실패:', e);
+            }
+          }
         }
       }
     ]);
@@ -1355,7 +1415,7 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
       await persistSetsFromHistory(setHistory, { host: tempHostScore, away: tempAwayScore });
     }
     if (matchId) {
-      const saved = await writeLiveSetScore(matchId, currentSetIndex, { host: tempHostScore, away: tempAwayScore });
+      const saved = await updateMatchSetScoreNow(matchId, currentSetIndex, tempHostScore, tempAwayScore);
       applySetScoreToState(currentSetIndex, saved);
     }
     setEditModalVisible(false);

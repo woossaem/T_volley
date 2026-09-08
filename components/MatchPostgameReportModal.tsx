@@ -16,7 +16,7 @@ import ScoreTimeline, { MatchEvent } from './ScoreTimeline';
 import { parseRosterUserIds, parseSetRosterMap, safeIncludes } from '../lib/roster';
 import { isPersonalFault, isPersonalKill } from '../lib/playerStats';
 import { getSafeTeamName } from '../lib/utils';
-import { formatPlayerDisplayName, isAwardEligiblePlayer } from '../lib/tempPlayer';
+import { formatPlayerDisplayName, isAwardEligiblePlayer, parseTempGuestNum } from '../lib/tempPlayer';
 
 interface MatchPostgameReportModalProps {
   visible: boolean;
@@ -69,6 +69,13 @@ function formatMvpLine(players: PlayerStat[]): string {
   const tied = eligible.filter((p) => p.points === max).sort((a, b) => a.name.localeCompare(b.name, 'ko'));
   if (tied.length === 1) return `${tied[0].name} (${tied[0].points}점)`;
   return `${tied.map((p) => p.name).join(', ')} (공동 ${max}점)`;
+}
+
+function jerseyLabel(playerId: string | null, name: string): string {
+  const fromId = parseTempGuestNum(playerId);
+  if (fromId) return String(fromId);
+  const fromName = String(name || '').match(/(?:#|No\.?\s*)(\d{1,2})\b/i);
+  return fromName ? fromName[1] : '-';
 }
 
 function parseSetScoreString(raw?: string | null): { host: number; away: number }[] {
@@ -211,13 +218,13 @@ export default function MatchPostgameReportModal({
   const [activeSetIndex, setActiveSetIndex] = useState(0);
   const [hostTeamType, setHostTeamType] = useState<'school' | 'club'>('school');
   const [awayTeamType, setAwayTeamType] = useState<'school' | 'club'>('club');
-  const [showAllPlayers, setShowAllPlayers] = useState(false);
+  const [showAllPlayers, setShowAllPlayers] = useState(true);
 
   useEffect(() => {
     if (visible && match?.id) {
       setActiveTab('card');
       setActiveSetIndex(0);
-      setShowAllPlayers(false);
+      setShowAllPlayers(true);
       if (initialEvents && initialEvents.length > 0) {
         setEvents(initialEvents);
       } else {
@@ -530,14 +537,25 @@ export default function MatchPostgameReportModal({
       {players.length === 0 ? (
         <Text style={styles.playerEmpty}>기록 없음</Text>
       ) : (
-        <View style={styles.playerGrid}>
-          {players.map((p) => (
-            <View key={`${p.team}-${p.playerId || p.name}`} style={styles.playerCell}>
-              <Text style={styles.playerCellText} numberOfLines={1}>
-                {formatPlayerDisplayName(p.playerId, p.name)} {p.points}({p.faults})
-              </Text>
-            </View>
-          ))}
+        <View style={styles.playerCardRow}>
+          {players.map((p) => {
+            return (
+              <View key={`${p.team}-${p.playerId || p.name}`} style={styles.playerStatCard}>
+                <Text style={styles.playerJersey}>{jerseyLabel(p.playerId, p.name)}</Text>
+                <Text style={styles.playerName} numberOfLines={1}>
+                  {formatPlayerDisplayName(p.playerId, p.name)}
+                </Text>
+                <View style={styles.playerBadgeRow}>
+                  <View style={styles.scoreBadge}>
+                    <Text style={styles.scoreBadgeText}>득점 {p.points}</Text>
+                  </View>
+                  <View style={styles.faultBadge}>
+                    <Text style={styles.faultBadgeText}>범실 {p.faults}</Text>
+                  </View>
+                </View>
+              </View>
+            );
+          })}
         </View>
       )}
     </View>
@@ -545,7 +563,7 @@ export default function MatchPostgameReportModal({
 
   const renderCompareStreak = () => (
     <View style={styles.streakCompare}>
-      <Text style={styles.streakCompareTitle}>🔥 최대 연속 득점</Text>
+      <Text style={styles.streakCompareTitle}>최다 연속 득점</Text>
       <View style={styles.streakCompareRow}>
         <View style={[styles.streakSide, styles.streakHost]}>
           <Text style={styles.streakSideName} numberOfLines={1}>{displayHostName}</Text>
@@ -580,7 +598,7 @@ export default function MatchPostgameReportModal({
               style={[styles.tabBtn, activeTab === 'highlight' && styles.tabBtnActive]}
               onPress={() => setActiveTab('highlight')}
             >
-              <Text style={[styles.tabText, activeTab === 'highlight' && styles.tabTextActive]}>🏆 하이라이트</Text>
+              <Text style={[styles.tabText, activeTab === 'highlight' && styles.tabTextActive]}>하이라이트</Text>
             </TouchableOpacity>
             <TouchableOpacity
               style={[styles.tabBtn, activeTab === 'timeline' && styles.tabBtnActive]}
@@ -620,24 +638,32 @@ export default function MatchPostgameReportModal({
                     ) : null}
                   </View>
 
-                  <View style={styles.scoreSummaryBox}>
-                    <Text style={styles.scoreSummaryTitle}>최종 결과</Text>
-                    <Text style={styles.scoreSummaryWinner}>{winnerLabel}</Text>
-                    <Text style={styles.scoreSummarySets}>세트승 {analytics.hostSetWins} : {analytics.awaySetWins}</Text>
-                    <Text style={styles.scoreSummarySets}>세트 점수 {setScoreLine}</Text>
-                  </View>
-
                   <View style={styles.recordGrid}>
-                    <View style={styles.recordCard}>
-                      <Text style={styles.recordEmoji}>👑</Text>
-                      <Text style={styles.recordTitle}>오늘의 득점왕 (MVP)</Text>
-                      <Text style={styles.recordValue} numberOfLines={1} ellipsizeMode="tail">{analytics.mvpLine}</Text>
+                    <View style={styles.metricCard}>
+                      <Text style={styles.metricLabel}>최다 득점자</Text>
+                      <Text style={styles.metricValue} numberOfLines={2}>
+                        {analytics.mvpLine}
+                      </Text>
                     </View>
-                    <View style={styles.recordCard}>
-                      <Text style={styles.recordEmoji}>🎯</Text>
-                      <Text style={styles.recordTitle}>경기 전체 클러치</Text>
-                      <Text style={styles.recordValue} numberOfLines={1} ellipsizeMode="tail">
-                        {analytics.matchClutchNames.length > 0 ? analytics.matchClutchNames.join(', ') : '[없음]'}
+                    <View style={styles.metricCard}>
+                      <Text style={styles.metricLabel}>최다 연속 득점</Text>
+                      <Text style={styles.metricValue} numberOfLines={2}>
+                        {analytics.hostStreak.length >= analytics.awayStreak.length
+                          ? `${displayHostName} ${analytics.hostStreak.length}연속`
+                          : `${displayAwayName} ${analytics.awayStreak.length}연속`}
+                      </Text>
+                      <Text style={styles.metricSub} numberOfLines={2}>
+                        {formatStreakLine(
+                          analytics.hostStreak.length >= analytics.awayStreak.length
+                            ? analytics.hostStreak
+                            : analytics.awayStreak
+                        )}
+                      </Text>
+                    </View>
+                    <View style={[styles.metricCard, styles.metricCardWide]}>
+                      <Text style={styles.metricLabel}>승부처 클러치 포인트</Text>
+                      <Text style={styles.metricValue} numberOfLines={2}>
+                        {analytics.matchClutchNames.length > 0 ? analytics.matchClutchNames.join(', ') : '기록 없음'}
                       </Text>
                     </View>
                   </View>
@@ -781,11 +807,42 @@ const styles = StyleSheet.create({
   streakSideValue: { fontSize: 18, fontWeight: '900', color: '#1E3A8A', marginBottom: 4 },
   streakSideSpan: { fontSize: 10, fontWeight: '700', color: '#2563EB', lineHeight: 14 },
 
-  playerListBox: { backgroundColor: '#F8FAFC', borderRadius: 12, padding: 10, borderWidth: 1, borderColor: '#E2E8F0', gap: 8 },
-  playerListHeading: { fontSize: 14, fontWeight: '900', color: Colors.text, textAlign: 'center' },
-  playerTeamBlock: { gap: 4 },
+  playerListBox: { backgroundColor: '#020617', borderRadius: 12, padding: 10, borderWidth: 1, borderColor: '#1E293B', gap: 8 },
+  playerListHeading: { fontSize: 14, fontWeight: '900', color: '#0F172A', textAlign: 'center' },
+  playerTeamBlock: { gap: 6 },
   playerTeamTitle: { fontSize: 12, fontWeight: '900', marginBottom: 2 },
-  playerEmpty: { fontSize: 12, color: Colors.textMuted, fontWeight: '600' },
+  playerEmpty: { fontSize: 12, color: '#94A3B8', fontWeight: '600' },
+  playerCardRow: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between' },
+  playerStatCard: {
+    flexBasis: '48%',
+    maxWidth: '48%',
+    backgroundColor: '#0F172A',
+    borderRadius: 12,
+    padding: 10,
+    marginBottom: 8,
+    borderWidth: 1,
+    borderColor: '#1E293B',
+  },
+  playerJersey: { color: '#64748B', fontWeight: '700', fontSize: 12, fontVariant: ['tabular-nums'] },
+  playerName: { color: '#F8FAFC', fontWeight: '800', fontSize: 14, letterSpacing: -0.3 },
+  playerBadgeRow: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 8, gap: 6 },
+  scoreBadge: { flex: 1, backgroundColor: '#1E3A8A', borderRadius: 8, paddingVertical: 4, alignItems: 'center' },
+  scoreBadgeText: { color: '#93C5FD', fontWeight: '700', fontSize: 12, fontVariant: ['tabular-nums'] },
+  faultBadge: { flex: 1, backgroundColor: '#450A0A', borderRadius: 8, paddingVertical: 4, alignItems: 'center' },
+  faultBadgeText: { color: '#FCA5A5', fontWeight: '600', fontSize: 12, fontVariant: ['tabular-nums'] },
+  metricCard: {
+    flexBasis: '48%',
+    maxWidth: '48%',
+    backgroundColor: '#0F172A',
+    borderRadius: 12,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: '#1E293B',
+  },
+  metricCardWide: { flexBasis: '100%', maxWidth: '100%' },
+  metricLabel: { fontSize: 11, fontWeight: '700', color: '#94A3B8', marginBottom: 4 },
+  metricValue: { fontSize: 14, fontWeight: '800', color: '#F8FAFC', fontVariant: ['tabular-nums'] },
+  metricSub: { fontSize: 11, fontWeight: '600', color: '#64748B', marginTop: 4, fontVariant: ['tabular-nums'] },
   playerGrid: { flexDirection: 'row', flexWrap: 'wrap' },
   playerCell: { width: '50%', paddingVertical: 4, paddingHorizontal: 6 },
   playerCellText: { fontSize: 12, fontWeight: '800', color: Colors.text },

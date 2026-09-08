@@ -111,15 +111,24 @@ export function extractMatchSetScores(match: any): { host: number; away: number 
 }
 
 /** 리포트 모달과 동일: match_events 마지막 점수로 세트별 host/away 복원 */
-/** 해당 세트의 남은(미취소) 득점 로그 마지막 스코어. 로그 0개면 0:0 */
+/** 해당 세트의 남은(미취소) 득점 이벤트를 재계산. 로그 0개면 0:0 */
 export function lastScoreForSetFromEvents(events: MatchEventLike[], setIndex: number): { host: number; away: number } {
-  let last = { host: 0, away: 0 };
+  let host = 0;
+  let away = 0;
   (events || []).forEach((e) => {
     if (!e || e.is_canceled || e.event_type === 'sub') return;
     if (Number(e.set_index) !== setIndex) return;
-    last = { host: Number(e.host_score) || 0, away: Number(e.away_score) || 0 };
+    if (e.event_type === 'manual') {
+      host = Number(e.host_score) || 0;
+      away = Number(e.away_score) || 0;
+      return;
+    }
+    if (e.event_type === 'score' || e.event_type === 'fault') {
+      if (e.team_type === 'away') away += 1;
+      else host += 1;
+    }
   });
-  return last;
+  return { host, away };
 }
 
 function asHostAwayScore(row: { host_score?: number; away_score?: number } | null | undefined): { host: number; away: number } {
