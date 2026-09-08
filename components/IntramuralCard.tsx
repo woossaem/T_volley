@@ -3,6 +3,7 @@ import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { listMatchSetRows } from '../lib/matchSets';
 import { getSafeTeamName } from '../lib/utils';
+import { copyLiveScoreboardLink } from '../lib/liveLink';
 
 interface IntramuralMatch {
   id: string;
@@ -13,6 +14,7 @@ interface IntramuralMatch {
   match_sets?: unknown;
   sets?: unknown;
   match_events?: unknown;
+  short_code?: string | null;
 }
 
 interface IntramuralCardProps {
@@ -114,6 +116,15 @@ export default function IntramuralCard({
           )}
         </View>
         <Text style={styles.setScoreChevron}>›</Text>
+      </TouchableOpacity>
+
+      <TouchableOpacity
+        style={styles.liveLinkCopyBtn}
+        onPress={() => { void copyLiveScoreboardLink(match); }}
+        activeOpacity={0.85}
+        hitSlop={8}
+      >
+        <Text style={styles.liveLinkCopyBtnText}>🔗 라이브 전광판 링크 복사</Text>
       </TouchableOpacity>
 
       {isFinished ? (
@@ -218,6 +229,16 @@ const styles = StyleSheet.create({
   setScoreBoxBody: { flex: 1, minWidth: 0 },
   setScoreNudge: { fontSize: 11, color: '#94A3B8', fontWeight: '700', lineHeight: 14, includeFontPadding: false, marginBottom: 4 },
   setScoreChevron: { fontSize: 16, color: '#94A3B8', lineHeight: 20, includeFontPadding: false, fontWeight: '400' },
+  liveLinkCopyBtn: {
+    backgroundColor: '#EFF6FF',
+    borderWidth: 1,
+    borderColor: '#BFDBFE',
+    borderRadius: 10,
+    paddingVertical: 9,
+    alignItems: 'center',
+    marginTop: 8,
+  },
+  liveLinkCopyBtnText: { fontSize: 12, fontWeight: '800', color: '#1D4ED8', lineHeight: 16, includeFontPadding: false },
   scoreBannerWinner: { color: '#F8FAFC', fontSize: 14, fontWeight: '800', lineHeight: 20, includeFontPadding: false, marginBottom: 6 },
   setScoreEmpty: { fontSize: 13, color: '#94A3B8', fontWeight: '700', lineHeight: 18, includeFontPadding: false },
   setScorePillsRow: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'flex-start', gap: 8 },

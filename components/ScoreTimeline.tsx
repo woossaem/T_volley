@@ -42,7 +42,11 @@ export default function ScoreTimeline({
   const setKey = Number(currentSetIndex);
 
   const currentSetEvents = useMemo(() => {
-    return (events || []).filter((e) => Number(e?.set_index) === setKey);
+    return (events || []).filter((e) => {
+      if (Number(e?.set_index) === setKey) return true;
+      const setNumber = Number((e as any)?.set_number);
+      return Number.isFinite(setNumber) && setNumber === setKey + 1;
+    });
   }, [events, setKey]);
 
   useEffect(() => {

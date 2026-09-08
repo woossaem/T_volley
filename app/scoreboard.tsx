@@ -97,9 +97,9 @@ function mapScoreLogToEvent(log: any, matchId: string, fallbackId: string): Matc
   };
 }
 
-function normalizeMatchEvent(row: any): MatchEvent | null {
+function normalizeMatchEvent(row: any, fallbackId = ''): MatchEvent | null {
   if (!row) return null;
-  const id = row.id != null ? String(row.id) : '';
+  const id = row.id != null && String(row.id) !== '' ? String(row.id) : fallbackId;
   if (!id) return null;
   return {
     id,
@@ -114,11 +114,40 @@ function normalizeMatchEvent(row: any): MatchEvent | null {
     host_score: Number(row.host_score) || 0,
     away_score: Number(row.away_score) || 0,
     is_canceled: !!row.is_canceled,
-  };
+    ...(row.set_number != null ? { set_number: Number(row.set_number) } : {}),
+  } as MatchEvent;
+}
+
+function rowsToMatchEvents(rows: any[], matchId: string): MatchEvent[] {
+  return asArray<any>(rows)
+    .map((row, i) => normalizeMatchEvent(row, `ev-${matchId}-${i}`))
+    .filter(Boolean) as MatchEvent[];
+}
+
+/** 경기 리포트와 동일: match_events 원본 → 없으면 matches.score_logs */
+async function fetchMatchTimelineEvents(matchId: string): Promise<MatchEvent[]> {
+  const ordered = await supabase
+    .from('match_events')
+    .select('*')
+    .eq('match_id', matchId)
+    .order('created_at', { ascending: true });
+  let rows = !ordered.error ? asArray<any>(ordered.data) : [];
+  if (ordered.error) {
+    const unordered = await supabase.from('match_events').select('*').eq('match_id', matchId);
+    if (!unordered.error) rows = asArray<any>(unordered.data);
+  }
+  const fromTable = rowsToMatchEvents(rows, matchId);
+  if (fromTable.length > 0) return fromTable;
+  const { data: matchRow } = await supabase
+    .from('matches')
+    .select('score_logs')
+    .eq('id', matchId)
+    .maybeSingle();
+  return mergeEventsWithScoreLogs([], asArray((matchRow as any)?.score_logs), matchId, false);
 }
 
 function mergeEventsWithScoreLogs(tableEvents: MatchEvent[], scoreLogs: any[], matchId: string, tableOk = false): MatchEvent[] {
-  const table = asArray<any>(tableEvents).map(normalizeMatchEvent).filter(Boolean) as MatchEvent[];
+  const table = asArray<any>(tableEvents).map((row, i) => normalizeMatchEvent(row, `ev-${i}`)).filter(Boolean) as MatchEvent[];
   if (tableOk) return table;
   const mapped = (Array.isArray(scoreLogs) ? scoreLogs : []).map((log, i) => (
     mapScoreLogToEvent(log, matchId, `log-${i}`)
@@ -455,11 +484,11 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
           isInitialLoadRef.current = false;
         }
 
-        const { data: evData, error: evError } = await supabase.from('match_events').select('*').eq('match_id', matchId).order('created_at', { ascending: true });
-        if (!evError) {
-          setEvents(asArray<any>(evData).map(normalizeMatchEvent).filter(Boolean) as MatchEvent[]);
-        } else {
-          setEvents(mergeEventsWithScoreLogs([], asArray((data as any)?.score_logs), matchId, false));
+        // 웹 관전은 아래 Realtime/폴링의 fetchMatchTimelineEvents 가 SSOT.
+        // 여기서 setEvents 하면 늦은 fetchMatchDetails 가 타임라인을 빈 배열로 덮는다.
+        if (!isSpectatorForced) {
+          const fromTable = await fetchMatchTimelineEvents(matchId);
+          setEvents(fromTable);
         }
 
         const applyIdx = currentSetIndexRef.current;
@@ -483,6 +512,13 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
 
   useEffect(() => {
     fetchMatchDetails();
+
+    const pullSpectatorEvents = async () => {
+      if (!isSpectatorForced || !matchId) return;
+      const next = await fetchMatchTimelineEvents(matchId);
+      eventsRef.current = next;
+      setEvents(next);
+    };
 
     const matchChannel = supabase.channel(`match_${matchId}`)
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'matches', filter: `id=eq.${matchId}` }, async (payload) => {
@@ -508,6 +544,8 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
           const { data: pData } = await supabase.from('profiles').select('*').eq('id', updated.recorder_away_id).maybeSingle();
           if (pData) setAwayRecorderName(getSafeDisplayName(pData));
         } else { setAwayRecorderName('공석'); }
+
+        void pullSpectatorEvents();
       })
       .subscribe();
 
@@ -517,18 +555,7 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
       };
     }
 
-    const pullEventsFromDb = async () => {
-      if (!matchId) return;
-      const { data, error } = await supabase
-        .from('match_events')
-        .select('*')
-        .eq('match_id', matchId)
-        .order('created_at', { ascending: true });
-      if (error) return;
-      const next = asArray<any>(data).map(normalizeMatchEvent).filter(Boolean) as MatchEvent[];
-      eventsRef.current = next;
-      setEvents(next);
-    };
+    const pullEventsFromDb = pullSpectatorEvents;
 
     const applyRealtimeSetScore = (row?: {
       set_number?: number;
@@ -579,8 +606,11 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
       .subscribe();
 
     void pullEventsFromDb();
+    const pollMs = Platform.OS === 'web' ? 1500 : 0;
+    const pollId = pollMs > 0 ? setInterval(() => { void pullEventsFromDb(); }, pollMs) : null;
 
     return () => {
+      if (pollId) clearInterval(pollId);
       supabase.removeChannel(matchChannel);
       supabase.removeChannel(eventChannel);
       supabase.removeChannel(setScoreChannel);
@@ -1065,29 +1095,31 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
           .order('created_at', { ascending: true });
         if (!error) {
           tableOk = true;
-          tableEvents = asArray<any>(evData).map(normalizeMatchEvent).filter(Boolean) as MatchEvent[];
+          tableEvents = rowsToMatchEvents(evData, matchId);
         }
       } catch {}
 
       if (hydrateGenRef.current !== gen || currentSetIndexRef.current !== idx) return;
 
-      setEvents((prev) => {
-        if (tableOk) {
-          eventsRef.current = tableEvents;
-          return tableEvents;
-        }
-        if (scoreLogs.length === 0) return prev;
-        const merged = mergeEventsWithScoreLogs(prev, scoreLogs, matchId, false);
-        eventsRef.current = merged;
-        return merged;
-      });
+      if (!isSpectatorForced) {
+        setEvents((prev) => {
+          if (tableOk) {
+            eventsRef.current = tableEvents;
+            return tableEvents;
+          }
+          if (scoreLogs.length === 0) return prev;
+          const merged = mergeEventsWithScoreLogs(prev, scoreLogs, matchId, false);
+          eventsRef.current = merged;
+          return merged;
+        });
+      }
 
       const fromDb = scoreFromMatchSetRow(setRow || matchSets.find((s) => s.setNumber === idx + 1));
       if (fromDb) setCurrentScores(fromDb);
     } catch (e) {
       console.error('세트 하이드레이션 실패:', e);
     }
-  }, [matchId, matchSets]);
+  }, [matchId, matchSets, isSpectatorForced]);
 
   const flushScoreLogsSnapshot = async (allEvents?: MatchEvent[]) => {
     if (!matchId) return;
@@ -1127,7 +1159,7 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
 
   const changeCurrentSet = (idx: number) => {
     const fromIdx = currentSetIndexRef.current;
-    if (matchId && fromIdx !== idx) {
+    if (matchId && fromIdx !== idx && !isSpectatorForced) {
       void updateMatchSetScoreNow(matchId, fromIdx, currentScores.host, currentScores.away);
       void flushScoreLogsSnapshot(eventsRef.current);
     }
@@ -1772,7 +1804,11 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
   const awayRosterView = getSetRosters(false);
   const actionRoster = actionTeam === 'host' ? hostRosterView : awayRosterView;
   const opponentRoster = actionTeam === 'host' ? awayRosterView : hostRosterView;
-  const liveSetEvents = (events || []).filter((e) => Number(e?.set_index) === currentSetIndex);
+  const liveSetEvents = (events || []).filter((e) => {
+    if (Number(e?.set_index) === currentSetIndex) return true;
+    const setNumber = Number((e as any)?.set_number);
+    return Number.isFinite(setNumber) && setNumber === currentSetIndex + 1;
+  });
   const currentSetRow = (matchSets || [])[currentSetIndex];
   const hostFormationInitial = resolveFormationFromSources(
     match?.host_roster,
@@ -2011,7 +2047,7 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
       <View style={[styles.bottomControlBar, { paddingLeft: Math.max(safeInset(insets.left), 8), paddingRight: Math.max(safeInset(insets.right), 8) }]}>
         <View style={styles.timelineChipRow}>
           <ScoreTimeline
-            key={`live-set-${currentSetIndex}-${timelineEpoch}`}
+            key={`live-set-${currentSetIndex}-${timelineEpoch}-${liveSetEvents.length}`}
             events={liveSetEvents}
             canControl={myRole !== 'spectator'}
             displayHostName={displayHostName}
@@ -2339,8 +2375,8 @@ const styles = StyleSheet.create({
   },
   editHintText: { fontSize: 11, color: '#FFFFFF', fontWeight: '800', marginTop: 4, opacity: 0.8 },
   spectatorHintText: { fontSize: 11, color: '#FFFFFF', fontWeight: '700', marginTop: 4, opacity: 0.8 },
-  footerStack: { flexShrink: 0, backgroundColor: '#0F172A' },
-  momentumRow: { height: 14, flexShrink: 0, backgroundColor: '#0F172A', justifyContent: 'center' },
+  footerStack: { flexShrink: 0, minHeight: 102, backgroundColor: '#0F172A' },
+  momentumRow: { height: 16, minHeight: 16, flexShrink: 0, backgroundColor: '#0F172A', justifyContent: 'center' },
   bottomControlBar: { height: 88, flexShrink: 0, flexDirection: 'row', paddingVertical: 0, backgroundColor: '#0F172A', borderTopWidth: 1, borderTopColor: '#1E293B', alignItems: 'center' },
   timelineChipRow: { flex: 1, height: 88, minWidth: 0, overflow: 'hidden' },
   actionButtonsArea: { flexDirection: 'row', gap: 4, flexShrink: 0, flexGrow: 0, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 6, paddingLeft: 8, borderLeftWidth: 1, borderLeftColor: '#1E293B', backgroundColor: '#0F172A', zIndex: 4 },

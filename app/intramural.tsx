@@ -23,6 +23,7 @@ import UserProfileModal from '../components/UserProfileModal';
 import MatchPostgameReportModal from '../components/MatchPostgameReportModal'; // 💡 신규 임포트
 import { parseSetRosterMap, safeIncludes, safeNameText, teamsInclude } from '../lib/roster';
 import { getSafeDisplayName, getSafeTeamName } from '../lib/utils';
+import { insertMatchIgnoringUnknownColumns } from '../lib/matchWrite';
 import { evaluateSetOutcome } from '../lib/playerStats';
 import {
   collectLineupPlayerIds,
@@ -57,6 +58,7 @@ interface MatchData {
   host_roster?: string;
   away_roster?: string;
   created_at: string;
+  short_code?: string | null;
 }
 
 interface MemberInfo {
@@ -505,10 +507,11 @@ export default function IntramuralScreen() {
         setMatches(prev => prev.map(m => m.id === editingIntraId ? { ...m, ...payload } : m));
         Alert.alert('수정 완료', '내전 기록이 수정되었습니다.');
       } else {
-        const { data: newMatch } = await supabase.from('matches').insert(payload).select().single();
+        const { data: newMatch, error: insertError } = await insertMatchIgnoringUnknownColumns(payload);
+        if (insertError) throw insertError;
         if (newMatch) {
-          setMatches(prev => [newMatch, ...prev]);
-          if (intraDynamicScores.length > 0) {
+          setMatches(prev => [newMatch as MatchData, ...prev]);
+          if (intraDynamicScores.length > 0 && newMatch.id) {
             await upsertMatchSets(
               newMatch.id,
               recordsFromDynamicScores(intraDynamicScores, hostRosters, awayRosters, !!intraWinner),

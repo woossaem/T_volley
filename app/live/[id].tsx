@@ -295,7 +295,7 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#090a0f',
     justifyContent: 'center',
-    alignItems: 'center',
+    alignItems: 'stretch',
   },
   boardFrame: {
     flex: 1,
