@@ -28,6 +28,7 @@ import FormationModal from '../components/FormationModal';
 import { MomentumLevelBar } from '../components/SetFlowGauges';
 import { ANONYMOUS_PLAYER_NAME, assignedUserId, clampLineCount, DEFAULT_LINE_COUNT, displaySlotPlayerName, ensureTempIdsInCourt, isRegisteredUserId, isTempSlotId, listHasUser, parseSetFormation, parseSetFormationMap, parseSetRosterMap, persistCourtSlots, resolveFormationForSet, resolveFormationFromSources, safeIncludes, safeNameText, seedNextSetFormation, teamsInclude, type SetFormation } from '../lib/roster';
 import { getSafeDisplayName, getSafeTeamName } from '../lib/utils';
+import { appendMatchScoreLog } from '../lib/retroactiveBinding';
 import { updateMatchIgnoringUnknownColumns } from '../lib/matchWrite';
 import { resolveTeamName } from '../lib/nameUtils';
 import {
@@ -359,7 +360,7 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
 
   useFocusEffect(
     useCallback(() => {
-      if (!matchId) return;
+      if (!matchId || !isSpectatorForced) return;
       let cancelled = false;
       const loadLiveScoreFromDb = async () => {
         const idx = currentSetIndexRef.current;
@@ -379,7 +380,7 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
       return () => {
         cancelled = true;
       };
-    }, [matchId, applySetScoreToState])
+    }, [matchId, applySetScoreToState, isSpectatorForced])
   );
 
   const persistRecalculatedSetScore = async (allEvents: MatchEvent[], setIndex: number) => {
@@ -510,6 +511,12 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
       })
       .subscribe();
 
+    if (!isSpectatorForced) {
+      return () => {
+        supabase.removeChannel(matchChannel);
+      };
+    }
+
     const pullEventsFromDb = async () => {
       if (!matchId) return;
       const { data, error } = await supabase
@@ -536,7 +543,7 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
       const viewing = currentSetIndexRef.current + 1;
 
       if (Number.isFinite(setNumber) && setNumber !== viewing) {
-        if (isSpectatorForced && !row.is_closed && setNumber > viewing) {
+        if (!row.is_closed && setNumber > viewing) {
           currentSetIndexRef.current = setNumber - 1;
           setCurrentSetIndex(setNumber - 1);
           setCurrentScores({ host, away });
@@ -544,7 +551,7 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
         void pullEventsFromDb();
         return;
       }
-      if (isSpectatorForced && row.is_closed === true) {
+      if (row.is_closed === true) {
         const nextIdx = currentSetIndexRef.current + 1;
         currentSetIndexRef.current = nextIdx;
         setCurrentSetIndex(nextIdx);
@@ -557,30 +564,7 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
     };
 
     const eventChannel = supabase.channel(`events_${matchId}`)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'match_events', filter: `match_id=eq.${matchId}` }, (payload) => {
-        const type = String((payload as any)?.eventType || '').toUpperCase();
-        if (type === 'DELETE') {
-          const deletedId = (payload as any)?.old?.id;
-          if (deletedId != null) {
-            setEvents((prev) => {
-              const next = prev.filter((e) => String(e.id) !== String(deletedId));
-              eventsRef.current = next;
-              return next;
-            });
-          }
-        } else {
-          const ev = normalizeMatchEvent((payload as any)?.new);
-          if (ev) {
-            setEvents((prev) => {
-              const idx = prev.findIndex((e) => String(e.id) === String(ev.id));
-              const next = idx >= 0
-                ? prev.map((e, i) => (i === idx ? { ...e, ...ev } : e))
-                : [...prev, ev];
-              eventsRef.current = next;
-              return next;
-            });
-          }
-        }
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'match_events', filter: `match_id=eq.${matchId}` }, () => {
         void pullEventsFromDb();
       })
       .subscribe();
@@ -594,7 +578,7 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
       })
       .subscribe();
 
-    if (isSpectatorForced) void pullEventsFromDb();
+    void pullEventsFromDb();
 
     return () => {
       supabase.removeChannel(matchChannel);
@@ -708,7 +692,11 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
       away_score: newAwayScore,
       is_canceled: false
     };
-    setEvents(prev => [...prev, tempEvent]);
+    setEvents(prev => {
+      const next = [...prev, tempEvent];
+      eventsRef.current = next;
+      return next;
+    });
 
     const scoreLog = {
       match_id: matchId,
@@ -723,17 +711,7 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
       is_canceled: false,
     };
     await supabase.from('match_events').insert(scoreLog);
-    const { data: evData, error: evError } = await supabase
-      .from('match_events')
-      .select('*')
-      .eq('match_id', matchId)
-      .order('created_at', { ascending: true });
-    const persistedEvents = !evError
-      ? (asArray<any>(evData).map(normalizeMatchEvent).filter(Boolean) as MatchEvent[])
-      : [...eventsRef.current.filter((e) => !String(e.id).startsWith('temp-')), tempEvent];
-    eventsRef.current = persistedEvents;
-    setEvents(persistedEvents);
-    if (matchId) await flushScoreLogsSnapshot(persistedEvents);
+    if (matchId) await appendMatchScoreLog(matchId, scoreLog);
     if (matchId) {
       try {
         const saved = await updateMatchSetScoreNow(matchId, currentSetIndex, newHostScore, newAwayScore);
@@ -1292,18 +1270,9 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
     eventsRef.current = nextEvents;
     setEvents(nextEvents);
     recalcScores(nextEvents, currentSetIndex);
+    resetSetUiState();
     if (!String(target.id).startsWith('temp-')) {
       await supabase.from('match_events').delete().eq('id', target.id);
-    } else if (matchId) {
-      const { data: latest } = await supabase
-        .from('match_events')
-        .select('id')
-        .eq('match_id', matchId)
-        .eq('set_index', targetSetIndex)
-        .order('created_at', { ascending: false })
-        .limit(1)
-        .maybeSingle();
-      if (latest?.id) await supabase.from('match_events').delete().eq('id', latest.id);
     }
     const nextScore = lastScoreForSetFromEvents(nextEvents, targetSetIndex);
     if (matchId) {
