@@ -9,7 +9,7 @@ import {
   resolveFormationFromSources,
   type SetFormation,
 } from './roster';
-import { parseTempGuestNum, parseTempPositionKey, TEMP_POSITION_LABELS } from './tempPlayer';
+import { parseTempGuestNum, positionKeyFromCourtIndex, TEMP_POSITION_LABELS } from './tempPlayer';
 import { getSafeDisplayName, getSafeTeamName } from './utils';
 import type { LineupPlayerView, TeamLineupView } from '../components/TeamLineupPanel';
 
@@ -17,7 +17,6 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 
 type PlayerMeta = {
   name: string;
-  position: string;
   isCaptain?: boolean;
 };
 
@@ -27,16 +26,12 @@ function intramuralNames(description?: string | null): { host: string; away: str
   return { host: m[1] || 'A팀', away: m[2] || 'B팀' };
 }
 
-function formatProfilePosition(raw: unknown): string {
-  const text = String(raw || '').trim();
-  if (!text || text === '포지션 미설정') return '';
-  return text.split(' / ')[0].trim();
-}
-
 function toPlayer(
   id: string | null | undefined,
   index: number,
+  formation: SetFormation | null,
   metaMap: Record<string, PlayerMeta>,
+  kind: 'court' | 'bench',
 ): LineupPlayerView | null {
   const real = assignedUserId(id);
   if (!real) return null;
@@ -44,13 +39,19 @@ function toPlayer(
   const badge = guestNum ? String(guestNum) : String(index + 1);
   const meta = metaMap[real];
   const name = meta?.name || displaySlotPlayerName(real, null);
-  const tempKey = parseTempPositionKey(real);
-  const position = meta?.position || (tempKey ? TEMP_POSITION_LABELS[tempKey] : '');
+  let position: string | undefined;
+  if (kind === 'court' && formation) {
+    const front = clampLineCount(formation.frontCount, DEFAULT_LINE_COUNT);
+    const middle = clampLineCount(formation.middleCount, DEFAULT_LINE_COUNT);
+    const back = clampLineCount(formation.backCount, DEFAULT_LINE_COUNT);
+    const posKey = positionKeyFromCourtIndex(index, front, middle, back);
+    position = TEMP_POSITION_LABELS[posKey];
+  }
   return {
     id: real,
     name,
     badge,
-    position: position || undefined,
+    position,
     isCaptain: !!meta?.isCaptain,
   };
 }
@@ -70,7 +71,6 @@ async function loadPlayerMetaMap(ids: string[]): Promise<Record<string, PlayerMe
     if (!row?.id) return;
     map[row.id] = {
       name: getSafeDisplayName(row) || '',
-      position: formatProfilePosition(row.position),
       isCaptain: !!(row.is_captain || row.isCaptain || row.captain),
     };
   });
@@ -86,11 +86,11 @@ function formationToView(teamName: string, formation: SetFormation, metaMap: Rec
   while (courtSlots.length < slotTotal) courtSlots.push('');
   const court = courtSlots
     .slice(0, slotTotal)
-    .map((id, index) => toPlayer(id, index, metaMap))
+    .map((id, index) => toPlayer(id, index, formation, metaMap, 'court'))
     .filter((p): p is LineupPlayerView => !!p && !!p.name);
   const courtIds = new Set(court.map((p) => p.id));
   const bench = (formation.bench || [])
-    .map((id, index) => toPlayer(id, index, metaMap))
+    .map((id, index) => toPlayer(id, index, null, metaMap, 'bench'))
     .filter((p): p is LineupPlayerView => !!p && !!p.name && !courtIds.has(p.id));
   return { teamName, court, bench };
 }

@@ -50,36 +50,45 @@ function PlgPromoBanner() {
 
   if (!isBannerVisible) return null;
 
+  const webFixed = Platform.OS === 'web'
+    ? { position: 'fixed' as any, zIndex: 1000, elevation: 1000 }
+    : null;
+
   return (
-    <View style={[styles.plgBanner, compact && styles.plgBannerCompact]} pointerEvents="box-none">
-      <View style={[styles.plgCard, compact && styles.plgCardCompact]}>
-        <TouchableOpacity
-          style={styles.plgCloseBtn}
-          onPress={() => setIsBannerVisible(false)}
-          hitSlop={8}
-          accessibilityRole="button"
-          accessibilityLabel="배너 닫기"
-        >
-          <Text style={styles.plgCloseText}>✕</Text>
-        </TouchableOpacity>
-        <View style={styles.plgCopy}>
-          <Text style={[styles.plgTitle, compact && styles.plgTitleCompact]}>🏐 우리 팀 경기 기록, 더 스마트하게</Text>
-          <Text style={[styles.plgSub, compact && styles.plgSubCompact]}>선수 교체부터 개인 스탯까지 빠르고 간편하게!</Text>
-          <View style={[styles.plgCtaRow, compact && styles.plgCtaRowCompact]}>
-            <TouchableOpacity
-              style={[styles.plgCta, compact && styles.plgCtaCompact]}
-              onPress={() => router.push('/login')}
-              activeOpacity={0.85}
-            >
-              <Text style={[styles.plgCtaText, compact && styles.plgCtaTextCompact]}>3초만에 간편 등록하기</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[styles.plgCta, styles.plgCtaSecondary, compact && styles.plgCtaCompact]}
-              onPress={handleDownload}
-              activeOpacity={0.85}
-            >
-              <Text style={[styles.plgCtaText, compact && styles.plgCtaTextCompact]}>앱 다운로드</Text>
-            </TouchableOpacity>
+    <View
+      style={[styles.plgOverlay, webFixed]}
+      pointerEvents="box-none"
+    >
+      <View style={[styles.plgBanner, compact && styles.plgBannerCompact]} pointerEvents="box-none">
+        <View style={[styles.plgCard, compact && styles.plgCardCompact]} pointerEvents="auto">
+          <TouchableOpacity
+            style={styles.plgCloseBtn}
+            onPress={() => setIsBannerVisible(false)}
+            hitSlop={8}
+            accessibilityRole="button"
+            accessibilityLabel="배너 닫기"
+          >
+            <Text style={styles.plgCloseText}>✕</Text>
+          </TouchableOpacity>
+          <View style={styles.plgCopy}>
+            <Text style={[styles.plgTitle, compact && styles.plgTitleCompact]}>🏐 우리 팀 경기 기록, 더 스마트하게</Text>
+            <Text style={[styles.plgSub, compact && styles.plgSubCompact]}>선수 교체부터 개인 스탯까지 빠르고 간편하게!</Text>
+            <View style={[styles.plgCtaRow, compact && styles.plgCtaRowCompact]}>
+              <TouchableOpacity
+                style={[styles.plgCta, compact && styles.plgCtaCompact]}
+                onPress={() => router.push('/login')}
+                activeOpacity={0.85}
+              >
+                <Text style={[styles.plgCtaText, compact && styles.plgCtaTextCompact]}>3초만에 간편 등록하기</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.plgCta, styles.plgCtaSecondary, compact && styles.plgCtaCompact]}
+                onPress={handleDownload}
+                activeOpacity={0.85}
+              >
+                <Text style={[styles.plgCtaText, compact && styles.plgCtaTextCompact]}>앱 다운로드</Text>
+              </TouchableOpacity>
+            </View>
           </View>
         </View>
       </View>
@@ -325,15 +334,19 @@ const styles = StyleSheet.create({
   lineupModalBackdrop: {
     flex: 1,
     backgroundColor: 'rgba(9, 10, 15, 0.95)',
-    justifyContent: 'flex-end',
-    padding: 10,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 12,
+    paddingVertical: 24,
   },
   lineupModalSheet: {
     backgroundColor: '#0F172A',
     borderRadius: 14,
     padding: 12,
     width: '100%',
+    maxWidth: 720,
     minHeight: 280,
+    marginTop: -32,
   },
   lineupModalHeader: {
     flexDirection: 'row',
@@ -401,11 +414,21 @@ const styles = StyleSheet.create({
   lineupDimmed: {
     opacity: 0.35,
   },
+  plgOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    zIndex: 1000,
+    elevation: 1000,
+  },
   plgBanner: {
     position: 'absolute',
     right: 16,
     bottom: 16,
-    zIndex: 40,
+    zIndex: 1000,
+    elevation: 1000,
   },
   plgBannerCompact: {
     right: 8,
