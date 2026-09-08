@@ -504,7 +504,7 @@ function overlayLiveScoresFromEvents(sets: MatchSetRecord[], _events: MatchEvent
   return sets;
 }
 
-function liveIndexFromSets(sets: MatchSetRecord[], matchFinished: boolean): number {
+export function liveIndexFromSets(sets: MatchSetRecord[], matchFinished: boolean): number {
   if (sets.length === 0) return 0;
   if (matchFinished || isBestOfFiveDecided(sets.filter((s) => s.isClosed))) {
     return Math.max(0, sets.filter((s) => s.isClosed).length - 1, 0);
@@ -512,6 +512,24 @@ function liveIndexFromSets(sets: MatchSetRecord[], matchFinished: boolean): numb
   const openIdx = sets.findIndex((s) => !s.isClosed);
   if (openIdx >= 0) return openIdx;
   return Math.max(0, sets.length - 1);
+}
+
+/** 관전 전광판용. SELECT 만 하고 upsert 하지 않는다. */
+export async function listMatchSetsReadOnly(matchId: string): Promise<MatchSetRecord[]> {
+  const { data: setRows, error } = await supabase
+    .from('match_sets')
+    .select('set_number, host_score, away_score, host_lineup, away_lineup, is_closed')
+    .eq('match_id', matchId)
+    .order('set_number', { ascending: true });
+  if (error || !setRows || setRows.length === 0) return [];
+  return normalizeSetRecords(setRows.map((row: any) => ({
+    setNumber: Number(row.set_number) || 1,
+    hostScore: Number(row.host_score) || 0,
+    awayScore: Number(row.away_score) || 0,
+    hostLineup: asStringArray(row.host_lineup),
+    awayLineup: asStringArray(row.away_lineup),
+    isClosed: !!row.is_closed,
+  })));
 }
 
 function pushEmptySet(

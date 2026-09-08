@@ -12,6 +12,7 @@ import {
   StatusBar,
   Platform,
   ScrollView,
+  useWindowDimensions,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter, useLocalSearchParams, useFocusEffect } from 'expo-router';
@@ -42,6 +43,7 @@ import {
   upsertMatchSets,
   lastScoreForSetFromEvents,
   fetchSetScoreFromDb,
+  listMatchSetsReadOnly,
   type MatchSetRecord,
 } from '../lib/matchSets';
 
@@ -213,6 +215,17 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
   const onOpenLineup = props.onOpenLineup;
 
   const { session } = useAuth();
+  const { width: windowWidth } = useWindowDimensions();
+  const isPcWeb = Platform.OS === 'web' && windowWidth >= 1024;
+  const scoreFontSize = useMemo(() => {
+    if (!isPcWeb) return 160;
+    const boardW = isSpectatorForced
+      ? Math.min(1200, Math.max(320, windowWidth - 472))
+      : Math.min(1200, windowWidth);
+    const fitted = Math.floor((boardW / 2) * 0.68);
+    return Math.max(160, Math.min(320, fitted));
+  }, [isPcWeb, isSpectatorForced, windowWidth]);
+  const scoreLineHeight = Math.round(scoreFontSize * 1.03);
   const insets = useSafeAreaInsets();
   const safeTop = typeof insets.top === 'number' && !Number.isNaN(insets.top) ? insets.top : 0;
   const safeBottom = typeof insets.bottom === 'number' && !Number.isNaN(insets.bottom) ? insets.bottom : 0;
@@ -557,36 +570,46 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
 
     const pullEventsFromDb = pullSpectatorEvents;
 
+    const pullSpectatorSets = async () => {
+      if (!matchId) return;
+      const listed = await listMatchSetsReadOnly(matchId);
+      const loaded = normalizeSetRecords(listed.length > 0 ? listed : [makeInitialLiveSet()]);
+      setMatchSets(loaded);
+      const closedStrs = loaded.filter((s) => s.isClosed).map((s) => `${s.hostScore}:${s.awayScore}`);
+      setSetScoresHistory(closedStrs);
+      setHistoryRef.current = closedStrs;
+      const openIdxs = loaded.map((s, i) => (s.isClosed ? -1 : i)).filter((i) => i >= 0);
+      const liveIdx = openIdxs.length > 0 ? openIdxs[openIdxs.length - 1] : Math.max(0, loaded.length - 1);
+      currentSetIndexRef.current = liveIdx;
+      setCurrentSetIndex(liveIdx);
+      const live = loaded[liveIdx] || loaded[0];
+      setCurrentScores({
+        host: Number(live?.hostScore) || 0,
+        away: Number(live?.awayScore) || 0,
+      });
+    };
+
+    let setsPullTimer: ReturnType<typeof setTimeout> | null = null;
+    const schedulePullSpectatorSets = () => {
+      if (setsPullTimer) clearTimeout(setsPullTimer);
+      setsPullTimer = setTimeout(() => { void pullSpectatorSets(); }, 80);
+    };
+
     const applyRealtimeSetScore = (row?: {
       set_number?: number;
       host_score?: number;
       away_score?: number;
       is_closed?: boolean;
     }) => {
-      if (!row) return;
-      const setNumber = Number(row.set_number);
-      const host = Number(row.host_score) || 0;
-      const away = Number(row.away_score) || 0;
-      const viewing = currentSetIndexRef.current + 1;
-
-      if (Number.isFinite(setNumber) && setNumber !== viewing) {
-        if (!row.is_closed && setNumber > viewing) {
-          currentSetIndexRef.current = setNumber - 1;
-          setCurrentSetIndex(setNumber - 1);
+      if (row) {
+        const setNumber = Number(row.set_number);
+        const host = Number(row.host_score) || 0;
+        const away = Number(row.away_score) || 0;
+        if (Number.isFinite(setNumber) && setNumber === currentSetIndexRef.current + 1 && row.is_closed !== true) {
           setCurrentScores({ host, away });
         }
-        void pullEventsFromDb();
-        return;
       }
-      if (row.is_closed === true) {
-        const nextIdx = currentSetIndexRef.current + 1;
-        currentSetIndexRef.current = nextIdx;
-        setCurrentSetIndex(nextIdx);
-        setCurrentScores({ host: 0, away: 0 });
-        void pullEventsFromDb();
-        return;
-      }
-      setCurrentScores({ host, away });
+      schedulePullSpectatorSets();
       void pullEventsFromDb();
     };
 
@@ -603,13 +626,22 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'match_sets', filter: `match_id=eq.${matchId}` }, (payload) => {
         applyRealtimeSetScore(payload?.new as any);
       })
+      .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'match_sets', filter: `match_id=eq.${matchId}` }, () => {
+        schedulePullSpectatorSets();
+        void pullEventsFromDb();
+      })
       .subscribe();
 
+    void pullSpectatorSets();
     void pullEventsFromDb();
     const pollMs = Platform.OS === 'web' ? 1500 : 0;
-    const pollId = pollMs > 0 ? setInterval(() => { void pullEventsFromDb(); }, pollMs) : null;
+    const pollId = pollMs > 0 ? setInterval(() => {
+      void pullSpectatorSets();
+      void pullEventsFromDb();
+    }, pollMs) : null;
 
     return () => {
+      if (setsPullTimer) clearTimeout(setsPullTimer);
       if (pollId) clearInterval(pollId);
       supabase.removeChannel(matchChannel);
       supabase.removeChannel(eventChannel);
@@ -1994,7 +2026,7 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
             activeOpacity={0.8}
           >
             <View style={styles.scoreCenterWrap}>
-              <Text style={styles.bigScoreNumber}>{leftTeamData.score}</Text>
+              <Text style={[styles.bigScoreNumber, { fontSize: scoreFontSize, lineHeight: scoreLineHeight }]}>{leftTeamData.score}</Text>
               {leftTeamData.canControl ? (
                 <Text style={styles.editHintText}>터치하여 +1점 득점</Text>
               ) : (
@@ -2028,7 +2060,7 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
             activeOpacity={0.8}
           >
             <View style={styles.scoreCenterWrap}>
-              <Text style={styles.bigScoreNumber}>{rightTeamData.score}</Text>
+              <Text style={[styles.bigScoreNumber, { fontSize: scoreFontSize, lineHeight: scoreLineHeight }]}>{rightTeamData.score}</Text>
               {rightTeamData.canControl ? (
                 <Text style={styles.editHintText}>터치하여 +1점 득점</Text>
               ) : (
