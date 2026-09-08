@@ -202,6 +202,7 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
   const [tempAwayScore, setTempAwayScore] = useState(0);
 
   const [finishModalVisible, setFinishModalVisible] = useState(false);
+  const [finishSetConfirmVisible, setFinishSetConfirmVisible] = useState(false);
   const [reportModalVisible, setReportModalVisible] = useState(false);
   const [timelineEpoch, setTimelineEpoch] = useState(0);
   const [pendingDeleteSet, setPendingDeleteSet] = useState<number | null>(null);
@@ -213,6 +214,7 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
   const didAutofillSet1Ref = useRef(false);
   const matchClosedRef = useRef(false);
   const hydrateGenRef = useRef(0);
+  const finishSetBusyRef = useRef(false);
   const currentSetIndexRef = useRef(currentSetIndex);
   currentSetIndexRef.current = currentSetIndex;
 
@@ -331,6 +333,31 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
       setHistoryRef.current = nextHistory;
     }
   }, []);
+
+  useFocusEffect(
+    useCallback(() => {
+      if (!matchId) return;
+      let cancelled = false;
+      const loadLiveScoreFromDb = async () => {
+        const idx = currentSetIndexRef.current;
+        const { data } = await supabase
+          .from('match_sets')
+          .select('host_score, away_score, set_number')
+          .eq('match_id', matchId)
+          .eq('set_number', idx + 1)
+          .maybeSingle();
+        if (cancelled) return;
+        applySetScoreToState(idx, {
+          host: Number((data as any)?.host_score) || 0,
+          away: Number((data as any)?.away_score) || 0,
+        });
+      };
+      void loadLiveScoreFromDb();
+      return () => {
+        cancelled = true;
+      };
+    }, [matchId, applySetScoreToState])
+  );
 
   const persistRecalculatedSetScore = async (allEvents: MatchEvent[], setIndex: number) => {
     if (!matchId) return lastScoreForSetFromEvents(allEvents, setIndex);
@@ -470,26 +497,23 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
       })
       .subscribe();
 
+    const applyRealtimeSetScore = (payload: { new?: { set_number?: number; host_score?: number; away_score?: number } }) => {
+      const row = payload?.new;
+      if (!row) return;
+      const setNumber = Number(row.set_number);
+      if (Number.isFinite(setNumber) && setNumber !== currentSetIndexRef.current + 1) return;
+      setCurrentScores({
+        host: Number(row.host_score) || 0,
+        away: Number(row.away_score) || 0,
+      });
+    };
+
     const setScoreChannel = supabase.channel(`match_sets_${matchId}`)
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'match_sets', filter: `match_id=eq.${matchId}` }, (payload) => {
-        const row = payload?.new as { set_number?: number; host_score?: number; away_score?: number } | undefined;
-        if (!row || row.set_number == null) return;
-        const setNumber = Number(row.set_number);
-        if (setNumber !== currentSetIndexRef.current + 1) return;
-        setCurrentScores({
-          host: Number(row.host_score) || 0,
-          away: Number(row.away_score) || 0,
-        });
+        applyRealtimeSetScore(payload as { new?: { set_number?: number; host_score?: number; away_score?: number } });
       })
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'match_sets', filter: `match_id=eq.${matchId}` }, (payload) => {
-        const row = payload?.new as { set_number?: number; host_score?: number; away_score?: number } | undefined;
-        if (!row || row.set_number == null) return;
-        const setNumber = Number(row.set_number);
-        if (setNumber !== currentSetIndexRef.current + 1) return;
-        setCurrentScores({
-          host: Number(row.host_score) || 0,
-          away: Number(row.away_score) || 0,
-        });
+        applyRealtimeSetScore(payload as { new?: { set_number?: number; host_score?: number; away_score?: number } });
       })
       .subscribe();
 
@@ -1216,59 +1240,84 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
     ]);
   };
 
-  const handleFinishSet = async () => {
-    if (myRole === 'spectator') return;
+  const executeFinishSet = async () => {
+    if (myRole === 'spectator' || finishSetBusyRef.current) return;
+    finishSetBusyRef.current = true;
+    setFinishSetConfirmVisible(false);
+    setActionLoading(true);
+    try {
+      if (matchId) {
+        await updateMatchSetScoreNow(matchId, currentSetIndex, currentScores.host, currentScores.away);
+        await supabase
+          .from('match_sets')
+          .update({
+            host_score: currentScores.host,
+            away_score: currentScores.away,
+            is_closed: true,
+          })
+          .eq('match_id', matchId)
+          .eq('set_number', currentSetIndex + 1);
+      }
+
+      let updatedHistory = [...setHistory];
+      if (currentSetIndex < updatedHistory.length) {
+        updatedHistory[currentSetIndex] = `${currentScores.host}:${currentScores.away}`;
+      } else {
+        updatedHistory.push(`${currentScores.host}:${currentScores.away}`);
+      }
+
+      const canAdvance = updatedHistory.length < MAX_SETS;
+      const hostCarried = seedNextSetFormation(parseSetFormationMap(match?.host_roster), currentSetIndex, true);
+      const awayCarried = seedNextSetFormation(parseSetFormationMap(match?.away_roster), currentSetIndex, true);
+      setMatch((prev) => prev ? {
+        ...prev,
+        host_roster: JSON.stringify(hostCarried),
+        away_roster: JSON.stringify(awayCarried),
+      } : prev);
+      await persistSetsFromHistory(
+        updatedHistory,
+        canAdvance ? { host: 0, away: 0 } : null,
+        undefined,
+        { host: hostCarried, away: awayCarried },
+      );
+      await flushScoreLogsSnapshot();
+
+      setSetScoresHistory(updatedHistory);
+      setHistoryRef.current = updatedHistory;
+      setMatch((prev) => prev ? { ...prev, set_scores: updatedHistory.join(', ') } : prev);
+
+      if (canAdvance) {
+        const nextIndex = updatedHistory.length;
+        setCurrentSetIndex(nextIndex);
+        currentSetIndexRef.current = nextIndex;
+        setCurrentScores({ host: 0, away: 0 });
+      } else {
+        const stayIdx = Math.max(0, Math.min(currentSetIndex, updatedHistory.length - 1));
+        setCurrentSetIndex(stayIdx);
+        currentSetIndexRef.current = stayIdx;
+      }
+      resetSetUiState();
+    } catch (err: any) {
+      Alert.alert('오류', err?.message || '세트 마감에 실패했습니다.');
+    } finally {
+      finishSetBusyRef.current = false;
+      setActionLoading(false);
+    }
+  };
+
+  const handleFinishSet = () => {
+    if (myRole === 'spectator' || actionLoading) return;
+    if (Platform.OS === 'web') {
+      setFinishSetConfirmVisible(true);
+      return;
+    }
     Alert.alert(
-      `🏁 ${currentSetIndex + 1}세트 마감`,
-      `현재 점수 [${displayHostName} ${currentScores.host} : ${currentScores.away} ${displayAwayName}]\n${currentSetIndex + 1}세트를 마감하시겠습니까?`,
+      `${currentSetIndex + 1}세트를 마감하시겠습니까?`,
+      `현재 점수 [${displayHostName} ${currentScores.host} : ${currentScores.away} ${displayAwayName}]`,
       [
         { text: '취소', style: 'cancel' },
-        {
-          text: '세트 마감', onPress: async () => {
-            setActionLoading(true);
-            try {
-              let updatedHistory = [...setHistory];
-              if (currentSetIndex < updatedHistory.length) {
-                updatedHistory[currentSetIndex] = `${currentScores.host}:${currentScores.away}`;
-              } else {
-                updatedHistory.push(`${currentScores.host}:${currentScores.away}`);
-              }
-
-              const canAdvance = updatedHistory.length < MAX_SETS;
-              const hostCarried = seedNextSetFormation(parseSetFormationMap(match?.host_roster), currentSetIndex, true);
-              const awayCarried = seedNextSetFormation(parseSetFormationMap(match?.away_roster), currentSetIndex, true);
-              setMatch((prev) => prev ? {
-                ...prev,
-                host_roster: JSON.stringify(hostCarried),
-                away_roster: JSON.stringify(awayCarried),
-              } : prev);
-              await persistSetsFromHistory(
-                updatedHistory,
-                canAdvance ? { host: 0, away: 0 } : null,
-                undefined,
-                { host: hostCarried, away: awayCarried },
-              );
-              await flushScoreLogsSnapshot();
-
-              setSetScoresHistory(updatedHistory);
-              setHistoryRef.current = updatedHistory;
-              setMatch((prev) => prev ? { ...prev, set_scores: updatedHistory.join(', ') } : prev);
-
-              if (canAdvance) {
-                const nextIndex = updatedHistory.length;
-                setCurrentSetIndex(nextIndex);
-                currentSetIndexRef.current = nextIndex;
-                setCurrentScores({ host: 0, away: 0 });
-              } else {
-                const stayIdx = Math.max(0, Math.min(currentSetIndex, updatedHistory.length - 1));
-                setCurrentSetIndex(stayIdx);
-                currentSetIndexRef.current = stayIdx;
-              }
-              resetSetUiState();
-            } catch (err: any) {} finally { setActionLoading(false); }
-          }
-        }
-      ]
+        { text: '확인', onPress: () => { void executeFinishSet(); } },
+      ],
     );
   };
 
@@ -1997,6 +2046,33 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
             <View style={styles.modalBtnRow}>
               <TouchableOpacity style={styles.modalCancelBtn} onPress={() => setEditModalVisible(false)}><Text style={styles.modalCancelBtnText}>취소</Text></TouchableOpacity>
               <TouchableOpacity style={styles.modalSaveBtn} onPress={handleSaveManualScores}><Text style={styles.modalSaveBtnText}>점수 반영</Text></TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal visible={finishSetConfirmVisible} animationType="fade" transparent={true} onRequestClose={() => setFinishSetConfirmVisible(false)}>
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>{currentSetIndex + 1}세트를 마감하시겠습니까?</Text>
+            <Text style={styles.modalSub}>
+              현재 점수 [{displayHostName} {currentScores.host} : {currentScores.away} {displayAwayName}]
+            </Text>
+            <View style={styles.modalBtnRow}>
+              <TouchableOpacity
+                style={styles.modalCancelBtn}
+                onPress={() => setFinishSetConfirmVisible(false)}
+                disabled={actionLoading}
+              >
+                <Text style={styles.modalCancelBtnText}>취소</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.modalSaveBtn}
+                onPress={() => { void executeFinishSet(); }}
+                disabled={actionLoading}
+              >
+                <Text style={styles.modalSaveBtnText}>확인</Text>
+              </TouchableOpacity>
             </View>
           </View>
         </View>
