@@ -218,13 +218,13 @@ export default function MatchPostgameReportModal({
   const [activeSetIndex, setActiveSetIndex] = useState(0);
   const [hostTeamType, setHostTeamType] = useState<'school' | 'club'>('school');
   const [awayTeamType, setAwayTeamType] = useState<'school' | 'club'>('club');
-  const [showAllPlayers, setShowAllPlayers] = useState(true);
+  const [showAllPlayers, setShowAllPlayers] = useState(false);
 
   useEffect(() => {
     if (visible && match?.id) {
       setActiveTab('card');
       setActiveSetIndex(0);
-      setShowAllPlayers(true);
+      setShowAllPlayers(false);
       if (initialEvents && initialEvents.length > 0) {
         setEvents(initialEvents);
       } else {

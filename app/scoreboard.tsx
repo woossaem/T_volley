@@ -97,11 +97,31 @@ function mapScoreLogToEvent(log: any, matchId: string, fallbackId: string): Matc
   };
 }
 
+function normalizeMatchEvent(row: any): MatchEvent | null {
+  if (!row) return null;
+  const id = row.id != null ? String(row.id) : '';
+  if (!id) return null;
+  return {
+    id,
+    match_id: row.match_id,
+    set_index: setIndexFromScoreLog(row),
+    event_type: row.event_type,
+    team_type: row.team_type,
+    player_id: row.player_id ?? null,
+    player_name: row.player_name ?? null,
+    sub_out_id: row.sub_out_id ?? null,
+    sub_out_name: row.sub_out_name ?? null,
+    host_score: Number(row.host_score) || 0,
+    away_score: Number(row.away_score) || 0,
+    is_canceled: !!row.is_canceled,
+  };
+}
+
 function mergeEventsWithScoreLogs(tableEvents: MatchEvent[], scoreLogs: any[], matchId: string): MatchEvent[] {
   const mapped = (Array.isArray(scoreLogs) ? scoreLogs : []).map((log, i) => (
     mapScoreLogToEvent(log, matchId, `log-${i}`)
   ));
-  const table = Array.isArray(tableEvents) ? tableEvents : [];
+  const table = asArray<any>(tableEvents).map(normalizeMatchEvent).filter(Boolean) as MatchEvent[];
   if (table.length === 0) return mapped;
   const ids = new Set(table.map((e) => String(e.id)));
   const extras = mapped.filter((e) => !ids.has(String(e.id)));
@@ -433,7 +453,7 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
 
         const { data: evData } = await supabase.from('match_events').select('*').eq('match_id', matchId).order('created_at', { ascending: true });
         const scoreLogs = asArray((data as any)?.score_logs);
-        const mergedEvents = mergeEventsWithScoreLogs(asArray<MatchEvent>(evData), scoreLogs, matchId);
+        const mergedEvents = mergeEventsWithScoreLogs(asArray<any>(evData), scoreLogs, matchId);
         setEvents(mergedEvents);
 
         const applyIdx = currentSetIndexRef.current;
@@ -485,44 +505,131 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
       })
       .subscribe();
 
-    const eventChannel = supabase.channel(`events_${matchId}`)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'match_events', filter: `match_id=eq.${matchId}` }, async () => {
-        const { data } = await supabase.from('match_events').select('*').eq('match_id', matchId).order('created_at', { ascending: true });
-        setEvents(asArray<MatchEvent>(data));
-        if (isSpectatorForced) {
-          const idx = currentSetIndexRef.current;
-          const fromDb = await fetchSetScoreFromDb(matchId, idx);
-          if (fromDb) applySetScoreToState(idx, fromDb);
-        }
-      })
-      .subscribe();
+    const pullEventsFromDb = async () => {
+      const { data, error } = await supabase
+        .from('match_events')
+        .select('*')
+        .eq('match_id', matchId)
+        .order('created_at', { ascending: true });
+      if (error) return;
+      const next = asArray<any>(data).map(normalizeMatchEvent).filter(Boolean) as MatchEvent[];
+      setEvents(next);
+    };
 
-    const applyRealtimeSetScore = (payload: { new?: { set_number?: number; host_score?: number; away_score?: number } }) => {
-      const row = payload?.new;
-      if (!row) return;
-      const setNumber = Number(row.set_number);
-      if (Number.isFinite(setNumber) && setNumber !== currentSetIndexRef.current + 1) return;
-      setCurrentScores({
-        host: Number(row.host_score) || 0,
-        away: Number(row.away_score) || 0,
+    const applyEventRealtime = (payload: { eventType?: string; event?: string; new?: any; old?: any }) => {
+      const type = String(payload?.eventType || payload?.event || '').toUpperCase();
+      if (type === 'DELETE') {
+        const deletedId = payload?.old?.id;
+        if (deletedId != null) {
+          setEvents((prev) => prev.filter((e) => String(e.id) !== String(deletedId)));
+        }
+        return;
+      }
+      const ev = normalizeMatchEvent(payload?.new);
+      if (!ev) return;
+      setEvents((prev) => {
+        const idx = prev.findIndex((e) => String(e.id) === String(ev.id));
+        if (idx >= 0) {
+          const next = [...prev];
+          next[idx] = { ...prev[idx], ...ev };
+          return next;
+        }
+        return [...prev, ev];
       });
     };
 
-    const setScoreChannel = supabase.channel(`match_sets_${matchId}`)
-      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'match_sets', filter: `match_id=eq.${matchId}` }, (payload) => {
-        applyRealtimeSetScore(payload as { new?: { set_number?: number; host_score?: number; away_score?: number } });
-      })
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'match_sets', filter: `match_id=eq.${matchId}` }, (payload) => {
-        applyRealtimeSetScore(payload as { new?: { set_number?: number; host_score?: number; away_score?: number } });
+    const jumpSpectatorToSet = (idx: number, score?: { host: number; away: number }) => {
+      if (!isSpectatorForced) return;
+      const nextIdx = Math.max(0, idx);
+      currentSetIndexRef.current = nextIdx;
+      setCurrentSetIndex(nextIdx);
+      setCurrentScores(score || { host: 0, away: 0 });
+      setMatchSets((prev) => {
+        const rows = prev.length > 0 ? [...prev] : [makeInitialLiveSet()];
+        if (!rows.some((s) => s.setNumber === nextIdx + 1)) {
+          rows.push({
+            setNumber: nextIdx + 1,
+            hostScore: score?.host || 0,
+            awayScore: score?.away || 0,
+            hostLineup: [],
+            awayLineup: [],
+            isClosed: false,
+          });
+        }
+        return normalizeSetRecords(rows);
+      });
+      resetSetUiState();
+    };
+
+    const applyRealtimeSetRow = (
+      row?: { set_number?: number; host_score?: number; away_score?: number; is_closed?: boolean },
+      kind: 'UPDATE' | 'INSERT' = 'UPDATE',
+    ) => {
+      if (!row || row.set_number == null) return;
+      const setNumber = Number(row.set_number);
+      if (!Number.isFinite(setNumber)) return;
+      const incomingIdx = setNumber - 1;
+      const host = Number(row.host_score) || 0;
+      const away = Number(row.away_score) || 0;
+      const closed = !!row.is_closed;
+
+      setMatchSets((prev) => {
+        const rows = prev.length > 0 ? [...prev] : [makeInitialLiveSet()];
+        const found = rows.findIndex((s) => s.setNumber === setNumber);
+        const patched = {
+          ...(found >= 0 ? rows[found] : { setNumber, hostLineup: [] as string[], awayLineup: [] as string[] }),
+          setNumber,
+          hostScore: host,
+          awayScore: away,
+          isClosed: closed,
+        };
+        if (found >= 0) rows[found] = { ...rows[found], ...patched };
+        else rows.push(patched);
+        return normalizeSetRecords(rows);
+      });
+
+      if (isSpectatorForced && closed && incomingIdx === currentSetIndexRef.current) {
+        jumpSpectatorToSet(incomingIdx + 1, { host: 0, away: 0 });
+      } else if (isSpectatorForced && !closed && incomingIdx > currentSetIndexRef.current && kind === 'INSERT') {
+        jumpSpectatorToSet(incomingIdx, { host, away });
+      } else if (setNumber === currentSetIndexRef.current + 1) {
+        setCurrentScores({ host, away });
+      }
+
+      if (isSpectatorForced) void pullEventsFromDb();
+    };
+
+    const eventChannel = supabase.channel(`events_${matchId}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'match_events', filter: `match_id=eq.${matchId}` }, (payload) => {
+        applyEventRealtime(payload as { eventType?: string; event?: string; new?: any; old?: any });
+        void pullEventsFromDb();
       })
       .subscribe();
 
+    const setScoreChannel = supabase.channel(`match_sets_${matchId}`)
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'match_sets', filter: `match_id=eq.${matchId}` }, (payload) => {
+        applyRealtimeSetRow(payload?.new as any, 'UPDATE');
+      })
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'match_sets', filter: `match_id=eq.${matchId}` }, (payload) => {
+        applyRealtimeSetRow(payload?.new as any, 'INSERT');
+      })
+      .subscribe();
+
+    let eventsPoll: ReturnType<typeof setInterval> | undefined;
+    if (isSpectatorForced) {
+      void pullEventsFromDb();
+      eventsPoll = setInterval(() => {
+        void pullEventsFromDb();
+      }, 1000);
+    }
+
     return () => {
+      if (eventsPoll) clearInterval(eventsPoll);
       supabase.removeChannel(matchChannel);
       supabase.removeChannel(eventChannel);
       supabase.removeChannel(setScoreChannel);
     };
-  }, [matchId, fetchMatchDetails, applySetScoreToState]);
+  }, [matchId, fetchMatchDetails, applySetScoreToState, isSpectatorForced, resetSetUiState]);
 
   const isSingleRecorderMode = isIntramural || myRole === 'integrated_recorder' || 
     (myRole === 'host_recorder' && !match?.recorder_away_id) || 
@@ -998,7 +1105,7 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
           .order('created_at', { ascending: true });
         if (!error) {
           tableOk = true;
-          tableEvents = asArray<MatchEvent>(evData);
+          tableEvents = asArray<any>(evData).map(normalizeMatchEvent).filter(Boolean) as MatchEvent[];
         }
       } catch {}
 
