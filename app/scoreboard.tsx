@@ -1703,23 +1703,16 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
             </ScrollView>
           </View>
 
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            style={styles.headerSlimRightScroll}
-            contentContainerStyle={styles.headerSlimRight}
-          >
+          <View style={styles.headerSlimRight}>
             <Text style={styles.recorderLine} numberOfLines={1}>{recorderLine}</Text>
             {myRole !== 'spectator' && (
               <TouchableOpacity style={styles.leaveRoleBtnSlim} onPress={handleLeaveRole} hitSlop={8}>
                 <Text style={styles.leaveRoleBtnTextSlim}>반납</Text>
               </TouchableOpacity>
             )}
-            {events.length > 0 && (
-              <TouchableOpacity style={styles.reportBtnSlim} onPress={() => setReportModalVisible(true)} hitSlop={8}>
-                <Text style={styles.reportBtnTextSlim}>📊 경기 리포트</Text>
-              </TouchableOpacity>
-            )}
+            <TouchableOpacity style={styles.reportBtnSlim} onPress={() => setReportModalVisible(true)} hitSlop={8}>
+              <Text style={styles.reportBtnTextSlim}>📊 경기 리포트</Text>
+            </TouchableOpacity>
             <TouchableOpacity style={styles.switchCourtBtnSlim} onPress={() => setIsSwapped(prev => !prev)} hitSlop={8}>
               <Text style={styles.switchCourtBtnTextSlim}>🔄 코트 변경</Text>
             </TouchableOpacity>
@@ -1728,7 +1721,7 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
                 <Text style={styles.lineupBtnTextSlim}>📋 라인업</Text>
               </TouchableOpacity>
             ) : null}
-          </ScrollView>
+          </View>
         </View>
       </View>
 
@@ -2020,7 +2013,7 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
           visible={reportModalVisible}
           onClose={() => {
             setReportModalVisible(false);
-            router.back();
+            if (!isSpectatorForced) router.back();
           }}
           match={match}
           initialEvents={events}
@@ -2038,9 +2031,9 @@ const styles = StyleSheet.create({
   },
   loadingContainer: { flex: 1, backgroundColor: '#020617', justifyContent: 'center', alignItems: 'center' },
   loadingText: { color: '#94A3B8', marginTop: 12, fontSize: 13, fontWeight: '700' },
-  headerBlock: { height: 38, flexShrink: 0, backgroundColor: '#0F172A', borderBottomWidth: 1, borderBottomColor: '#1E293B' },
-  headerSlim: { height: 38, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 10, paddingTop: 0, paddingBottom: 0 },
-  headerSlimLeft: { flexDirection: 'row', alignItems: 'center', gap: 6, flex: 1, minWidth: 0 },
+  headerBlock: { minHeight: 38, flexShrink: 0, backgroundColor: '#0F172A', borderBottomWidth: 1, borderBottomColor: '#1E293B', overflow: 'visible' },
+  headerSlim: { minHeight: 38, flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 6, paddingHorizontal: 10, paddingTop: 4, paddingBottom: 4 },
+  headerSlimLeft: { flexDirection: 'row', alignItems: 'center', gap: 6, flexGrow: 1, flexShrink: 1, minWidth: 120 },
   backBtnSlim: { width: 24, height: 24, justifyContent: 'center', alignItems: 'center' },
   backTextSlim: { fontSize: 26, color: '#FFFFFF', lineHeight: 26 },
   setTabScroll: { flexGrow: 0, flexShrink: 1 },
@@ -2054,16 +2047,24 @@ const styles = StyleSheet.create({
   setNavPillTextActive: { color: '#FFFFFF', fontWeight: '900' },
   setNavClose: { width: 16, height: 16, borderRadius: 8, alignItems: 'center', justifyContent: 'center', marginLeft: 2 },
   setNavCloseText: { color: '#FCA5A5', fontSize: 13, fontWeight: '900', lineHeight: 14 },
-  recorderLine: { fontSize: 11, color: '#E2E8F0', fontWeight: '800', textAlign: 'left', marginRight: 6, flexShrink: 1 },
-  headerSlimRightScroll: { flexGrow: 0, flexShrink: 1, minWidth: 0 },
-  headerSlimRight: { flexDirection: 'row', gap: 6, flexShrink: 0, minWidth: 0, justifyContent: 'flex-end', alignItems: 'center', paddingVertical: 0, paddingHorizontal: 8 },
-  reportBtnSlim: { backgroundColor: '#FEFCE8', paddingHorizontal: 6, paddingVertical: 3, borderRadius: 6, borderWidth: 1, borderColor: '#FDE047' },
+  recorderLine: { fontSize: 11, color: '#E2E8F0', fontWeight: '800', textAlign: 'left', marginRight: 2, flexShrink: 1, maxWidth: 140 },
+  headerSlimRight: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+    flexShrink: 0,
+    justifyContent: 'flex-end',
+    alignItems: 'center',
+    paddingVertical: 0,
+    ...(Platform.OS === 'web' ? { overflowX: 'auto' as any } : {}),
+  },
+  reportBtnSlim: { backgroundColor: '#FEFCE8', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6, borderWidth: 1, borderColor: '#FDE047', flexShrink: 0 },
   reportBtnTextSlim: { color: '#A16207', fontWeight: '800', fontSize: 10.5 },
-  leaveRoleBtnSlim: { backgroundColor: '#FEF2F2', paddingHorizontal: 6, paddingVertical: 3, borderRadius: 6, borderWidth: 1, borderColor: '#FECACA' },
+  leaveRoleBtnSlim: { backgroundColor: '#FEF2F2', paddingHorizontal: 6, paddingVertical: 3, borderRadius: 6, borderWidth: 1, borderColor: '#FECACA', flexShrink: 0 },
   leaveRoleBtnTextSlim: { color: '#DC2626', fontWeight: '800', fontSize: 10.5 },
-  switchCourtBtnSlim: { paddingHorizontal: 10, paddingVertical: 6, backgroundColor: '#F1F5F9', borderRadius: 8 },
+  switchCourtBtnSlim: { paddingHorizontal: 8, paddingVertical: 4, backgroundColor: '#F1F5F9', borderRadius: 8, flexShrink: 0 },
   switchCourtBtnTextSlim: { color: '#334155', fontWeight: '800', fontSize: 11 },
-  lineupBtnSlim: { paddingHorizontal: 8, paddingVertical: 4, backgroundColor: '#1E3A8A', borderRadius: 8 },
+  lineupBtnSlim: { paddingHorizontal: 8, paddingVertical: 4, backgroundColor: '#1E3A8A', borderRadius: 8, flexShrink: 0 },
   lineupBtnTextSlim: { color: '#DBEAFE', fontWeight: '800', fontSize: 11 },
   scoreboardMainGrid: { flex: 1, minHeight: 160, flexDirection: 'row', width: '100%', backgroundColor: '#020617' },
   teamCourtHalf: { flex: 1, flexShrink: 0, minWidth: 0, position: 'relative', padding: 0, margin: 0 },

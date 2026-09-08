@@ -18,7 +18,6 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 
 type PlayerMeta = {
   name: string;
-  isCaptain?: boolean;
 };
 
 function intramuralNames(description?: string | null): { host: string; away: string } | null {
@@ -54,7 +53,6 @@ function toPlayer(
     name,
     badge,
     position,
-    isCaptain: !!meta?.isCaptain,
   };
 }
 
@@ -67,13 +65,12 @@ function collectIds(formation: SetFormation): string[] {
 async function loadPlayerMetaMap(ids: string[]): Promise<Record<string, PlayerMeta>> {
   const unique = [...new Set(ids)];
   if (unique.length === 0) return {};
-  const { data } = await supabase.from('profiles').select('*').in('id', unique);
+  const { data } = await supabase.from('profiles').select('id, full_name').in('id', unique);
   const map: Record<string, PlayerMeta> = {};
   (data || []).forEach((row: any) => {
     if (!row?.id) return;
     map[row.id] = {
       name: getSafeDisplayName(row) || '',
-      isCaptain: !!(row.is_captain || row.isCaptain || row.captain),
     };
   });
   return map;

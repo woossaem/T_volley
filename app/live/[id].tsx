@@ -56,11 +56,10 @@ function PlgPromoBanner() {
 
   return (
     <View
-      style={[styles.plgOverlay, webFixed]}
+      style={[styles.plgBanner, compact && styles.plgBannerCompact, webFixed]}
       pointerEvents="box-none"
     >
-      <View style={[styles.plgBanner, compact && styles.plgBannerCompact]} pointerEvents="box-none">
-        <View style={[styles.plgCard, compact && styles.plgCardCompact]} pointerEvents="auto">
+      <View style={[styles.plgCard, compact && styles.plgCardCompact]} pointerEvents="auto">
           <TouchableOpacity
             style={styles.plgCloseBtn}
             onPress={() => setIsBannerVisible(false)}
@@ -92,7 +91,6 @@ function PlgPromoBanner() {
           </View>
         </View>
       </View>
-    </View>
   );
 }
 
@@ -346,7 +344,8 @@ const styles = StyleSheet.create({
     width: '100%',
     maxWidth: 720,
     minHeight: 280,
-    marginTop: -32,
+    maxHeight: '85%',
+    overflow: 'hidden',
   },
   lineupModalHeader: {
     flexDirection: 'row',
@@ -414,26 +413,18 @@ const styles = StyleSheet.create({
   lineupDimmed: {
     opacity: 0.35,
   },
-  plgOverlay: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    zIndex: 1000,
-    elevation: 1000,
-  },
   plgBanner: {
     position: 'absolute',
     right: 16,
     bottom: 16,
     zIndex: 1000,
     elevation: 1000,
+    maxWidth: 360,
   },
   plgBannerCompact: {
     right: 8,
-    bottom: 8,
-    left: 8,
+    bottom: 88,
+    maxWidth: 280,
   },
   plgCard: {
     position: 'relative',
