@@ -6,7 +6,7 @@ export type LineupPlayerView = {
   name: string;
   badge: string;
   position?: string;
-  isSetter?: boolean;
+  isCaptain?: boolean;
 };
 
 export type TeamLineupView = {
@@ -42,10 +42,12 @@ export default function TeamLineupPanel({ team, lineup, side, variant = 'sidebar
             </View>
             <View style={styles.playerMeta}>
               <Text style={[styles.playerName, compact && styles.playerNameCompact]} numberOfLines={1}>{player.name}</Text>
-              <Text style={[styles.playerPos, compact && styles.playerPosCompact]} numberOfLines={1}>
-                {player.position || `${idx + 1}번`}
-                {player.isSetter ? ' · 세터' : ''}
-              </Text>
+              {(player.position || player.isCaptain) ? (
+                <Text style={[styles.playerPos, compact && styles.playerPosCompact]} numberOfLines={1}>
+                  {player.position || ''}
+                  {player.isCaptain ? <Text style={styles.captainMark}> (C)</Text> : null}
+                </Text>
+              ) : null}
             </View>
           </View>
         ))
@@ -168,6 +170,7 @@ const styles = StyleSheet.create({
   playerNameCompact: { fontSize: 11 },
   playerPos: { color: '#94A3B8', fontSize: 10, fontWeight: '700', marginTop: 1 },
   playerPosCompact: { fontSize: 9, marginTop: 0 },
+  captainMark: { color: '#94A3B8', fontSize: 9, fontWeight: '600' },
   benchDivider: {
     height: 1,
     backgroundColor: 'rgba(148, 163, 184, 0.25)',

@@ -42,6 +42,7 @@ import {
   upsertMatchSets,
   lastScoreForSetFromEvents,
   syncSetScoreFromRemainingEvents,
+  fetchSetScoreFromDb,
   type MatchSetRecord,
 } from '../lib/matchSets';
 
@@ -107,17 +108,14 @@ function mergeEventsWithScoreLogs(tableEvents: MatchEvent[], scoreLogs: any[], m
   return extras.length ? [...table, ...extras] : table;
 }
 
-function pickHydratedSetScore(
+function scoreFromMatchSetRow(
   setRow?: { hostScore?: number; awayScore?: number; host_score?: number; away_score?: number } | null,
-  fromEvents?: { host: number; away: number } | null,
 ): { host: number; away: number } | null {
-  if (!setRow && !fromEvents) return null;
-  const host = Number(setRow?.hostScore ?? setRow?.host_score);
-  const away = Number(setRow?.awayScore ?? setRow?.away_score);
-  const rowScore = setRow ? { host: host || 0, away: away || 0 } : null;
-  if (rowScore && (rowScore.host > 0 || rowScore.away > 0)) return rowScore;
-  if (fromEvents && (fromEvents.host > 0 || fromEvents.away > 0)) return fromEvents;
-  return rowScore || fromEvents || null;
+  if (!setRow) return null;
+  return {
+    host: Number(setRow.hostScore ?? setRow.host_score) || 0,
+    away: Number(setRow.awayScore ?? setRow.away_score) || 0,
+  };
 }
 
 export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
@@ -275,12 +273,10 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
     setCurrentScores({ host: next.host, away: next.away });
   }, []);
 
-  const persistRecalculatedSetScore = async (allEvents: MatchEvent[], setIndex: number) => {
-    if (!matchId) return lastScoreForSetFromEvents(allEvents, setIndex);
-    const score = await syncSetScoreFromRemainingEvents(matchId, allEvents, setIndex).catch(() => (
-      lastScoreForSetFromEvents(allEvents, setIndex)
-    ));
-    setCurrentScores((prev) => (setIndex === currentSetIndexRef.current ? { host: score.host, away: score.away } : prev));
+  const applySetScoreToState = useCallback((setIndex: number, score: { host: number; away: number }) => {
+    if (setIndex === currentSetIndexRef.current) {
+      setCurrentScores({ host: score.host, away: score.away });
+    }
     setMatchSets((prev) => prev.map((s) => (
       s.setNumber === setIndex + 1 ? { ...s, hostScore: score.host, awayScore: score.away } : s
     )));
@@ -297,6 +293,16 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
       setSetScoresHistory(nextHistory);
       setHistoryRef.current = nextHistory;
     }
+  }, []);
+
+  const persistRecalculatedSetScore = async (allEvents: MatchEvent[], setIndex: number) => {
+    if (!matchId) return lastScoreForSetFromEvents(allEvents, setIndex);
+    await syncSetScoreFromRemainingEvents(matchId, allEvents, setIndex).catch(() => (
+      lastScoreForSetFromEvents(allEvents, setIndex)
+    ));
+    const fromDb = await fetchSetScoreFromDb(matchId, setIndex);
+    const score = fromDb || lastScoreForSetFromEvents(allEvents, setIndex);
+    applySetScoreToState(setIndex, score);
     return score;
   };
 
@@ -365,15 +371,15 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
 
         const applyIdx = currentSetIndexRef.current;
         const setRec = loadedSets.find((s) => s.setNumber === applyIdx + 1) || loadedSets[applyIdx];
-        const picked = pickHydratedSetScore(setRec, lastScoreForSetFromEvents(mergedEvents, applyIdx));
-        if (picked) setCurrentScores(picked);
+        const fromSets = scoreFromMatchSetRow(setRec);
+        if (fromSets) setCurrentScores(fromSets);
       }
     } catch (err: any) {
       console.error('스코어보드 실패:', err);
     } finally {
       setLoading(false);
     }
-  }, [matchId, currentUserId, isSpectatorForced, recalcScores]);
+  }, [matchId, currentUserId, isSpectatorForced]);
 
   useEffect(() => {
     fetchMatchDetails();
@@ -408,21 +414,28 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
     const eventChannel = supabase.channel(`events_${matchId}`)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'match_events', filter: `match_id=eq.${matchId}` }, async () => {
         const { data } = await supabase.from('match_events').select('*').eq('match_id', matchId).order('created_at', { ascending: true });
-        const nextEvents = asArray<MatchEvent>(data);
-        if (nextEvents.length > 0) {
-          setEvents(nextEvents);
-          const idx = currentSetIndexRef.current;
-          const hasSetEvents = nextEvents.some((e: any) => Number(e?.set_index) === idx);
-          if (hasSetEvents) recalcScores(nextEvents, idx);
-        }
+        setEvents(asArray<MatchEvent>(data));
+      })
+      .subscribe();
+
+    const setScoreChannel = supabase.channel(`match_sets_${matchId}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'match_sets', filter: `match_id=eq.${matchId}` }, (payload) => {
+        const row = payload?.new as { set_number?: number; host_score?: number; away_score?: number } | undefined;
+        if (!row || row.set_number == null) return;
+        const setNumber = Number(row.set_number);
+        if (!Number.isFinite(setNumber) || setNumber < 1) return;
+        const score = scoreFromMatchSetRow(row);
+        if (!score) return;
+        applySetScoreToState(setNumber - 1, score);
       })
       .subscribe();
 
     return () => {
       supabase.removeChannel(matchChannel);
       supabase.removeChannel(eventChannel);
+      supabase.removeChannel(setScoreChannel);
     };
-  }, [matchId, fetchMatchDetails, recalcScores]);
+  }, [matchId, fetchMatchDetails, applySetScoreToState]);
 
   const isSingleRecorderMode = isIntramural || myRole === 'integrated_recorder' || 
     (myRole === 'host_recorder' && !match?.recorder_away_id) || 
@@ -909,9 +922,8 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
         return merged;
       });
 
-      const localSet = matchSets.find((s) => s.setNumber === idx + 1);
-      const picked = pickHydratedSetScore(setRow || localSet, lastScoreForSetFromEvents(merged, idx));
-      if (picked) setCurrentScores(picked);
+      const fromDb = scoreFromMatchSetRow(setRow || matchSets.find((s) => s.setNumber === idx + 1));
+      if (fromDb) setCurrentScores(fromDb);
     } catch (e) {
       console.error('세트 하이드레이션 실패:', e);
     }
@@ -957,8 +969,9 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
     currentSetIndexRef.current = idx;
     resetSetUiState();
     const localSet = matchSets.find((s) => s.setNumber === idx + 1);
-    const picked = pickHydratedSetScore(localSet, lastScoreForSetFromEvents(events, idx));
-    if (picked) setCurrentScores(picked);
+    const fromSets = scoreFromMatchSetRow(localSet);
+    if (fromSets) setCurrentScores(fromSets);
+    else setCurrentScores({ host: 0, away: 0 });
     void hydrateSetFromDb(idx);
   };
 

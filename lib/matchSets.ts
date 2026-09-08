@@ -122,6 +122,39 @@ export function lastScoreForSetFromEvents(events: MatchEventLike[], setIndex: nu
   return last;
 }
 
+function asHostAwayScore(row: { host_score?: number; away_score?: number } | null | undefined): { host: number; away: number } {
+  return {
+    host: Number(row?.host_score) || 0,
+    away: Number(row?.away_score) || 0,
+  };
+}
+
+/** 화면 점수의 Single Source of Truth: match_sets.host_score / away_score */
+export async function fetchSetScoreFromDb(
+  matchId: string,
+  setIndex: number,
+): Promise<{ host: number; away: number } | null> {
+  const setNumber = Math.max(1, setIndex + 1);
+  if (matchSetsTableAvailable) {
+    try {
+      const { data, error } = await supabase
+        .from('match_sets')
+        .select('host_score, away_score')
+        .eq('match_id', matchId)
+        .eq('set_number', setNumber)
+        .maybeSingle();
+      if (!error && data) return asHostAwayScore(data as any);
+      if (error) matchSetsTableAvailable = false;
+    } catch {
+      matchSetsTableAvailable = false;
+    }
+  }
+  const { data: matchRow } = await supabase.from('matches').select('set_scores').eq('id', matchId).maybeSingle();
+  const parts = parseSetScoresString(matchRow?.set_scores);
+  if (parts[setIndex]) return parts[setIndex];
+  return { host: 0, away: 0 };
+}
+
 /**
  * 점수 취소/타임라인 삭제 후 해당 세트만 재계산해 match_sets + matches.set_scores 에 반영.
  * winner_team / 다른 세트 라인업은 건드리지 않는다.
@@ -195,7 +228,8 @@ export async function syncSetScoreFromRemainingEvents(
   rows.sort((a, b) => a.set_number - b.set_number);
   const summary = formatSetScoresString(rows.map((r) => ({ hostScore: r.host_score, awayScore: r.away_score })));
   await supabase.from('matches').update({ set_scores: summary }).eq('id', matchId);
-  return score;
+  const saved = await fetchSetScoreFromDb(matchId, setIndex);
+  return saved || score;
 }
 
 export function lastScoresBySetFromEvents(events: MatchEventLike[]): { host: number; away: number }[] {
@@ -472,19 +506,8 @@ export function isMatchRecordingFinished(match: { status?: string; winner_team?:
   return false;
 }
 
-function overlayLiveScoresFromEvents(sets: MatchSetRecord[], events: MatchEventLike[]): MatchSetRecord[] {
-  if (!events.length) return sets;
-  const lastBySet = lastScoresBySetFromEvents(events);
-  return sets.map((set, idx) => {
-    const ev = lastBySet[idx];
-    if (!ev) return set;
-    if (set.isClosed && (set.hostScore > 0 || set.awayScore > 0)) return set;
-    return {
-      ...set,
-      hostScore: ev.host,
-      awayScore: ev.away,
-    };
-  });
+function overlayLiveScoresFromEvents(sets: MatchSetRecord[], _events: MatchEventLike[]): MatchSetRecord[] {
+  return sets;
 }
 
 function liveIndexFromSets(sets: MatchSetRecord[], matchFinished: boolean): number {

@@ -9,11 +9,17 @@ import {
   resolveFormationFromSources,
   type SetFormation,
 } from './roster';
-import { parseTempGuestNum, positionKeyFromCourtIndex, TEMP_POSITION_LABELS } from './tempPlayer';
+import { parseTempGuestNum, parseTempPositionKey, TEMP_POSITION_LABELS } from './tempPlayer';
 import { getSafeDisplayName, getSafeTeamName } from './utils';
 import type { LineupPlayerView, TeamLineupView } from '../components/TeamLineupPanel';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+type PlayerMeta = {
+  name: string;
+  position: string;
+  isCaptain?: boolean;
+};
 
 function intramuralNames(description?: string | null): { host: string; away: string } | null {
   const m = String(description || '').match(/^\[(.*?)\ VS (.*?)\]/);
@@ -21,22 +27,31 @@ function intramuralNames(description?: string | null): { host: string; away: str
   return { host: m[1] || 'A팀', away: m[2] || 'B팀' };
 }
 
-function toPlayer(id: string | null | undefined, index: number, formation: SetFormation, nameMap: Record<string, string>): LineupPlayerView | null {
+function formatProfilePosition(raw: unknown): string {
+  const text = String(raw || '').trim();
+  if (!text || text === '포지션 미설정') return '';
+  return text.split(' / ')[0].trim();
+}
+
+function toPlayer(
+  id: string | null | undefined,
+  index: number,
+  metaMap: Record<string, PlayerMeta>,
+): LineupPlayerView | null {
   const real = assignedUserId(id);
-  const front = clampLineCount(formation.frontCount, DEFAULT_LINE_COUNT);
-  const middle = clampLineCount(formation.middleCount, DEFAULT_LINE_COUNT);
-  const back = clampLineCount(formation.backCount, DEFAULT_LINE_COUNT);
-  const posKey = positionKeyFromCourtIndex(index, front, middle, back);
+  if (!real) return null;
   const guestNum = parseTempGuestNum(real);
   const badge = guestNum ? String(guestNum) : String(index + 1);
-  const name = (real && nameMap[real]) || displaySlotPlayerName(real, null);
-  if (!real) return null;
+  const meta = metaMap[real];
+  const name = meta?.name || displaySlotPlayerName(real, null);
+  const tempKey = parseTempPositionKey(real);
+  const position = meta?.position || (tempKey ? TEMP_POSITION_LABELS[tempKey] : '');
   return {
-    id: real || `slot-${index}`,
+    id: real,
     name,
     badge,
-    position: TEMP_POSITION_LABELS[posKey],
-    isSetter: posKey === 'setter',
+    position: position || undefined,
+    isCaptain: !!meta?.isCaptain,
   };
 }
 
@@ -46,19 +61,23 @@ function collectIds(formation: SetFormation): string[] {
     .filter((id): id is string => !!id && UUID_RE.test(id));
 }
 
-async function loadNameMap(ids: string[]): Promise<Record<string, string>> {
+async function loadPlayerMetaMap(ids: string[]): Promise<Record<string, PlayerMeta>> {
   const unique = [...new Set(ids)];
   if (unique.length === 0) return {};
   const { data } = await supabase.from('profiles').select('*').in('id', unique);
-  const map: Record<string, string> = {};
+  const map: Record<string, PlayerMeta> = {};
   (data || []).forEach((row: any) => {
-    const name = getSafeDisplayName(row);
-    if (row?.id && name) map[row.id] = name;
+    if (!row?.id) return;
+    map[row.id] = {
+      name: getSafeDisplayName(row) || '',
+      position: formatProfilePosition(row.position),
+      isCaptain: !!(row.is_captain || row.isCaptain || row.captain),
+    };
   });
   return map;
 }
 
-function formationToView(teamName: string, formation: SetFormation, nameMap: Record<string, string>): TeamLineupView {
+function formationToView(teamName: string, formation: SetFormation, metaMap: Record<string, PlayerMeta>): TeamLineupView {
   const front = clampLineCount(formation.frontCount, DEFAULT_LINE_COUNT);
   const middle = clampLineCount(formation.middleCount, DEFAULT_LINE_COUNT);
   const back = clampLineCount(formation.backCount, DEFAULT_LINE_COUNT);
@@ -67,11 +86,11 @@ function formationToView(teamName: string, formation: SetFormation, nameMap: Rec
   while (courtSlots.length < slotTotal) courtSlots.push('');
   const court = courtSlots
     .slice(0, slotTotal)
-    .map((id, index) => toPlayer(id, index, formation, nameMap))
+    .map((id, index) => toPlayer(id, index, metaMap))
     .filter((p): p is LineupPlayerView => !!p && !!p.name);
   const courtIds = new Set(court.map((p) => p.id));
   const bench = (formation.bench || [])
-    .map((id, index) => toPlayer(id, index, formation, nameMap))
+    .map((id, index) => toPlayer(id, index, metaMap))
     .filter((p): p is LineupPlayerView => !!p && !!p.name && !courtIds.has(p.id));
   return { teamName, court, bench };
 }
@@ -150,9 +169,9 @@ export async function loadLiveLineups(matchId: string): Promise<{ left: TeamLine
     { bench: setRow?.awayBench, late: setRow?.awayLate, frontCount: setRow?.awayFrontCount, middleCount: setRow?.awayMiddleCount, backCount: setRow?.awayBackCount },
   );
 
-  const nameMap = await loadNameMap([...collectIds(hostForm), ...collectIds(awayForm)]);
+  const metaMap = await loadPlayerMetaMap([...collectIds(hostForm), ...collectIds(awayForm)]);
   return {
-    left: formationToView(hostName, hostForm, nameMap),
-    right: formationToView(awayName, awayForm, nameMap),
+    left: formationToView(hostName, hostForm, metaMap),
+    right: formationToView(awayName, awayForm, metaMap),
   };
 }
