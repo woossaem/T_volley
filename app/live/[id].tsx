@@ -7,15 +7,14 @@ import {
   Platform,
   TouchableOpacity,
   useWindowDimensions,
-  Alert,
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { supabase } from '../../lib/supabase';
 import { Colors } from '../../constants/Colors';
 import ScoreboardScreen from '../scoreboard';
 
-const PLAY_STORE_SEARCH_URL = 'https://play.google.com/store/search?q=%ED%8B%B0%EB%B3%BC%EB%A6%AC';
-const APP_STORE_URL = 'https://www.apple.com/app-store/';
+const PLAY_STORE_URL = 'https://play.google.com/store/apps/details?id=com.rudolfuu.tvolley&pcampaignid=web_share';
+const APP_STORE_URL = 'https://apps.apple.com/kr/app/%ED%8B%B0%EB%B3%BC%EB%A6%AC/id6799385540';
 
 function resolveLiveParam(raw: string | string[] | undefined): string {
   const value = Array.isArray(raw) ? raw[0] : raw;
@@ -35,13 +34,13 @@ function PlgPromoBanner() {
 
   const handleDownload = () => {
     if (Platform.OS !== 'web') return;
-    const userAgent = String(globalThis.navigator?.userAgent || '').toLowerCase();
+    const userAgent = String(window.navigator.userAgent || '').toLowerCase();
     if (/android/.test(userAgent)) {
-      window.open(PLAY_STORE_SEARCH_URL, '_blank');
+      window.open(PLAY_STORE_URL, '_blank');
     } else if (/iphone|ipad|ipod/.test(userAgent)) {
       window.open(APP_STORE_URL, '_blank');
     } else {
-      Alert.alert('앱 다운로드', "스토어에서 '티볼리'를 검색하여 앱을 설치해 주세요!");
+      window.open(PLAY_STORE_URL, '_blank');
     }
   };
 
