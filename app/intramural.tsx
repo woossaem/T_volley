@@ -767,6 +767,9 @@ export default function IntramuralScreen() {
                     }}
                     onOpenComment={() => openCommentModal(match)}
                     onOpenQuickResult={() => openIntraModal(match)}
+                    onDelete={teamsInclude(myTeams, match.host_team_name)
+                      ? () => deleteIntraMatch(match.id)
+                      : undefined}
                   />
                 );
               })

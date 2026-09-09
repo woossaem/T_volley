@@ -28,6 +28,7 @@ import MatchRosterModal from '../components/MatchRosterModal';
 import PastMatchRegisterModal from '../components/PastMatchRegisterModal';
 import MatchCommentModal from '../components/MatchCommentModal';
 import MatchCard, { MatchData, ApplicationData } from '../components/MatchCard';
+import MatchPostgameReportModal from '../components/MatchPostgameReportModal';
 import GuestTeamNameModal from '../components/GuestTeamNameModal';
 import GuestTeamBindModal from '../components/GuestTeamBindModal';
 import { buildTeamStatusByName, isActiveTeamStatus } from '../lib/teamStatus';
@@ -172,6 +173,8 @@ export default function MyMatchesScreen() {
   const [commentInput, setCommentInput] = useState('');
   const [availableBadges, setAvailableBadges] = useState<BadgeOption[]>([]);
   const [selectedBadge, setSelectedBadge] = useState<BadgeOption | null>(null);
+  const [reportModalVisible, setReportModalVisible] = useState(false);
+  const [reportTargetMatch, setReportTargetMatch] = useState<MatchData | null>(null);
 
   const toggleMercenaryDetails = (matchId: string) => {
     setExpandedMercenaryMatchIds(prev =>
@@ -1285,6 +1288,10 @@ export default function MyMatchesScreen() {
               onApproveRetroClaim={handleApproveRetroClaim}
               onConvertToGuestMatch={openConvertToGuestMatch}
               onBindGuestTeam={openBindGuestTeam}
+              onOpenReportModal={(target) => {
+                setReportTargetMatch(target);
+                setReportModalVisible(true);
+              }}
               teamStatusByName={teamStatusByName}
               teamTypeByName={teamTypeByName}
             />
@@ -1293,6 +1300,17 @@ export default function MyMatchesScreen() {
       </ScrollView>
 
       <StickyAdBanner />
+
+      {reportModalVisible && reportTargetMatch ? (
+        <MatchPostgameReportModal
+          visible={reportModalVisible}
+          onClose={() => {
+            setReportModalVisible(false);
+            setReportTargetMatch(null);
+          }}
+          match={reportTargetMatch}
+        />
+      ) : null}
 
       <MatchRosterModal
         visible={rosterReplaceVisible}

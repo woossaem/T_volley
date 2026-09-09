@@ -27,6 +27,7 @@ interface IntramuralCardProps {
   onOpenReport: () => void;
   onOpenComment: () => void;
   onOpenQuickResult: () => void;
+  onDelete?: () => void;
 }
 
 export default function IntramuralCard({
@@ -39,6 +40,7 @@ export default function IntramuralCard({
   onOpenReport,
   onOpenComment,
   onOpenQuickResult,
+  onDelete,
 }: IntramuralCardProps) {
   const insets = useSafeAreaInsets();
   const isFinished = !!match.winner_team;
@@ -69,6 +71,17 @@ export default function IntramuralCard({
           >
             <Text style={styles.chatIconBtnText}>💬 소통방</Text>
           </TouchableOpacity>
+          {onDelete ? (
+            <TouchableOpacity
+              style={styles.deleteBtn}
+              onPress={onDelete}
+              activeOpacity={0.7}
+              hitSlop={8}
+              accessibilityLabel="내전 기록 삭제"
+            >
+              <Text style={styles.deleteBtnText}>🗑️</Text>
+            </TouchableOpacity>
+          ) : null}
         </View>
       </View>
 
@@ -176,6 +189,8 @@ const styles = StyleSheet.create({
   cardMetaRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8, flexWrap: 'wrap', gap: 6 },
   headerLeft: { flexDirection: 'row', gap: 6, alignItems: 'center', flexShrink: 1, flexWrap: 'wrap' },
   headerRight: { flexDirection: 'row', gap: 6, alignItems: 'center', flexShrink: 0 },
+  deleteBtn: { width: 28, height: 28, borderRadius: 14, backgroundColor: '#FEF2F2', alignItems: 'center', justifyContent: 'center', flexShrink: 0 },
+  deleteBtnText: { color: '#DC2626', fontSize: 14, fontWeight: '600', lineHeight: 16, includeFontPadding: false },
   regionTagPill: { height: 28, borderRadius: 14, paddingHorizontal: 10, backgroundColor: '#F1F5F9', justifyContent: 'center', alignItems: 'center', flexShrink: 0 },
   regionTagPillText: { fontSize: 12, fontWeight: '600', color: '#6B21A8', lineHeight: 16, includeFontPadding: false },
   statusBadge: { height: 28, borderRadius: 14, paddingHorizontal: 10, justifyContent: 'center', alignItems: 'center', flexShrink: 0 },

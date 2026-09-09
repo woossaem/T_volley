@@ -278,6 +278,7 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
   const matchClosedRef = useRef(false);
   const hydrateGenRef = useRef(0);
   const finishSetBusyRef = useRef(false);
+  const spectatorFollowLiveRef = useRef(true);
   const currentSetIndexRef = useRef(currentSetIndex);
   currentSetIndexRef.current = currentSetIndex;
 
@@ -289,6 +290,28 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
 
   const myRoleRef = useRef(myRole);
   myRoleRef.current = myRole;
+
+  const persistOptimisticEvent = async (
+    tempEvent: MatchEvent,
+    payload: Record<string, unknown>,
+  ): Promise<MatchEvent> => {
+    const { data, error } = await supabase
+      .from('match_events')
+      .insert(payload)
+      .select('*')
+      .maybeSingle();
+    if (error) {
+      console.error('match_events 저장 실패:', error);
+      return tempEvent;
+    }
+    const persisted = normalizeMatchEvent(data, tempEvent.id) || tempEvent;
+    setEvents((prev) => {
+      const next = prev.map((event) => event.id === tempEvent.id ? persisted : event);
+      eventsRef.current = next;
+      return next;
+    });
+    return persisted;
+  };
 
   useEffect(() => {
     if (currentUserId) {
@@ -580,9 +603,14 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
       setHistoryRef.current = closedStrs;
       const openIdxs = loaded.map((s, i) => (s.isClosed ? -1 : i)).filter((i) => i >= 0);
       const liveIdx = openIdxs.length > 0 ? openIdxs[openIdxs.length - 1] : Math.max(0, loaded.length - 1);
-      currentSetIndexRef.current = liveIdx;
-      setCurrentSetIndex(liveIdx);
-      const live = loaded[liveIdx] || loaded[0];
+      const selectedIdx = currentSetIndexRef.current;
+      const selectedStillExists = selectedIdx >= 0 && selectedIdx < loaded.length;
+      const shouldFollowLive = spectatorFollowLiveRef.current || !selectedStillExists;
+      const displayIdx = shouldFollowLive ? liveIdx : selectedIdx;
+      if (!selectedStillExists) spectatorFollowLiveRef.current = true;
+      currentSetIndexRef.current = displayIdx;
+      setCurrentSetIndex(displayIdx);
+      const live = loaded[displayIdx] || loaded[0];
       setCurrentScores({
         host: Number(live?.hostScore) || 0,
         away: Number(live?.awayScore) || 0,
@@ -772,8 +800,11 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
       away_score: newAwayScore,
       is_canceled: false,
     };
-    await supabase.from('match_events').insert(scoreLog);
-    if (matchId) await appendMatchScoreLog(matchId, scoreLog);
+    const persistedEvent = await persistOptimisticEvent(tempEvent, scoreLog);
+    if (matchId) await appendMatchScoreLog(matchId, {
+      ...scoreLog,
+      id: persistedEvent.id,
+    });
     if (matchId) {
       try {
         const saved = await updateMatchSetScoreNow(matchId, currentSetIndex, newHostScore, newAwayScore);
@@ -823,7 +854,11 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
       away_score: currentScores.away,
       is_canceled: false
     };
-    setEvents(prev => [...prev, tempEvent]);
+    setEvents(prev => {
+      const next = [...prev, tempEvent];
+      eventsRef.current = next;
+      return next;
+    });
 
     const updatePayload = isHost 
       ? { host_roster: updatedRosterJson }
@@ -840,9 +875,10 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
         away: parseRosterJson(!isHost ? updatedRosterJson : match?.away_roster),
       },
     );
-    await supabase.from('match_events').insert({
+    const subLog = {
       match_id: matchId,
       set_index: currentSetIndex,
+      set_number: currentSetIndex + 1,
       event_type: 'sub',
       team_type: actionTeam,
       player_id: inMember.user_id,
@@ -850,7 +886,13 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
       sub_out_id: outMember.user_id,
       sub_out_name: getSafeDisplayName(outMember),
       host_score: currentScores.host,
-      away_score: currentScores.away
+      away_score: currentScores.away,
+      is_canceled: false,
+    };
+    const persistedEvent = await persistOptimisticEvent(tempEvent, subLog);
+    if (matchId) await appendMatchScoreLog(matchId, {
+      ...subLog,
+      id: persistedEvent.id,
     });
   };
 
@@ -912,10 +954,15 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
         away_score: currentScores.away,
         is_canceled: false,
       };
-      setEvents((prev) => [...prev, tempEvent]);
-      await supabase.from('match_events').insert({
+      setEvents((prev) => {
+        const next = [...prev, tempEvent];
+        eventsRef.current = next;
+        return next;
+      });
+      const subLog = {
         match_id: matchId,
         set_index: currentSetIndex,
+        set_number: currentSetIndex + 1,
         event_type: 'sub',
         team_type: actionTeam,
         player_id: inMember.user_id,
@@ -924,6 +971,12 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
         sub_out_name: getSafeDisplayName(outMember),
         host_score: currentScores.host,
         away_score: currentScores.away,
+        is_canceled: false,
+      };
+      const persistedEvent = await persistOptimisticEvent(tempEvent, subLog);
+      if (matchId) await appendMatchScoreLog(matchId, {
+        ...subLog,
+        id: persistedEvent.id,
       });
     }
   };
@@ -933,6 +986,7 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
     extraLive?: { host: number; away: number } | null,
     rosterOverride?: { host?: ReturnType<typeof parseRosterJson>; away?: ReturnType<typeof parseRosterJson> },
     formationOverride?: { host?: { [idx: number]: SetFormation }; away?: { [idx: number]: SetFormation } },
+    retainTrailingSets = true,
   ) => {
     if (!matchId) return;
     const hostForm = formationOverride?.host || parseSetFormationMap(match?.host_roster);
@@ -987,11 +1041,13 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
         });
       }
     }
-    const already = records.length;
-    matchSets.slice(already).forEach((s, i) => {
-      if (already + i >= MAX_SETS) return;
-      records.push({ ...s, setNumber: already + i + 1 });
-    });
+    if (retainTrailingSets) {
+      const already = records.length;
+      matchSets.slice(already).forEach((s, i) => {
+        if (already + i >= MAX_SETS) return;
+        records.push({ ...s, setNumber: already + i + 1 });
+      });
+    }
     const synced = normalizeSetRecords(records);
     await upsertMatchSets(matchId, synced);
     setMatchSets(synced);
@@ -1155,15 +1211,18 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
 
   const flushScoreLogsSnapshot = async (allEvents?: MatchEvent[]) => {
     if (!matchId) return;
-    const source = (allEvents || eventsRef.current).filter((e) => !String(e.id).startsWith('temp-'));
+    const source = allEvents || eventsRef.current;
     const scoreLogs = source.map((e) => ({
       id: e.id,
+      match_id: matchId,
       set_index: e.set_index,
       set_number: Number(e.set_index) + 1,
       event_type: e.event_type,
       team_type: e.team_type,
       player_id: e.player_id,
       player_name: e.player_name,
+      sub_out_id: e.sub_out_id,
+      sub_out_name: e.sub_out_name,
       host_score: e.host_score,
       away_score: e.away_score,
       is_canceled: e.is_canceled,
@@ -1184,13 +1243,28 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
         updatedHistory = [...updatedHistory, liveScore];
       }
     }
-    await persistSetsFromHistory(updatedHistory, null);
+    await persistSetsFromHistory(updatedHistory, null, undefined, undefined, false);
     await flushScoreLogsSnapshot();
     return updatedHistory;
   };
 
+  const focusLastPlayedSet = (history: string[]) => {
+    if (history.length === 0) return;
+    const idx = history.length - 1;
+    const [host, away] = String(history[idx]).split(':').map(Number);
+    currentSetIndexRef.current = idx;
+    setCurrentSetIndex(idx);
+    setCurrentScores({ host: host || 0, away: away || 0 });
+  };
+
   const changeCurrentSet = (idx: number) => {
     const fromIdx = currentSetIndexRef.current;
+    if (isSpectatorForced) {
+      const normalized = normalizeSetRecords(matchSets.length > 0 ? matchSets : [makeInitialLiveSet()]);
+      const openIdxs = normalized.map((s, i) => (s.isClosed ? -1 : i)).filter((i) => i >= 0);
+      const liveIdx = openIdxs.length > 0 ? openIdxs[openIdxs.length - 1] : Math.max(0, normalized.length - 1);
+      spectatorFollowLiveRef.current = idx === liveIdx;
+    }
     if (matchId && fromIdx !== idx && !isSpectatorForced) {
       void updateMatchSetScoreNow(matchId, fromIdx, currentScores.host, currentScores.away);
       void flushScoreLogsSnapshot(eventsRef.current);
@@ -1480,6 +1554,7 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
     setActionLoading(true);
     try {
       const finalHistory = await commitActiveSetBeforeFinish();
+      focusLastPlayedSet(finalHistory);
 
       const updateData = {
         set_scores: finalHistory.join(', ') || null,
@@ -1487,7 +1562,8 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
         recorder_host_id: null,
         recorder_away_id: null,
       };
-      await supabase.from('matches').update(updateData).eq('id', matchId);
+      const result = await updateMatchIgnoringUnknownColumns(matchId, updateData);
+      if (result.error) throw result.error;
       setMatch((prev) => prev ? { ...prev, ...updateData } : prev);
       setSetScoresHistory(finalHistory);
       setHistoryRef.current = finalHistory;
@@ -1504,6 +1580,7 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
     setActionLoading(true);
     try {
       const finalHistory = await commitActiveSetBeforeFinish();
+      focusLastPlayedSet(finalHistory);
 
       const myTeamInMatch = match && teamsInclude(myTeams, match.host_team_name)
         ? match.host_team_name
@@ -1561,7 +1638,8 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
           recorder_away_id: null,
         };
 
-      await supabase.from('matches').update(updateData).eq('id', matchId);
+      const result = await updateMatchIgnoringUnknownColumns(matchId, updateData);
+      if (result.error) throw result.error;
       setMatch((prev) => prev ? { ...prev, ...updateData } : prev);
       setSetScoresHistory(finalHistory);
       setHistoryRef.current = finalHistory;
@@ -1593,17 +1671,49 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
   };
 
   const handleSaveManualScores = async () => {
+    if (!matchId) return;
     setCurrentScores({ host: tempHostScore, away: tempAwayScore });
-    await supabase.from('match_events').insert({
+    const tempEvent: MatchEvent = {
+      id: `temp-${Date.now()}`,
       match_id: matchId,
       set_index: currentSetIndex,
       event_type: 'manual',
       team_type: 'host',
       host_score: tempHostScore,
-      away_score: tempAwayScore
+      away_score: tempAwayScore,
+      is_canceled: false,
+    };
+    setEvents((prev) => {
+      const next = [...prev, tempEvent];
+      eventsRef.current = next;
+      return next;
     });
-    if (currentSetIndex >= setHistory.length) {
-      await persistSetsFromHistory(setHistory, { host: tempHostScore, away: tempAwayScore });
+    const manualLog = {
+      match_id: matchId,
+      set_index: currentSetIndex,
+      set_number: currentSetIndex + 1,
+      event_type: 'manual',
+      team_type: 'host',
+      host_score: tempHostScore,
+      away_score: tempAwayScore,
+      is_canceled: false,
+    };
+    const persistedEvent = await persistOptimisticEvent(tempEvent, manualLog);
+    if (matchId) await appendMatchScoreLog(matchId, {
+      ...manualLog,
+      id: persistedEvent.id,
+    });
+    if (currentSetIndex >= setHistoryRef.current.length) {
+      await persistSetsFromHistory(setHistoryRef.current, { host: tempHostScore, away: tempAwayScore });
+    } else {
+      const nextHistory = [...setHistoryRef.current];
+      nextHistory[currentSetIndex] = `${tempHostScore}:${tempAwayScore}`;
+      setSetScoresHistory(nextHistory);
+      setHistoryRef.current = nextHistory;
+      const result = await updateMatchIgnoringUnknownColumns(matchId, {
+        set_scores: nextHistory.join(', '),
+      });
+      if (result.error) throw result.error;
     }
     if (matchId) {
       const saved = await updateMatchSetScoreNow(matchId, currentSetIndex, tempHostScore, tempAwayScore);

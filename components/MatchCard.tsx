@@ -209,17 +209,17 @@ export default function MatchCard({
           <View
             style={[
               styles.statusBadge,
-              isFinished ? styles.statusCompleted : isRecruiting ? styles.statusOpen : styles.statusMatched,
+              (isFinished || isPending) ? styles.statusCompleted : isRecruiting ? styles.statusOpen : styles.statusMatched,
             ]}
           >
             <Text
               style={[
                 styles.statusText,
-                isFinished ? styles.statusTextCompleted : isRecruiting ? styles.statusTextOpen : styles.statusTextMatched,
+                (isFinished || isPending) ? styles.statusTextCompleted : isRecruiting ? styles.statusTextOpen : styles.statusTextMatched,
               ]}
               numberOfLines={1}
             >
-              {isFinished ? '종료' : isRecruiting ? '모집중' : '진행중'}
+              {isFinished ? '종료' : isPending ? '승인대기' : isRecruiting ? '모집중' : '진행중'}
             </Text>
           </View>
           {match.need_mercenary && (
@@ -530,6 +530,16 @@ export default function MatchCard({
                 </Text>
               )}
             </View>
+            {onOpenReportModal ? (
+              <TouchableOpacity
+                style={styles.mainActionBtn}
+                onPress={() => onOpenReportModal(match)}
+                activeOpacity={0.85}
+                hitSlop={8}
+              >
+                <Text style={styles.mainActionBtnText} numberOfLines={1}>📊 경기 분석 리포트 보기</Text>
+              </TouchableOpacity>
+            ) : null}
             {canApprove ? (
               <View style={styles.inlineActionRow}>
                 <TouchableOpacity
