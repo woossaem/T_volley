@@ -115,6 +115,8 @@ export default function PlayerActionModal({
   const rightName = boardSide === 'left' ? getSafeTeamName(oppName) : safeTeamName;
   const leftKind: ScoreKind = boardSide === 'left' ? 'kill' : 'fault';
   const rightKind: ScoreKind = boardSide === 'left' ? 'fault' : 'kill';
+  const scoringTeamName = safeTeamName;
+  const concedingTeamName = getSafeTeamName(oppName);
 
   let title = '';
   if (mode === 'score') title = `${safeTeamName} +1점  원인 선택`;
@@ -312,7 +314,9 @@ export default function PlayerActionModal({
                               style={[styles.actionLabel, !isKill && styles.actionLabelFault]}
                               numberOfLines={2}
                             >
-                              {isKill ? '득점 (*해당 팀 익명 득점 +1)' : '범실 (*상대팀 익명 범실로 해당 팀 +1)'}
+                              {isKill
+                                ? `득점 (${scoringTeamName} 익명 득점 +1)`
+                                : `범실 (${concedingTeamName} 익명 범실로 ${scoringTeamName} +1)`}
                             </Text>
                           </View>
                         </View>

@@ -631,8 +631,6 @@ export default function FormationModal({
         >
           <Text style={styles.title}>{dual ? '🏐 양팀 네트 포메이션' : `🏐 ${teamName} 포메이션`}</Text>
 
-          {!dual ? renderLineCtrls('host') : null}
-
           <View style={styles.bodyFit}>
             {dual ? (
               <View style={styles.dualCourtBlock}>
@@ -668,13 +666,16 @@ export default function FormationModal({
               </View>
             ) : (
               <View style={styles.courtWrap}>
-                {renderCourtGrid('host', {
-                  layout: 'rows',
-                  courtSide: courtSide || 'left',
-                  hideNet: true,
-                  interactive: true,
-                  compact: false,
-                })}
+                {renderLineCtrls('host', (courtSide || 'left') === 'right' ? 'front-first' : 'back-first')}
+                <View style={styles.teamCourtFill}>
+                  {renderCourtGrid('host', {
+                    layout: 'columns',
+                    courtSide: courtSide || 'left',
+                    hideNet: true,
+                    interactive: true,
+                    compact: false,
+                  })}
+                </View>
               </View>
             )}
 
