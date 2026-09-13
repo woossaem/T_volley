@@ -21,13 +21,25 @@ type TeamLineupPanelProps = {
   side: 'left' | 'right';
   variant?: 'sidebar' | 'sheet' | 'compare';
   servingPlayerId?: string | null;
+  teamTone?: 'host' | 'away';
 };
 
-export default function TeamLineupPanel({ team, lineup, side, variant = 'sidebar', servingPlayerId }: TeamLineupPanelProps) {
+const HOST_ACCENT = '#0284C7';
+const AWAY_ACCENT = '#BE123C';
+
+export default function TeamLineupPanel({
+  team,
+  lineup,
+  side,
+  variant = 'sidebar',
+  servingPlayerId,
+  teamTone,
+}: TeamLineupPanelProps) {
   const teamName = lineup?.teamName || team?.name || (side === 'left' ? '홈 팀' : '어웨이 팀');
   const court = lineup?.court || [];
   const bench = lineup?.bench || [];
-  const accent = side === 'left' ? '#38BDF8' : '#FB7185';
+  const tone = teamTone || (side === 'left' ? 'host' : 'away');
+  const accent = tone === 'host' ? HOST_ACCENT : AWAY_ACCENT;
   const sheet = variant === 'sheet';
   const compare = variant === 'compare';
   const compact = sheet || compare;
@@ -48,7 +60,7 @@ export default function TeamLineupPanel({ team, lineup, side, variant = 'sidebar
             ]}
           >
             <View style={[styles.badge, { backgroundColor: accent }, compact && styles.badgeCompact, serving && styles.badgeServing]}>
-              <Text style={[styles.badgeText, compact && styles.badgeTextCompact]}>{serving ? 'BALL' : player.badge}</Text>
+              <Text style={[styles.badgeText, compact && styles.badgeTextCompact]}>{serving ? 'BALL' : (player.badge || '·')}</Text>
             </View>
             <View style={styles.playerMeta}>
               <Text style={[styles.playerName, compact && styles.playerNameCompact]} numberOfLines={1}>{player.name}</Text>
@@ -89,9 +101,11 @@ export default function TeamLineupPanel({ team, lineup, side, variant = 'sidebar
       sheet && styles.panelSheet,
       compare && styles.panelCompare,
     ]}>
-      <Text style={[styles.header, { color: accent }, compact && styles.headerCompact]} numberOfLines={2}>
-        {teamName} 선발 라인업
-      </Text>
+      <View style={[styles.headerBar, { backgroundColor: accent }, compact && styles.headerBarCompact]}>
+        <Text style={[styles.header, compact && styles.headerCompact]} numberOfLines={2}>
+          {teamName} 선발 라인업
+        </Text>
+      </View>
       {compare ? <View>{playerList}</View> : (
         <ScrollView style={styles.list} showsVerticalScrollIndicator={false}>
           {playerList}
@@ -140,15 +154,25 @@ const styles = StyleSheet.create({
     paddingTop: 8,
     paddingBottom: 6,
   },
+  headerBar: {
+    borderRadius: 8,
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+    marginBottom: 10,
+  },
+  headerBarCompact: {
+    marginBottom: 6,
+    paddingVertical: 4,
+  },
   header: {
     fontSize: 13,
     fontWeight: '800',
-    marginBottom: 10,
     lineHeight: 18,
+    color: '#FFFFFF',
   },
   headerCompact: {
     fontSize: 11,
-    marginBottom: 6,
+    marginBottom: 0,
     lineHeight: 15,
   },
   list: { flex: 1 },
@@ -186,7 +210,7 @@ const styles = StyleSheet.create({
     height: 20,
     borderRadius: 10,
   },
-  badgeText: { color: '#0F172A', fontSize: 11, fontWeight: '900' },
+  badgeText: { color: '#FFFFFF', fontSize: 11, fontWeight: '900' },
   badgeTextCompact: { fontSize: 9 },
   playerMeta: { flex: 1, minWidth: 0 },
   playerName: { color: '#F8FAFC', fontSize: 13, fontWeight: '800' },

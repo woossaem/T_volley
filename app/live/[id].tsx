@@ -272,6 +272,7 @@ export default function LiveScoreboardScreen() {
             lineup={leftLineup}
             side="left"
             servingPlayerId={servingPlayerId}
+            teamTone={boardSwapped ? 'away' : 'host'}
           />
         ) : null}
         <View style={isDesktop ? styles.desktopBoard : styles.boardFrame}>
@@ -288,6 +289,7 @@ export default function LiveScoreboardScreen() {
             lineup={rightLineup}
             side="right"
             servingPlayerId={servingPlayerId}
+            teamTone={boardSwapped ? 'host' : 'away'}
           />
         ) : null}
       </View>
@@ -338,6 +340,7 @@ export default function LiveScoreboardScreen() {
                     side="left"
                     variant="compare"
                     servingPlayerId={servingPlayerId}
+                    teamTone={boardSwapped ? 'away' : 'host'}
                   />
                 </View>
                 <View style={[styles.lineupCompareCol, awayDimmed && styles.lineupDimmed]}>
@@ -347,6 +350,7 @@ export default function LiveScoreboardScreen() {
                     side="right"
                     variant="compare"
                     servingPlayerId={servingPlayerId}
+                    teamTone={boardSwapped ? 'host' : 'away'}
                   />
                 </View>
               </ScrollView>

@@ -582,11 +582,6 @@ export default function FormationModal({
     unusedHint = `${nameOf(holding.side, holding.id)} 선택됨 · 코트 빈자리 또는 출전 슬롯을 터치하면 배치/교체됩니다`;
   }
 
-  const hostTotal = hostState.frontCount + hostState.middleCount + hostState.backCount;
-  const awayTotal = awayState.frontCount + awayState.middleCount + awayState.backCount;
-  const hostReal = onCourtSet(hostState.court).size;
-  const awayReal = onCourtSet(awayState.court).size;
-
   const menuState = intent?.type === 'menu' ? intent : null;
   const menuOccupant = menuState ? assignedUserId(getState(menuState.side).court[menuState.index]) : null;
 
@@ -599,6 +594,7 @@ export default function FormationModal({
     hideNet?: boolean;
     teamLabel?: string;
     interactive: boolean;
+    compact?: boolean;
   }) => {
     const st = getState(side);
     return (
@@ -607,7 +603,7 @@ export default function FormationModal({
         frontCount={st.frontCount}
         middleCount={st.middleCount}
         backCount={st.backCount}
-        compact
+        compact={opts.compact ?? true}
         tone="slate"
         layout={opts.layout}
         courtSide={opts.courtSide}
@@ -651,7 +647,6 @@ export default function FormationModal({
                     interactive: hostCanEdit,
                   })}
                 </View>
-                <Text style={styles.courtMeta}>출전 {hostReal}/{hostTotal}{!hostCanEdit ? ' · 상대팀 보기 전용' : ''}</Text>
               </View>
 
               <View style={styles.verticalNet} />
@@ -667,19 +662,17 @@ export default function FormationModal({
                     interactive: awayCanEdit,
                   })}
                 </View>
-                <Text style={styles.courtMeta}>출전 {awayReal}/{awayTotal}{!awayCanEdit ? ' · 상대팀 보기 전용' : ''}</Text>
               </View>
             </View>
           ) : (
             <View style={styles.courtWrap}>
               {renderCourtGrid('host', {
-                layout: courtSide ? 'columns' : 'rows',
+                layout: 'rows',
                 courtSide: courtSide || 'left',
-                hideNet: !!courtSide,
-                teamLabel: teamName,
+                hideNet: true,
                 interactive: true,
+                compact: false,
               })}
-              <Text style={styles.courtMeta}>출전 {hostReal}/{hostTotal} · 빈자리 {hostTotal - hostReal}</Text>
             </View>
           )}
 
@@ -771,17 +764,16 @@ const styles = StyleSheet.create({
   stepVal: { minWidth: 14, textAlign: 'center', color: '#F8FAFC', fontSize: 11, fontWeight: '900' },
   holdHint: { fontSize: 10, color: '#94A3B8', fontWeight: '700', textAlign: 'center', marginBottom: 2, flexShrink: 0 },
   courtWrap: {
-    marginVertical: 1,
-    flexGrow: 0,
-    flexShrink: 0,
-    minHeight: 0,
+    marginVertical: 4,
+    flexGrow: 1,
+    flexShrink: 1,
+    minHeight: 220,
     backgroundColor: '#1E293B',
     borderRadius: 12,
     borderWidth: 1,
     borderColor: '#334155',
     overflow: 'hidden',
-    padding: 4,
-    paddingBottom: 12,
+    padding: 8,
   },
   dualCourtBlock: { flexDirection: 'row', alignItems: 'stretch', flexGrow: 1, flexShrink: 1, minHeight: 168, marginBottom: 8 },
   teamCourtPane: { flex: 1, minWidth: 0, minHeight: 0, flexDirection: 'column', paddingBottom: 8 },
@@ -793,18 +785,6 @@ const styles = StyleSheet.create({
     borderRadius: 3,
     marginHorizontal: 3,
     marginVertical: 2,
-  },
-  courtMeta: {
-    fontSize: 11,
-    lineHeight: 16,
-    fontWeight: '700',
-    color: '#94A3B8',
-    textAlign: 'center',
-    marginTop: 6,
-    marginBottom: 4,
-    paddingBottom: 8,
-    flexShrink: 0,
-    includeFontPadding: false,
   },
   benchBlock: { backgroundColor: '#1E293B', borderRadius: 10, padding: 4, borderWidth: 1, borderColor: '#334155', marginTop: 2, height: 70, maxHeight: 70, overflow: 'hidden', flexShrink: 0 },
   benchBlockDual: { height: 70, maxHeight: 70, flexShrink: 0 },

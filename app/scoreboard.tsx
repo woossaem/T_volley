@@ -2250,9 +2250,11 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
           </TouchableOpacity>
         </View>
         {serveBadgeText ? (
-          <View pointerEvents="none" style={styles.serveCenterWrap}>
-            <View style={styles.serveBadge}>
-              <Text style={styles.serveBadgeText} numberOfLines={1}>{serveBadgeText}</Text>
+          <View pointerEvents="none" style={[styles.serveBottomWrap, isSpectatorForced && styles.serveBottomWrapSpectator]}>
+            <View style={[styles.serveBadge, isSpectatorForced && styles.serveBadgeSpectator]}>
+              <Text style={[styles.serveBadgeText, isSpectatorForced && styles.serveBadgeTextSpectator]} numberOfLines={1}>
+                {serveBadgeText}
+              </Text>
             </View>
           </View>
         ) : null}
@@ -2553,11 +2555,17 @@ const styles = StyleSheet.create({
   lineupBtnSlim: { paddingHorizontal: 8, paddingVertical: 4, backgroundColor: '#1E3A8A', borderRadius: 8, flexShrink: 0 },
   lineupBtnTextSlim: { color: '#DBEAFE', fontWeight: '800', fontSize: 11 },
   scoreboardMainGrid: { flex: 1, minHeight: 160, flexDirection: 'row', width: '100%', backgroundColor: '#020617', position: 'relative' },
-  serveCenterWrap: {
-    ...StyleSheet.absoluteFillObject,
+  serveBottomWrap: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 12,
     alignItems: 'center',
-    justifyContent: 'center',
+    alignSelf: 'center',
     zIndex: 18,
+  },
+  serveBottomWrapSpectator: {
+    bottom: 24,
   },
   serveBadge: {
     backgroundColor: 'rgba(15, 23, 42, 0.88)',
@@ -2566,9 +2574,14 @@ const styles = StyleSheet.create({
     borderRadius: 999,
     paddingHorizontal: 12,
     paddingVertical: 6,
-    maxWidth: '72%',
+    maxWidth: '84%',
+  },
+  serveBadgeSpectator: {
+    paddingHorizontal: 18,
+    paddingVertical: 9,
   },
   serveBadgeText: { color: '#FDE68A', fontSize: 12, fontWeight: '900', textAlign: 'center' },
+  serveBadgeTextSpectator: { fontSize: 18, lineHeight: 22 },
   teamCourtHalf: { flex: 1, flexShrink: 0, minWidth: 0, position: 'relative', padding: 0, margin: 0 },
   hostCourtBg: { backgroundColor: '#0284C7' },
   awayCourtBg: { backgroundColor: '#BE123C' },

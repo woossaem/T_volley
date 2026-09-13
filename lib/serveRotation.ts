@@ -147,6 +147,29 @@ function rotatedOrder(order: number[], startSlot: number): number[] {
   return [...order.slice(start), ...order.slice(0, start)];
 }
 
+/** 슬롯 인덱스 → 해당 팀 독립 서브 순번(1~9). 첫 서브 포지션이 1번. */
+export function serveRotationNumbersBySlot(input?: {
+  startLabel?: string | null;
+  startSlot?: number | null;
+  frontCount?: number;
+  middleCount?: number;
+  backCount?: number;
+}): Map<number, number> {
+  const front = input?.frontCount ?? DEFAULT_LINE_COUNT;
+  const middle = input?.middleCount ?? DEFAULT_LINE_COUNT;
+  const back = input?.backCount ?? DEFAULT_LINE_COUNT;
+  const order = serveOrderIndices(front, middle, back);
+  const startSlot = input?.startSlot != null && order.includes(input.startSlot)
+    ? input.startSlot
+    : slotIndexForServeLabel(input?.startLabel || DEFAULT_SERVE_START_LABEL, front, middle, back);
+  const rotation = rotatedOrder(order, startSlot);
+  const map = new Map<number, number>();
+  rotation.forEach((slot, i) => {
+    map.set(slot, i + 1);
+  });
+  return map;
+}
+
 function scoringTeamOf(
   event: ScoreEventLike,
   prev: { host: number; away: number },

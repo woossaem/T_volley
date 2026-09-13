@@ -298,11 +298,11 @@ export default function PlayerActionModal({
                             <Text style={styles.teamChipText} numberOfLines={1}>{getSafeTeamName(pane.name)}</Text>
                           </View>
                           <View style={styles.actionCol}>
-                            <Text style={[styles.actionLabel, !isKill && styles.actionLabelFault]}>
-                              {isKill ? '득점' : '범실'}
-                            </Text>
-                            <Text style={styles.kindCardSub}>
-                              {isKill ? '(직접 득점 +1)' : `(상대 실수로 ${safeTeamName} +1)`}
+                            <Text
+                              style={[styles.actionLabel, !isKill && styles.actionLabelFault]}
+                              numberOfLines={2}
+                            >
+                              {isKill ? '득점 (*해당 팀 익명 득점 +1)' : '범실 (*상대팀 익명 범실로 해당 팀 +1)'}
                             </Text>
                           </View>
                         </View>
@@ -407,11 +407,6 @@ export default function PlayerActionModal({
             </View>
           )}
 
-          {isScoreMode && (
-            <TouchableOpacity style={styles.skipBtn} onPress={() => onScoreConfirm(null, 'kill')}>
-              <Text style={styles.skipBtnText}>건너뛰기 · 무기명 득점</Text>
-            </TouchableOpacity>
-          )}
         </TouchableOpacity>
       </TouchableOpacity>
     </Modal>
@@ -438,7 +433,7 @@ const styles = StyleSheet.create({
   dualCourt: { flexDirection: 'row', alignItems: 'stretch', gap: 0 },
   courtPane: { flex: 1, minWidth: 0 },
   verticalNet: { width: 6, alignSelf: 'stretch', backgroundColor: '#3B82F6', borderRadius: 3, marginHorizontal: 6, marginTop: 52 },
-  kindCard: { backgroundColor: '#0F172A', borderRadius: 10, paddingVertical: 10, paddingHorizontal: 10, marginBottom: 8 },
+  kindCard: { backgroundColor: '#0F172A', borderRadius: 10, paddingVertical: 6, paddingHorizontal: 8, marginBottom: 4 },
   leftTeamCard: { borderWidth: 1.5, borderColor: '#0284C7' },
   rightTeamCard: { borderWidth: 1.5, borderColor: '#E11D48' },
   kindCardRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 },
@@ -448,12 +443,9 @@ const styles = StyleSheet.create({
   teamChipB: { backgroundColor: '#E11D48' },
   teamChipText: { color: '#FFFFFF', fontSize: 12, fontWeight: '800' },
   actionCol: { flex: 1, alignItems: 'center', justifyContent: 'center' },
-  actionLabel: { color: '#F8FAFC', fontSize: 18, fontWeight: '800' },
+  actionLabel: { color: '#F8FAFC', fontSize: 12, fontWeight: '800', textAlign: 'center' },
   actionLabelFault: { color: '#F59E0B' },
-  kindCardSub: { color: '#64748B', fontSize: 11, fontWeight: '600', marginTop: 2 },
-  courtWrap: { backgroundColor: '#1E293B', borderRadius: 12, borderWidth: 1, borderColor: '#334155', overflow: 'hidden', padding: 4, paddingBottom: 12, minHeight: 148, flexShrink: 0 },
-  skipBtn: { marginTop: 10, paddingVertical: 10, backgroundColor: '#334155', borderRadius: 8, alignItems: 'center' },
-  skipBtnText: { color: '#94A3B8', fontSize: 13, fontWeight: '600' },
+  courtWrap: { backgroundColor: '#1E293B', borderRadius: 12, borderWidth: 1, borderColor: '#334155', overflow: 'hidden', padding: 2, paddingBottom: 4, minHeight: 148, flexShrink: 0 },
   emptyText: { color: '#94A3B8', padding: 8, textAlign: 'center', fontSize: 12, fontWeight: '600' },
   tagPopover: {
     marginTop: 8,
