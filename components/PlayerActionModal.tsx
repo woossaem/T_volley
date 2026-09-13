@@ -247,11 +247,6 @@ export default function PlayerActionModal({
 
   const benchOverflow = benchContentWidth > benchWidth + 8;
   const selectedOccupied = selectedIndex != null && !!assignedUserId(courtSlots[selectedIndex]?.user_id);
-  const subHint = selectedIndex == null
-    ? '선수를 고른 뒤 다른 슬롯을 누르면 자리가 바뀝니다. 빈자리는 벤치에서 투입하세요.'
-    : selectedOccupied
-      ? '다른 슬롯을 누르면 스왑, 벤치를 누르면 교체됩니다. [퇴장]으로 벤치에 내릴 수 있습니다.'
-      : '하단 벤치 또는 [+ 신규 게스트]를 누르면 이 자리에 투입됩니다.';
 
   return (
     <Modal visible={visible} transparent animationType="fade">
@@ -292,7 +287,6 @@ export default function PlayerActionModal({
               </TouchableOpacity>
             ) : null}
           </View>
-          {isSubMode ? <Text style={styles.subHint} numberOfLines={1}>{subHint}</Text> : null}
 
           {isScoreMode ? (
             <View style={styles.dualCourt}>
@@ -435,23 +429,22 @@ const styles = StyleSheet.create({
   overlayLeft: { alignItems: 'flex-start', justifyContent: 'flex-start', paddingVertical: 0, paddingHorizontal: 4 },
   overlayRight: { alignItems: 'flex-end', justifyContent: 'flex-start', paddingVertical: 0, paddingHorizontal: 4 },
   content: { backgroundColor: '#1E293B', borderRadius: 16, padding: 10, width: 640, maxWidth: '100%', borderWidth: 1, borderColor: '#334155' },
-  contentSub: { width: '68%', maxWidth: 560, padding: 6, paddingTop: 10, maxHeight: '92%' },
+  contentSub: { width: '68%', maxWidth: 560, padding: 6, paddingTop: 8, paddingBottom: 8, maxHeight: '88%', overflow: 'hidden' },
   contentSubLeft: { alignSelf: 'flex-start', borderColor: '#0284C7', borderWidth: 1.5 },
   contentSubRight: { alignSelf: 'flex-end', borderColor: '#E11D48', borderWidth: 1.5 },
   headerRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center' },
   headerRowSub: { justifyContent: 'space-between', marginBottom: 2, flexShrink: 0 },
   closeIconBtn: { width: 32, height: 32, borderRadius: 8, backgroundColor: '#334155', alignItems: 'center', justifyContent: 'center', flexShrink: 0 },
   closeIconText: { color: '#F8FAFC', fontSize: 16, fontWeight: '900', lineHeight: 18, includeFontPadding: false },
-  subBody: { flexShrink: 1, minHeight: 0 },
-  subCourtRow: { flexDirection: 'row', alignItems: 'stretch', minHeight: 200, flexGrow: 1, flexShrink: 1 },
-  subCourtGrid: { flex: 1, minWidth: 0, minHeight: 200, flexShrink: 1 },
+  subBody: { flexGrow: 1, flexShrink: 1, minHeight: 0, gap: 4 },
+  subCourtRow: { flexDirection: 'row', alignItems: 'stretch', minHeight: 0, flexGrow: 1, flexShrink: 1 },
+  subCourtGrid: { flex: 1, minWidth: 0, minHeight: 0, flexShrink: 1 },
   netGuide: { width: 18, borderRadius: 4, alignItems: 'center', justifyContent: 'center', marginHorizontal: 3, flexShrink: 0 },
   netGuideA: { backgroundColor: '#0284C7' },
   netGuideB: { backgroundColor: '#E11D48' },
   netGuideText: { color: '#F8FAFC', fontSize: 9, lineHeight: 11, fontWeight: '800', textAlign: 'center', includeFontPadding: false },
   title: { fontSize: 16, fontWeight: '700', color: '#F8FAFC', marginBottom: 10, textAlign: 'center' },
   titleSub: { fontSize: 15, marginBottom: 0, textAlign: 'left', paddingRight: 8, flex: 1 },
-  subHint: { fontSize: 11, color: '#94A3B8', textAlign: 'center', marginBottom: 4, fontWeight: '600', lineHeight: 14, includeFontPadding: false },
   dualCourt: { flexDirection: 'row', alignItems: 'stretch', gap: 0 },
   courtPane: { flex: 1, minWidth: 0 },
   verticalNet: { width: 6, alignSelf: 'stretch', backgroundColor: '#3B82F6', borderRadius: 3, marginHorizontal: 6, marginTop: 52 },
@@ -468,7 +461,7 @@ const styles = StyleSheet.create({
   actionLabel: { color: '#F8FAFC', fontSize: 12, fontWeight: '800', textAlign: 'center' },
   actionLabelFault: { color: '#F59E0B' },
   courtWrap: { backgroundColor: '#1E293B', borderRadius: 12, borderWidth: 1, borderColor: '#334155', overflow: 'hidden', padding: 2, paddingBottom: 4, minHeight: 148, flexShrink: 0 },
-  courtWrapSub: { minHeight: 200, padding: 2, paddingBottom: 2, flexGrow: 1, flexShrink: 1 },
+  courtWrapSub: { minHeight: 0, maxHeight: 148, padding: 2, paddingBottom: 2, flexGrow: 1, flexShrink: 1, overflow: 'hidden' },
   emptyText: { color: '#94A3B8', padding: 8, textAlign: 'center', fontSize: 12, fontWeight: '600' },
   tagPopover: {
     marginTop: 8,
@@ -487,21 +480,21 @@ const styles = StyleSheet.create({
   tagChip: { backgroundColor: '#1E293B', borderRadius: 999, borderWidth: 1, borderColor: '#FBBF24', paddingHorizontal: 10, paddingVertical: 6 },
   tagChipText: { color: '#FDE68A', fontSize: 12, fontWeight: '900', lineHeight: 16, includeFontPadding: false },
   tagClose: { color: '#94A3B8', fontSize: 11, fontWeight: '700', textAlign: 'center', lineHeight: 16, includeFontPadding: false },
-  benchWrap: { marginTop: 4, flexShrink: 0 },
-  benchHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 4, flexShrink: 0 },
+  benchWrap: { marginTop: 0, marginBottom: 0, paddingBottom: 0, flexShrink: 0 },
+  benchHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 2, flexShrink: 0 },
   benchLabel: { color: '#94A3B8', fontSize: 15, fontWeight: '800', lineHeight: 18, includeFontPadding: false, flexShrink: 1 },
-  exitBtn: { backgroundColor: '#7F1D1D', borderRadius: 8, paddingHorizontal: 10, paddingVertical: 8, borderWidth: 1, borderColor: '#F87171', flexShrink: 0 },
+  exitBtn: { backgroundColor: '#7F1D1D', borderRadius: 8, paddingHorizontal: 10, paddingVertical: 6, borderWidth: 1, borderColor: '#F87171', flexShrink: 0 },
   exitBtnText: { color: '#FECACA', fontSize: 13, fontWeight: '900', lineHeight: 16, includeFontPadding: false },
   benchScrollWrap: { position: 'relative', flexShrink: 0 },
-  benchScroll: { flexGrow: 0, flexShrink: 0, maxHeight: 80 },
-  benchRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingRight: 36, minHeight: 64 },
+  benchScroll: { flexGrow: 0, flexShrink: 0, maxHeight: 52 },
+  benchRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingRight: 36, minHeight: 48 },
   benchFade: { position: 'absolute', right: 0, top: 0, bottom: 0, width: 32, flexDirection: 'row', flexShrink: 0 },
   benchFadeSoft: { flex: 1, backgroundColor: 'rgba(30, 41, 59, 0.35)' },
   benchFadeHard: { width: 20, backgroundColor: 'rgba(30, 41, 59, 0.92)', alignItems: 'center', justifyContent: 'center' },
   benchFadeArrow: { color: '#FDE68A', fontSize: 18, fontWeight: '900', lineHeight: 20, includeFontPadding: false },
-  benchChip: { backgroundColor: '#334155', borderRadius: 10, paddingHorizontal: 14, paddingVertical: 12, minWidth: 96, minHeight: 56, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: '#64748B', flexShrink: 0 },
+  benchChip: { backgroundColor: '#334155', borderRadius: 10, paddingHorizontal: 12, paddingVertical: 8, minWidth: 88, minHeight: 44, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: '#64748B', flexShrink: 0 },
   benchChipDim: { opacity: 0.7 },
-  benchChipText: { color: '#F8FAFC', fontSize: 16, fontWeight: '800', lineHeight: 18, includeFontPadding: false },
-  benchChipAnon: { backgroundColor: '#422006', borderRadius: 10, paddingHorizontal: 12, paddingVertical: 12, minWidth: 112, minHeight: 56, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: '#FBBF24', flexShrink: 0 },
-  benchChipAnonText: { color: '#FDE68A', fontSize: 16, fontWeight: '900', lineHeight: 18, includeFontPadding: false },
+  benchChipText: { color: '#F8FAFC', fontSize: 15, fontWeight: '800', lineHeight: 18, includeFontPadding: false },
+  benchChipAnon: { backgroundColor: '#422006', borderRadius: 10, paddingHorizontal: 12, paddingVertical: 8, minWidth: 104, minHeight: 44, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: '#FBBF24', flexShrink: 0 },
+  benchChipAnonText: { color: '#FDE68A', fontSize: 15, fontWeight: '900', lineHeight: 18, includeFontPadding: false },
 });

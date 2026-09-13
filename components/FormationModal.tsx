@@ -576,15 +576,6 @@ export default function FormationModal({
 
   const targeting = intent && (intent.type === 'fill' || intent.type === 'swap') ? intent : null;
 
-  let unusedHint = '빈자리를 터치해 투입하거나, 출전 선수를 터치해 교체/퇴장하세요.';
-  if (targeting?.type === 'fill') {
-    unusedHint = `${slotLabelOf(getState(targeting.side), targeting.index)} 빈자리 선택 · 대기 선수를 터치하면 즉시 투입됩니다`;
-  } else if (targeting?.type === 'swap') {
-    unusedHint = `${nameOf(targeting.side, getState(targeting.side).court[targeting.index])} 교체 · 대기 선수를 터치하면 1:1 교체됩니다`;
-  } else if (holding) {
-    unusedHint = `${nameOf(holding.side, holding.id)} 선택됨 · 코트 빈자리 또는 출전 슬롯을 터치하면 배치/교체됩니다`;
-  }
-
   const menuState = intent?.type === 'menu' ? intent : null;
   const menuOccupant = menuState ? assignedUserId(getState(menuState.side).court[menuState.index]) : null;
 
@@ -642,15 +633,7 @@ export default function FormationModal({
 
           {!dual ? renderLineCtrls('host') : null}
 
-          <Text style={styles.holdHint} numberOfLines={1}>{unusedHint}</Text>
-
-          <ScrollView
-            style={styles.bodyScroll}
-            contentContainerStyle={styles.bodyScrollContent}
-            nestedScrollEnabled
-            keyboardShouldPersistTaps="handled"
-            showsVerticalScrollIndicator={false}
-          >
+          <View style={styles.bodyFit}>
             {dual ? (
               <View style={styles.dualCourtBlock}>
                 <View style={styles.teamCourtPane}>
@@ -698,7 +681,7 @@ export default function FormationModal({
             <View style={[styles.benchBlock, dual && styles.benchBlockDual]}>
               {dual ? renderSharedBench() : renderBenchScroll('host', teamName)}
             </View>
-          </ScrollView>
+          </View>
 
           <View style={styles.btnRow}>
             <TouchableOpacity style={styles.cancelBtn} onPress={onClose}>
@@ -771,34 +754,32 @@ export default function FormationModal({
 
 const styles = StyleSheet.create({
   overlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.72)', justifyContent: 'center', alignItems: 'center', padding: 4, paddingTop: 12 },
-  sheet: { backgroundColor: '#0F172A', borderRadius: 14, paddingHorizontal: 6, paddingBottom: 6, paddingTop: 12, width: 640, maxWidth: '100%', maxHeight: '92%', borderWidth: 1, borderColor: '#334155', zIndex: 1, flexShrink: 1, overflow: 'hidden' },
+  sheet: { backgroundColor: '#0F172A', borderRadius: 14, paddingHorizontal: 6, paddingBottom: 4, paddingTop: 8, width: 640, maxWidth: '100%', height: '92%', maxHeight: '92%', borderWidth: 1, borderColor: '#334155', zIndex: 1, flexShrink: 1, overflow: 'hidden', gap: 4 },
   sheetDual: { width: '98%', maxWidth: 980 },
-  title: { fontSize: 13, fontWeight: '900', color: '#F8FAFC', textAlign: 'center', marginBottom: 1, flexShrink: 0 },
-  lineCtrlRow: { flexDirection: 'row', gap: 4, marginBottom: 1, flexShrink: 0, width: '100%' },
-  lineCtrl: { flex: 1, minWidth: 0, backgroundColor: '#1E293B', borderRadius: 6, padding: 2, borderWidth: 1, borderColor: '#334155', alignItems: 'center' },
-  lineCtrlLabel: { fontSize: 8, fontWeight: '800', color: '#CBD5E1', marginBottom: 1 },
+  title: { fontSize: 13, fontWeight: '900', color: '#F8FAFC', textAlign: 'center', marginBottom: 0, flexShrink: 0 },
+  lineCtrlRow: { flexDirection: 'row', gap: 4, marginBottom: 0, flexShrink: 0, width: '100%' },
+  lineCtrl: { flex: 1, minWidth: 0, backgroundColor: '#1E293B', borderRadius: 6, padding: 1, borderWidth: 1, borderColor: '#334155', alignItems: 'center' },
+  lineCtrlLabel: { fontSize: 8, fontWeight: '800', color: '#CBD5E1', marginBottom: 0 },
   stepper: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   stepBtn: { width: 22, height: 22, borderRadius: 6, backgroundColor: '#334155', alignItems: 'center', justifyContent: 'center' },
   stepBtnText: { color: '#FFFFFF', fontSize: 14, fontWeight: '900' },
   stepVal: { minWidth: 14, textAlign: 'center', color: '#F8FAFC', fontSize: 11, fontWeight: '900' },
-  holdHint: { fontSize: 10, color: '#94A3B8', fontWeight: '700', textAlign: 'center', marginBottom: 1, flexShrink: 0 },
-  bodyScroll: { flexGrow: 1, flexShrink: 1, minHeight: 0 },
-  bodyScrollContent: { flexGrow: 1, gap: 4, paddingBottom: 2 },
+  bodyFit: { flexGrow: 1, flexShrink: 1, minHeight: 0, gap: 4 },
   courtWrap: {
     marginVertical: 0,
     flexGrow: 1,
     flexShrink: 1,
-    minHeight: 168,
+    minHeight: 0,
     backgroundColor: '#1E293B',
-    borderRadius: 12,
+    borderRadius: 10,
     borderWidth: 1,
     borderColor: '#334155',
     overflow: 'hidden',
     padding: 2,
   },
-  dualCourtBlock: { flexDirection: 'row', alignItems: 'stretch', flexGrow: 1, flexShrink: 1, minHeight: 180, marginBottom: 0 },
-  teamCourtPane: { flex: 1, minWidth: 0, minHeight: 0, flexDirection: 'column', paddingBottom: 2 },
-  teamCourtFill: { flex: 1, minHeight: 140, width: '100%', paddingBottom: 0 },
+  dualCourtBlock: { flexDirection: 'row', alignItems: 'stretch', flexGrow: 1, flexShrink: 1, minHeight: 0, marginBottom: 0 },
+  teamCourtPane: { flex: 1, minWidth: 0, minHeight: 0, flexDirection: 'column', paddingBottom: 0 },
+  teamCourtFill: { flex: 1, minHeight: 0, width: '100%', paddingBottom: 0 },
   verticalNet: {
     width: 6,
     alignSelf: 'stretch',
@@ -807,14 +788,14 @@ const styles = StyleSheet.create({
     marginHorizontal: 2,
     marginVertical: 1,
   },
-  benchBlock: { backgroundColor: '#1E293B', borderRadius: 10, padding: 4, borderWidth: 1, borderColor: '#334155', marginTop: 0, height: 64, maxHeight: 64, overflow: 'hidden', flexShrink: 0 },
-  benchBlockDual: { height: 64, maxHeight: 64, flexShrink: 0 },
-  benchDualRow: { flexDirection: 'row', gap: 4, height: 64, maxHeight: 64 },
-  benchPane: { flex: 1, minWidth: 0, height: 64, maxHeight: 64 },
-  benchScroll: { flex: 1, maxHeight: 64 },
-  benchHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 1, flexShrink: 0 },
+  benchBlock: { backgroundColor: '#1E293B', borderRadius: 8, padding: 3, borderWidth: 1, borderColor: '#334155', marginTop: 0, height: 52, maxHeight: 52, overflow: 'hidden', flexShrink: 0 },
+  benchBlockDual: { height: 52, maxHeight: 52, flexShrink: 0 },
+  benchDualRow: { flexDirection: 'row', gap: 4, height: 52, maxHeight: 52 },
+  benchPane: { flex: 1, minWidth: 0, height: 52, maxHeight: 52 },
+  benchScroll: { flex: 1, maxHeight: 52 },
+  benchHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 0, flexShrink: 0 },
   benchTitle: { fontSize: 11, fontWeight: '800', color: '#F8FAFC' },
-  benchChipWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 4, paddingBottom: 2 },
+  benchChipWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 4, paddingBottom: 0 },
   dutyAction: { fontSize: 10, fontWeight: '700', color: '#94A3B8' },
   playerChip: { paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8, borderWidth: 0, alignItems: 'center', backgroundColor: '#334155' },
   chipCourt: { backgroundColor: '#334155', borderColor: '#334155' },
@@ -825,10 +806,10 @@ const styles = StyleSheet.create({
   chipLocked: { opacity: 0.7 },
   playerChipText: { color: '#F8FAFC', fontSize: 12, fontWeight: '800' },
   emptyDuty: { fontSize: 10, color: '#64748B', fontWeight: '700' },
-  btnRow: { flexDirection: 'row', gap: 6, marginTop: 4, flexShrink: 0 },
-  cancelBtn: { flex: 1, backgroundColor: '#334155', paddingVertical: 12, borderRadius: 10, alignItems: 'center' },
+  btnRow: { flexDirection: 'row', gap: 4, marginTop: 0, flexShrink: 0 },
+  cancelBtn: { flex: 1, backgroundColor: '#334155', paddingVertical: 8, borderRadius: 10, alignItems: 'center' },
   cancelText: { color: '#E2E8F0', fontWeight: '800', fontSize: 14 },
-  saveBtn: { flex: 2, backgroundColor: '#2563EB', paddingVertical: 10, borderRadius: 10, alignItems: 'center' },
+  saveBtn: { flex: 2, backgroundColor: '#2563EB', paddingVertical: 8, borderRadius: 10, alignItems: 'center' },
   saveText: { color: '#FFFFFF', fontWeight: '900', fontSize: 13 },
   actionOverlay: {
     ...StyleSheet.absoluteFillObject,
