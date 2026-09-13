@@ -214,6 +214,53 @@ export async function writeLiveSetScore(
 }
 
 /**
+ * 선수 교체 시 현재 세트의 라인업만 UPDATE/INSERT 한다.
+ * match_sets 전체 DELETE/재삽입을 하지 않으므로 match_events 타임라인을 보존한다.
+ */
+export async function writeLiveSetLineup(
+  matchId: string,
+  setIndex: number,
+  side: 'host' | 'away',
+  lineup: string[],
+): Promise<void> {
+  const setNumber = Math.max(1, setIndex + 1);
+  const column = side === 'host' ? 'host_lineup' : 'away_lineup';
+  const court = persistCourtSlots(lineup);
+  if (!matchSetsTableAvailable) return;
+  try {
+    const { data: existing, error: readError } = await supabase
+      .from('match_sets')
+      .select('id')
+      .eq('match_id', matchId)
+      .eq('set_number', setNumber)
+      .maybeSingle();
+    if (readError) {
+      matchSetsTableAvailable = false;
+      return;
+    }
+    if (existing?.id) {
+      const { error } = await supabase
+        .from('match_sets')
+        .update({ [column]: court })
+        .eq('id', existing.id);
+      if (error) console.warn('[writeLiveSetLineup] update failed:', error.message);
+      return;
+    }
+    const { error } = await supabase.from('match_sets').insert({
+      match_id: matchId,
+      set_number: setNumber,
+      host_score: 0,
+      away_score: 0,
+      [column]: court,
+      is_closed: false,
+    });
+    if (error) console.warn('[writeLiveSetLineup] insert failed:', error.message);
+  } catch (err) {
+    console.warn('[writeLiveSetLineup] skipped:', err);
+  }
+}
+
+/**
  * 점수 취소/타임라인 삭제 후 해당 세트만 재계산해 match_sets + matches.set_scores 에 반영.
  * winner_team / 다른 세트 라인업은 건드리지 않는다.
  */
@@ -495,7 +542,7 @@ export function isBestOfFiveDecided(sets: Array<{ hostScore: number; awayScore: 
 
 export function isMatchRecordingFinished(match: { status?: string; winner_team?: string | null } | null | undefined): boolean {
   if (!match) return false;
-  if (['completed', 'pending_result', 'friendly'].includes(match.status || '')) return true;
+  if (['completed', 'pending_result', 'friendly', 'submitted'].includes(match.status || '')) return true;
   if (match.status === 'intramural' && !!match.winner_team) return true;
   return false;
 }

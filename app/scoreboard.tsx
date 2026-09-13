@@ -44,6 +44,8 @@ import {
   lastScoreForSetFromEvents,
   fetchSetScoreFromDb,
   listMatchSetsReadOnly,
+  writeLiveSetLineup,
+  isMatchRecordingFinished,
   type MatchSetRecord,
 } from '../lib/matchSets';
 
@@ -683,6 +685,16 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
 
   const canControlHost = myRole === 'integrated_recorder' || myRole === 'host_recorder' || isSingleRecorderMode;
   const canControlAway = myRole === 'integrated_recorder' || myRole === 'away_recorder' || isSingleRecorderMode;
+  const isSubstitutionLocked =
+    matchClosedRef.current
+    || isMatchRecordingFinished(match)
+    || String(match?.status || '') === 'submitted';
+
+  useEffect(() => {
+    if (!isSubstitutionLocked) return;
+    if (actionMode !== 'sub') return;
+    setActionModalVisible(false);
+  }, [isSubstitutionLocked, actionMode]);
 
   const handleSelectRole = async (role: 'spectator' | 'host_recorder' | 'away_recorder' | 'integrated_recorder') => {
     if (!matchId || !currentUserId) return;
@@ -730,6 +742,7 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
 
   const openActionModal = (team: 'host' | 'away', mode: 'score' | 'sub') => {
     if (myRole === 'spectator') return;
+    if (mode === 'sub' && isSubstitutionLocked) return;
     setActionTeam(team);
     setActionMode(mode);
     setActionModalVisible(true);
@@ -815,8 +828,66 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
     }
   };
 
+  const persistSubstitutionEvent = async (outMember: Member, inMember: Member) => {
+    const tempEvent: MatchEvent = {
+      id: `temp-${Date.now()}`,
+      match_id: matchId,
+      set_index: currentSetIndex,
+      event_type: 'sub',
+      team_type: actionTeam,
+      player_id: inMember.user_id,
+      player_name: getSafeDisplayName(inMember),
+      sub_out_id: outMember.user_id,
+      sub_out_name: getSafeDisplayName(outMember),
+      host_score: currentScores.host,
+      away_score: currentScores.away,
+      is_canceled: false,
+    };
+    setEvents((prev) => {
+      const next = [...prev, tempEvent];
+      eventsRef.current = next;
+      return next;
+    });
+    const subLog = {
+      match_id: matchId,
+      set_index: currentSetIndex,
+      set_number: currentSetIndex + 1,
+      event_type: 'sub',
+      team_type: actionTeam,
+      player_id: inMember.user_id,
+      player_name: getSafeDisplayName(inMember),
+      sub_out_id: outMember.user_id,
+      sub_out_name: getSafeDisplayName(outMember),
+      host_score: currentScores.host,
+      away_score: currentScores.away,
+      is_canceled: false,
+    };
+    const persistedEvent = await persistOptimisticEvent(tempEvent, subLog);
+    if (matchId) await appendMatchScoreLog(matchId, {
+      ...subLog,
+      id: persistedEvent.id,
+    });
+  };
+
+  const persistCurrentSetLineupOnly = async (
+    side: 'host' | 'away',
+    court: Array<string | null | undefined>,
+    bench?: string[],
+  ) => {
+    const courtSlots = persistCourtSlots((court || []).map((id) => id ?? null));
+    const setNumber = currentSetIndex + 1;
+    setMatchSets((prev) => prev.map((s) => {
+      if (s.setNumber !== setNumber) return s;
+      return side === 'host'
+        ? { ...s, hostLineup: courtSlots, ...(bench ? { hostBench: bench } : {}) }
+        : { ...s, awayLineup: courtSlots, ...(bench ? { awayBench: bench } : {}) };
+    }));
+    if (matchId) await writeLiveSetLineup(matchId, currentSetIndex, side, courtSlots);
+  };
+
   const handleSubConfirm = async (outMember: Member, inMember: Member) => {
     setActionModalVisible(false);
+    if (isSubstitutionLocked || myRole === 'spectator') return;
     const isHost = actionTeam === 'host';
     const targetRosterStr = isHost ? match?.host_roster : match?.away_roster;
 
@@ -839,64 +910,18 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
     };
     const carried = seedNextSetFormation(formMap, currentSetIndex, true);
     const updatedRosterJson = JSON.stringify(carried);
-
-    const tempEvent: MatchEvent = {
-      id: `temp-${Date.now()}`,
-      match_id: matchId,
-      set_index: currentSetIndex,
-      event_type: 'sub',
-      team_type: actionTeam,
-      player_id: inMember.user_id,
-      player_name: getSafeDisplayName(inMember),
-      sub_out_id: outMember.user_id,
-      sub_out_name: getSafeDisplayName(outMember),
-      host_score: currentScores.host,
-      away_score: currentScores.away,
-      is_canceled: false
-    };
-    setEvents(prev => {
-      const next = [...prev, tempEvent];
-      eventsRef.current = next;
-      return next;
-    });
-
-    const updatePayload = isHost 
+    const updatePayload = isHost
       ? { host_roster: updatedRosterJson }
       : { away_roster: updatedRosterJson };
 
-    setMatch(prev => prev ? { ...prev, ...updatePayload } : prev);
-
+    setMatch((prev) => prev ? { ...prev, ...updatePayload } : prev);
+    await persistSubstitutionEvent(outMember, inMember);
     await supabase.from('matches').update(updatePayload).eq('id', matchId);
-    await persistSetsFromHistory(
-      setHistory,
-      { host: currentScores.host, away: currentScores.away },
-      {
-        host: parseRosterJson(isHost ? updatedRosterJson : match?.host_roster),
-        away: parseRosterJson(!isHost ? updatedRosterJson : match?.away_roster),
-      },
-    );
-    const subLog = {
-      match_id: matchId,
-      set_index: currentSetIndex,
-      set_number: currentSetIndex + 1,
-      event_type: 'sub',
-      team_type: actionTeam,
-      player_id: inMember.user_id,
-      player_name: getSafeDisplayName(inMember),
-      sub_out_id: outMember.user_id,
-      sub_out_name: getSafeDisplayName(outMember),
-      host_score: currentScores.host,
-      away_score: currentScores.away,
-      is_canceled: false,
-    };
-    const persistedEvent = await persistOptimisticEvent(tempEvent, subLog);
-    if (matchId) await appendMatchScoreLog(matchId, {
-      ...subLog,
-      id: persistedEvent.id,
-    });
+    await persistCurrentSetLineupOnly(isHost ? 'host' : 'away', updatedCourt, updatedBench);
   };
 
   const handleLineupApply = async (payload: LineupApplyPayload) => {
+    if (isSubstitutionLocked || myRole === 'spectator') return;
     const isHost = actionTeam === 'host';
     const targetRosterStr = isHost ? match?.host_roster : match?.away_roster;
     const formMap = parseSetFormationMap(targetRosterStr);
@@ -912,8 +937,9 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
       });
     });
     const benchIds = [...new Set([...payload.benchIds, ...guestPool])];
+    const courtSlots = persistCourtSlots(payload.courtIds);
     formMap[currentSetIndex] = {
-      court: persistCourtSlots(payload.courtIds),
+      court: courtSlots,
       bench: benchIds,
       late: (currentForm.late || []).filter((id) => {
         const real = assignedUserId(id);
@@ -929,56 +955,11 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
       ? { host_roster: updatedRosterJson }
       : { away_roster: updatedRosterJson };
     setMatch((prev) => prev ? { ...prev, ...updatePayload } : prev);
-    await supabase.from('matches').update(updatePayload).eq('id', matchId);
-    await persistSetsFromHistory(
-      setHistory,
-      { host: currentScores.host, away: currentScores.away },
-      {
-        host: parseRosterJson(isHost ? updatedRosterJson : match?.host_roster),
-        away: parseRosterJson(!isHost ? updatedRosterJson : match?.away_roster),
-      },
-    );
     if (payload.sub) {
-      const { out: outMember, in: inMember } = payload.sub;
-      const tempEvent: MatchEvent = {
-        id: `temp-${Date.now()}`,
-        match_id: matchId,
-        set_index: currentSetIndex,
-        event_type: 'sub',
-        team_type: actionTeam,
-        player_id: inMember.user_id,
-        player_name: getSafeDisplayName(inMember),
-        sub_out_id: outMember.user_id,
-        sub_out_name: getSafeDisplayName(outMember),
-        host_score: currentScores.host,
-        away_score: currentScores.away,
-        is_canceled: false,
-      };
-      setEvents((prev) => {
-        const next = [...prev, tempEvent];
-        eventsRef.current = next;
-        return next;
-      });
-      const subLog = {
-        match_id: matchId,
-        set_index: currentSetIndex,
-        set_number: currentSetIndex + 1,
-        event_type: 'sub',
-        team_type: actionTeam,
-        player_id: inMember.user_id,
-        player_name: getSafeDisplayName(inMember),
-        sub_out_id: outMember.user_id,
-        sub_out_name: getSafeDisplayName(outMember),
-        host_score: currentScores.host,
-        away_score: currentScores.away,
-        is_canceled: false,
-      };
-      const persistedEvent = await persistOptimisticEvent(tempEvent, subLog);
-      if (matchId) await appendMatchScoreLog(matchId, {
-        ...subLog,
-        id: persistedEvent.id,
-      });
+      await persistSubstitutionEvent(payload.sub.out, payload.sub.in);
     }
+    await supabase.from('matches').update(updatePayload).eq('id', matchId);
+    await persistCurrentSetLineupOnly(isHost ? 'host' : 'away', courtSlots, benchIds);
   };
 
   const persistSetsFromHistory = async (
@@ -1192,8 +1173,14 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
       if (!isSpectatorForced) {
         setEvents((prev) => {
           if (tableOk) {
-            eventsRef.current = tableEvents;
-            return tableEvents;
+            if (tableEvents.length === 0 && prev.length > 0) return prev;
+            const pending = prev.filter((e) => String(e.id).startsWith('temp-'));
+            const ids = new Set(tableEvents.map((e) => e.id));
+            const merged = pending.length
+              ? [...tableEvents, ...pending.filter((e) => !ids.has(e.id))]
+              : tableEvents;
+            eventsRef.current = merged;
+            return merged;
           }
           if (scoreLogs.length === 0) return prev;
           const merged = mergeEventsWithScoreLogs(prev, scoreLogs, matchId, false);
@@ -2124,7 +2111,12 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
               <TouchableOpacity style={styles.glassBtnCompact} onPress={openFormation} hitSlop={8}>
                 <Text style={styles.glassBtnText}>📐 포메이션</Text>
               </TouchableOpacity>
-              <TouchableOpacity style={styles.glassBtnCompact} onPress={() => openActionModal(leftTeamData.key, 'sub')} hitSlop={8}>
+              <TouchableOpacity
+                style={[styles.glassBtnCompact, isSubstitutionLocked && styles.glassBtnDisabled]}
+                onPress={() => openActionModal(leftTeamData.key, 'sub')}
+                disabled={isSubstitutionLocked}
+                hitSlop={8}
+              >
                 <Text style={styles.glassBtnText}>🔄 선수 교체</Text>
               </TouchableOpacity>
             </View>
@@ -2155,7 +2147,12 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
               <TouchableOpacity style={styles.glassBtnCompact} onPress={openFormation} hitSlop={8}>
                 <Text style={styles.glassBtnText}>📐 포메이션</Text>
               </TouchableOpacity>
-              <TouchableOpacity style={styles.glassBtnCompact} onPress={() => openActionModal(rightTeamData.key, 'sub')} hitSlop={8}>
+              <TouchableOpacity
+                style={[styles.glassBtnCompact, isSubstitutionLocked && styles.glassBtnDisabled]}
+                onPress={() => openActionModal(rightTeamData.key, 'sub')}
+                disabled={isSubstitutionLocked}
+                hitSlop={8}
+              >
                 <Text style={styles.glassBtnText}>🔄 선수 교체</Text>
               </TouchableOpacity>
             </View>
@@ -2189,7 +2186,7 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
       <View style={[styles.bottomControlBar, { paddingLeft: Math.max(safeInset(insets.left), 8), paddingRight: Math.max(safeInset(insets.right), 8) }]}>
         <View style={styles.timelineChipRow}>
           <ScoreTimeline
-            key={`live-set-${currentSetIndex}-${timelineEpoch}-${liveSetEvents.length}`}
+            key={`live-set-${currentSetIndex}-${timelineEpoch}`}
             events={liveSetEvents}
             canControl={myRole !== 'spectator'}
             displayHostName={displayHostName}
@@ -2216,7 +2213,7 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
       </View>
 
       <PlayerActionModal
-        visible={actionModalVisible}
+        visible={actionModalVisible && !(isSubstitutionLocked && actionMode === 'sub')}
         mode={actionMode}
         teamName={actionTeam === 'host' ? displayHostName : displayAwayName}
         opponentTeamName={actionTeam === 'host' ? displayAwayName : displayHostName}
@@ -2502,6 +2499,7 @@ const styles = StyleSheet.create({
   floatBtnsA: { position: 'absolute', top: 8, right: 8, alignItems: 'flex-end' },
   floatBtnsB: { position: 'absolute', top: 8, left: 8, alignItems: 'flex-start' },
   glassBtnCompact: { backgroundColor: 'rgba(0, 0, 0, 0.25)', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 8, borderWidth: 1, borderColor: 'rgba(255, 255, 255, 0.2)', alignItems: 'center', justifyContent: 'center', flexShrink: 0, minHeight: 36 },
+  glassBtnDisabled: { opacity: 0.35 },
   glassBtnText: { color: '#FFFFFF', fontSize: 11, fontWeight: '800', lineHeight: 16, includeFontPadding: false },
   bigScoreTouchArea: { flex: 1, width: '100%', padding: 0, margin: 0, justifyContent: 'center', alignItems: 'center' },
   scoreCenterWrap: { flex: 1, justifyContent: 'center', alignItems: 'center', margin: 0, padding: 0 },
