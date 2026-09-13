@@ -20,9 +20,10 @@ type TeamLineupPanelProps = {
   lineup?: TeamLineupView | null;
   side: 'left' | 'right';
   variant?: 'sidebar' | 'sheet' | 'compare';
+  servingPlayerId?: string | null;
 };
 
-export default function TeamLineupPanel({ team, lineup, side, variant = 'sidebar' }: TeamLineupPanelProps) {
+export default function TeamLineupPanel({ team, lineup, side, variant = 'sidebar', servingPlayerId }: TeamLineupPanelProps) {
   const teamName = lineup?.teamName || team?.name || (side === 'left' ? '홈 팀' : '어웨이 팀');
   const court = lineup?.court || [];
   const bench = lineup?.bench || [];
@@ -35,27 +36,39 @@ export default function TeamLineupPanel({ team, lineup, side, variant = 'sidebar
       {court.length === 0 ? (
         <Text style={[styles.empty, compact && styles.emptyCompact]}>라인업 없음</Text>
       ) : (
-        court.map((player, idx) => (
-          <View key={`${player.id}-${idx}`} style={[styles.row, compact && styles.rowCompact]}>
-            <View style={[styles.badge, { backgroundColor: accent }, compact && styles.badgeCompact]}>
-              <Text style={[styles.badgeText, compact && styles.badgeTextCompact]}>{player.badge}</Text>
+        court.map((player, idx) => {
+          const serving = !!servingPlayerId && player.id === servingPlayerId;
+          return (
+          <View
+            key={`${player.id}-${idx}`}
+            style={[
+              styles.row,
+              compact && styles.rowCompact,
+              serving && styles.rowServing,
+            ]}
+          >
+            <View style={[styles.badge, { backgroundColor: accent }, compact && styles.badgeCompact, serving && styles.badgeServing]}>
+              <Text style={[styles.badgeText, compact && styles.badgeTextCompact]}>{serving ? 'BALL' : player.badge}</Text>
             </View>
             <View style={styles.playerMeta}>
               <Text style={[styles.playerName, compact && styles.playerNameCompact]} numberOfLines={1}>{player.name}</Text>
-              {(player.position || player.isCaptain) ? (
+              {(player.position || player.isCaptain || serving) ? (
                 <Text style={[styles.playerPos, compact && styles.playerPosCompact]} numberOfLines={1}>
+                  {serving ? '서브(BALL)' : ''}
+                  {serving && player.position ? ' · ' : ''}
                   {player.position || ''}
                   {player.isCaptain ? <Text style={styles.captainMark}> (C)</Text> : null}
                 </Text>
               ) : null}
             </View>
           </View>
-        ))
+          );
+        })
       )}
       {bench.length > 0 ? (
         <>
           <View style={[styles.benchDivider, compact && styles.benchDividerCompact]} />
-          <Text style={[styles.benchLabel, compact && styles.benchLabelCompact]}>후보</Text>
+          <Text style={[styles.benchLabel, compact && styles.benchLabelCompact]}>대기 명단</Text>
           {bench.map((player, idx) => (
             <View key={`bench-${player.id}-${idx}`} style={[styles.benchRow, compact && styles.rowCompact]}>
               <View style={[styles.badge, styles.benchBadge, compact && styles.badgeCompact]}>
@@ -146,7 +159,17 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 8,
     marginBottom: 8,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: 'transparent',
+    paddingVertical: 2,
+    paddingHorizontal: 2,
   },
+  rowServing: {
+    borderColor: '#FDE68A',
+    backgroundColor: 'rgba(253, 230, 138, 0.12)',
+  },
+  badgeServing: { backgroundColor: '#F59E0B' },
   rowCompact: {
     gap: 5,
     marginBottom: 4,

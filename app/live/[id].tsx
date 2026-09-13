@@ -11,11 +11,13 @@ import {
   ScrollView,
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
+import Head from 'expo-router/head';
 import { supabase } from '../../lib/supabase';
 import { Colors } from '../../constants/Colors';
 import ScoreboardScreen from '../scoreboard';
 import TeamLineupPanel, { type TeamLineupView } from '../../components/TeamLineupPanel';
 import { loadLiveLineups } from '../../lib/liveLineupView';
+import { LIVE_OG_DESCRIPTION, LIVE_OG_IMAGE_URL, liveOgTitle } from '../../lib/liveLink';
 
 const PLAY_STORE_URL = 'https://play.google.com/store/apps/details?id=com.rudolfuu.tvolley&pcampaignid=web_share';
 const APP_STORE_URL = 'https://apps.apple.com/kr/app/%ED%8B%B0%EB%B3%BC%EB%A6%AC/id6799385540';
@@ -102,8 +104,13 @@ export default function LiveScoreboardScreen() {
   const [matchId, setMatchId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [leftLineup, setLeftLineup] = useState<TeamLineupView | null>(null);
-  const [rightLineup, setRightLineup] = useState<TeamLineupView | null>(null);
+  const [hostLineup, setHostLineup] = useState<TeamLineupView | null>(null);
+  const [awayLineup, setAwayLineup] = useState<TeamLineupView | null>(null);
+  const [dbSwapped, setDbSwapped] = useState(false);
+  const [localCourtFlip, setLocalCourtFlip] = useState(false);
+  const [servingPlayerId, setServingPlayerId] = useState<string | null>(null);
+  const [ogHost, setOgHost] = useState('홈팀');
+  const [ogAway, setOgAway] = useState('어웨이팀');
   const [isLineupModalOpen, setIsLineupModalOpen] = useState(false);
   const [focusedTeam, setFocusedTeam] = useState<'ALL' | 'HOME' | 'AWAY'>('ALL');
 
@@ -159,8 +166,12 @@ export default function LiveScoreboardScreen() {
       try {
         const next = await loadLiveLineups(matchId);
         if (cancelled || !next) return;
-        setLeftLineup(next.left);
-        setRightLineup(next.right);
+        setHostLineup(next.host);
+        setAwayLineup(next.away);
+        setDbSwapped(!!next.isSwapped);
+        setServingPlayerId(next.servingPlayerId);
+        setOgHost(next.hostName);
+        setOgAway(next.awayName);
       } catch {
         // 라인업 패널 전용. 전광판 점수 조회와 분리한다.
       }
@@ -180,6 +191,26 @@ export default function LiveScoreboardScreen() {
       supabase.removeChannel(channel);
     };
   }, [matchId, isDesktop, isLineupModalOpen]);
+
+  useEffect(() => {
+    if (Platform.OS !== 'web' || typeof document === 'undefined') return;
+    const title = liveOgTitle(ogHost, ogAway);
+    document.title = title;
+    const upsertMeta = (attr: string, key: string, value: string) => {
+      let tag = document.head.querySelector(`meta[${attr}="${key}"]`);
+      if (!tag) {
+        tag = document.createElement('meta');
+        tag.setAttribute(attr, key);
+        document.head.appendChild(tag);
+      }
+      tag.setAttribute('content', value);
+    };
+    upsertMeta('name', 'description', LIVE_OG_DESCRIPTION);
+    upsertMeta('property', 'og:title', title);
+    upsertMeta('property', 'og:description', LIVE_OG_DESCRIPTION);
+    upsertMeta('property', 'og:image', LIVE_OG_IMAGE_URL);
+    upsertMeta('property', 'og:type', 'website');
+  }, [ogHost, ogAway]);
 
   if (loading) {
     return (
@@ -201,22 +232,65 @@ export default function LiveScoreboardScreen() {
 
   const homeDimmed = focusedTeam === 'AWAY';
   const awayDimmed = focusedTeam === 'HOME';
+  const boardSwapped = dbSwapped === localCourtFlip;
+  const leftLineup = boardSwapped ? awayLineup : hostLineup;
+  const rightLineup = boardSwapped ? hostLineup : awayLineup;
+  const ogTitle = liveOgTitle(ogHost, ogAway);
 
   return (
-    <View style={isDesktop ? styles.desktopShell : styles.page}>
-      {isDesktop ? (
-        <TeamLineupPanel team={{ name: leftLineup?.teamName }} lineup={leftLineup} side="left" />
+    <View style={styles.page}>
+      {Platform.OS === 'web' ? (
+        <Head>
+          <title>{ogTitle}</title>
+          <meta name="description" content={LIVE_OG_DESCRIPTION} />
+          <meta property="og:title" content={ogTitle} />
+          <meta property="og:description" content={LIVE_OG_DESCRIPTION} />
+          <meta property="og:image" content={LIVE_OG_IMAGE_URL} />
+          <meta property="og:type" content="website" />
+          <meta name="twitter:card" content="summary_large_image" />
+          <meta name="twitter:title" content={ogTitle} />
+          <meta name="twitter:description" content={LIVE_OG_DESCRIPTION} />
+          <meta name="twitter:image" content={LIVE_OG_IMAGE_URL} />
+        </Head>
       ) : null}
-      <View style={isDesktop ? styles.desktopBoard : styles.boardFrame}>
-        <ScoreboardScreen
-          matchId={matchId}
-          isSpectator={true}
-          onOpenLineup={!isDesktop ? () => setIsLineupModalOpen(true) : undefined}
-        />
+      <View style={styles.liveTopBar}>
+        <Text style={styles.liveTopTitle} numberOfLines={1}>티볼리 라이브 전광판</Text>
+        <TouchableOpacity
+          style={[styles.flipBtn, localCourtFlip && styles.flipBtnOn]}
+          onPress={() => setLocalCourtFlip((prev) => !prev)}
+          hitSlop={8}
+        >
+          <Text style={[styles.flipBtnText, localCourtFlip && styles.flipBtnTextOn]}>
+            {localCourtFlip ? '코트 반전 ON' : '코트 반전'}
+          </Text>
+        </TouchableOpacity>
       </View>
-      {isDesktop ? (
-        <TeamLineupPanel team={{ name: rightLineup?.teamName }} lineup={rightLineup} side="right" />
-      ) : null}
+      <View style={isDesktop ? styles.desktopShell : styles.mobileBoard}>
+        {isDesktop ? (
+          <TeamLineupPanel
+            team={{ name: leftLineup?.teamName }}
+            lineup={leftLineup}
+            side="left"
+            servingPlayerId={servingPlayerId}
+          />
+        ) : null}
+        <View style={isDesktop ? styles.desktopBoard : styles.boardFrame}>
+          <ScoreboardScreen
+            matchId={matchId}
+            isSpectator={true}
+            spectatorCourtFlip={localCourtFlip}
+            onOpenLineup={!isDesktop ? () => setIsLineupModalOpen(true) : undefined}
+          />
+        </View>
+        {isDesktop ? (
+          <TeamLineupPanel
+            team={{ name: rightLineup?.teamName }}
+            lineup={rightLineup}
+            side="right"
+            servingPlayerId={servingPlayerId}
+          />
+        ) : null}
+      </View>
       {!isDesktop ? (
         <Modal
           visible={isLineupModalOpen}
@@ -227,7 +301,7 @@ export default function LiveScoreboardScreen() {
           <View style={styles.lineupModalBackdrop}>
             <View style={[styles.lineupModalSheet, { maxHeight: Math.round(height * 0.85) }]}>
               <View style={styles.lineupModalHeader}>
-                <Text style={styles.lineupModalTitle}>선발 라인업 및 후보 명단</Text>
+                <Text style={styles.lineupModalTitle}>선발 라인업 및 대기 명단</Text>
                 <TouchableOpacity
                   style={styles.lineupModalClose}
                   onPress={() => setIsLineupModalOpen(false)}
@@ -263,6 +337,7 @@ export default function LiveScoreboardScreen() {
                     lineup={leftLineup}
                     side="left"
                     variant="compare"
+                    servingPlayerId={servingPlayerId}
                   />
                 </View>
                 <View style={[styles.lineupCompareCol, awayDimmed && styles.lineupDimmed]}>
@@ -271,6 +346,7 @@ export default function LiveScoreboardScreen() {
                     lineup={rightLineup}
                     side="right"
                     variant="compare"
+                    servingPlayerId={servingPlayerId}
                   />
                 </View>
               </ScrollView>
@@ -288,14 +364,42 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#020617',
   },
+  liveTopBar: {
+    flexShrink: 0,
+    zIndex: 40,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    backgroundColor: '#020617',
+    borderBottomWidth: 1,
+    borderBottomColor: '#1E293B',
+  },
+  liveTopTitle: { color: '#F8FAFC', fontSize: 13, fontWeight: '800', flex: 1, paddingRight: 8 },
+  flipBtn: {
+    backgroundColor: '#1E293B',
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderWidth: 1,
+    borderColor: '#475569',
+  },
+  flipBtnOn: { backgroundColor: '#FDE68A', borderColor: '#F59E0B' },
+  flipBtnText: { color: '#E2E8F0', fontSize: 12, fontWeight: '800' },
+  flipBtnTextOn: { color: '#78350F' },
   desktopShell: {
     flexDirection: 'row',
     width: '100%',
-    height: '100%',
     flex: 1,
+    minHeight: 0,
     backgroundColor: '#090a0f',
     justifyContent: 'center',
     alignItems: 'stretch',
+  },
+  mobileBoard: {
+    flex: 1,
+    minHeight: 0,
   },
   boardFrame: {
     flex: 1,

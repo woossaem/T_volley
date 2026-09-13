@@ -26,8 +26,10 @@ import ScoreTimeline from '../components/ScoreTimeline';
 import PlayerActionModal, { Member, ScoreKind, type LineupApplyPayload } from '../components/PlayerActionModal';
 import MatchPostgameReportModal from '../components/MatchPostgameReportModal';
 import FormationModal from '../components/FormationModal';
+import FirstServeModal from '../components/FirstServeModal';
 import { MomentumLevelBar } from '../components/SetFlowGauges';
 import { ANONYMOUS_PLAYER_NAME, assignedUserId, clampLineCount, DEFAULT_LINE_COUNT, displaySlotPlayerName, ensureTempIdsInCourt, isRegisteredUserId, isTempSlotId, listHasUser, parseSetFormation, parseSetFormationMap, parseSetRosterMap, persistCourtSlots, resolveFormationForSet, resolveFormationFromSources, safeIncludes, safeNameText, seedNextSetFormation, teamsInclude, type SetFormation } from '../lib/roster';
+import { parseServeSetupMap, resolveServePossession, shiftServeSetupMap, slotIndexForServeLabel, type ServeSetupMap, type ServeTeam } from '../lib/serveRotation';
 import { getSafeDisplayName, getSafeTeamName } from '../lib/utils';
 import { appendMatchScoreLog } from '../lib/retroactiveBinding';
 import { updateMatchIgnoringUnknownColumns } from '../lib/matchWrite';
@@ -62,6 +64,7 @@ type ScoreboardScreenProps = {
   matchId?: string;
   isSpectator?: boolean;
   onOpenLineup?: () => void;
+  spectatorCourtFlip?: boolean;
 };
 
 interface MatchRecord {
@@ -79,6 +82,8 @@ interface MatchRecord {
   score_logs?: any[] | null;
   is_guest_match?: boolean | null;
   away_team_id?: string | null;
+  is_swapped?: boolean | null;
+  serve_setup?: unknown;
 }
 
 function setIndexFromScoreLog(log: any): number {
@@ -215,6 +220,7 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
   const matchId = props.matchId || paramMatchId;
   const isSpectatorForced = props.isSpectator === true;
   const onOpenLineup = props.onOpenLineup;
+  const spectatorCourtFlip = props.spectatorCourtFlip === true;
 
   const { session } = useAuth();
   const { width: windowWidth } = useWindowDimensions();
@@ -273,7 +279,8 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
   const [pendingDeleteSet, setPendingDeleteSet] = useState<number | null>(null);
   const [pendingDeleteEvent, setPendingDeleteEvent] = useState<MatchEvent | null>(null);
   const [formationVisible, setFormationVisible] = useState(false);
-  const [formationTeam] = useState<'host' | 'away'>('host');
+  const [formationTeam, setFormationTeam] = useState<'host' | 'away'>('host');
+  const [serveSetupMap, setServeSetupMap] = useState<ServeSetupMap>({});
 
   const isInitialLoadRef = useRef(true);
   const didAutofillSet1Ref = useRef(false);
@@ -482,6 +489,10 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
 
       if (data) {
         setMatch(data);
+        setServeSetupMap(parseServeSetupMap((data as MatchRecord).serve_setup));
+        if (!isSpectatorForced && typeof (data as MatchRecord).is_swapped === 'boolean') {
+          setIsSwapped(!!(data as MatchRecord).is_swapped);
+        }
         if (isSpectatorForced) {
           setMyRole('spectator');
           setRoleModalVisible(false);
@@ -563,6 +574,10 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
         const updated = (payload?.new || {}) as MatchRecord;
         if (!updated?.id) return;
         setMatch(updated);
+        setServeSetupMap(parseServeSetupMap((updated as MatchRecord).serve_setup));
+        if (!isSpectatorForced && typeof (updated as MatchRecord).is_swapped === 'boolean') {
+          setIsSwapped(!!(updated as MatchRecord).is_swapped);
+        }
 
         if (updated.set_scores != null) {
           const parts = String(updated.set_scores).split(',').map((c) => c.trim()).filter(Boolean);
@@ -885,6 +900,29 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
     if (matchId) await writeLiveSetLineup(matchId, currentSetIndex, side, courtSlots);
   };
 
+  const persistServeSetup = async (nextMap: ServeSetupMap) => {
+    setServeSetupMap(nextMap);
+    setMatch((prev) => prev ? { ...prev, serve_setup: nextMap } : prev);
+    if (matchId) await updateMatchIgnoringUnknownColumns(matchId, { serve_setup: nextMap });
+  };
+
+  const persistCourtSwap = async () => {
+    if (isSpectatorForced) return;
+    const next = !isSwapped;
+    setIsSwapped(next);
+    setMatch((prev) => prev ? { ...prev, is_swapped: next } : prev);
+    if (myRole === 'spectator') return;
+    if (matchId) await updateMatchIgnoringUnknownColumns(matchId, { is_swapped: next });
+  };
+
+  const handleConfirmFirstServe = async (team: ServeTeam, startLabel: string) => {
+    const startSlot = slotIndexForServeLabel(startLabel);
+    await persistServeSetup({
+      ...serveSetupMap,
+      [currentSetIndex]: { team, startSlot, startLabel },
+    });
+  };
+
   const handleSubConfirm = async (outMember: Member, inMember: Member) => {
     setActionModalVisible(false);
     if (isSubstitutionLocked || myRole === 'spectator') return;
@@ -894,9 +932,10 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
     const formMap = parseSetFormationMap(targetRosterStr);
     const currentForm = formMap[currentSetIndex] || parseSetFormation(targetRosterStr, currentSetIndex);
     const courtIds = (currentForm.court.length > 0 ? currentForm.court : (parseSetRosterMap(targetRosterStr)[currentSetIndex] || parseSetRosterMap(targetRosterStr)[0] || []));
-    const updatedCourt = courtIds
-      .filter((id) => id !== outMember.user_id && !safeIncludes(id, outMember.user_id))
-      .concat(inMember.user_id);
+    const updatedCourt = courtIds.map((id) => {
+      if (id && (id === outMember.user_id || safeIncludes(id, outMember.user_id))) return inMember.user_id;
+      return id;
+    });
     const updatedBench = (currentForm.bench || [])
       .filter((id) => id !== inMember.user_id && !safeIncludes(id, inMember.user_id))
       .concat(outMember.user_id);
@@ -1362,12 +1401,16 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
       };
       const nextHostForm = shiftForm(hostForm);
       const nextAwayForm = shiftForm(awayForm);
+      const nextServe = shiftServeSetupMap(serveSetupMap, removedIndex);
+      setServeSetupMap(nextServe);
       setMatch((prev) => prev ? {
         ...prev,
         set_scores: nextHistory.join(', ') || null,
         host_roster: JSON.stringify(nextHostForm),
         away_roster: JSON.stringify(nextAwayForm),
+        serve_setup: nextServe,
       } : prev);
+      if (matchId) void updateMatchIgnoringUnknownColumns(matchId, { serve_setup: nextServe });
 
       const nextIdx = Math.max(0, Math.min(removedIndex > 0 ? removedIndex - 1 : 0, Math.max(0, updatedSets.length - 1)));
       setCurrentSetIndex(nextIdx);
@@ -1718,11 +1761,15 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
     );
   }
 
-  const leftTeamData = isSwapped
+  const boardSwapped = isSpectatorForced
+    ? (!!match?.is_swapped) === spectatorCourtFlip
+    : isSwapped;
+
+  const leftTeamData = boardSwapped
     ? { key: 'away' as const, name: displayAwayName, score: safeStyleNumber(currentScores?.away), canControl: canControlAway && myRole !== 'spectator', isHost: false }
     : { key: 'host' as const, name: displayHostName, score: safeStyleNumber(currentScores?.host), canControl: canControlHost && myRole !== 'spectator', isHost: true };
 
-  const rightTeamData = isSwapped
+  const rightTeamData = boardSwapped
     ? { key: 'host' as const, name: displayHostName, score: safeStyleNumber(currentScores?.host), canControl: canControlHost && myRole !== 'spectator', isHost: true }
     : { key: 'away' as const, name: displayAwayName, score: safeStyleNumber(currentScores?.away), canControl: canControlAway && myRole !== 'spectator', isHost: false };
 
@@ -1781,8 +1828,9 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
     return { court, bench, late: baseMembers.filter((m) => listHasUser(lateIds, m.user_id)), formation };
   };
 
-  const openFormation = () => {
-    if (myRole === 'spectator') return;
+  const openFormation = (team: 'host' | 'away') => {
+    if (isSpectatorForced || myRole === 'spectator') return;
+    setFormationTeam(team);
     setFormationVisible(true);
   };
 
@@ -1933,6 +1981,29 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
   const awayRosterView = getSetRosters(false);
   const actionRoster = actionTeam === 'host' ? hostRosterView : awayRosterView;
   const opponentRoster = actionTeam === 'host' ? awayRosterView : hostRosterView;
+  const serveLayoutTeam = serveSetupMap[currentSetIndex]?.team === 'away' ? awayRosterView : hostRosterView;
+  const servePossession = resolveServePossession({
+    events: events || [],
+    setIndex: currentSetIndex,
+    setup: serveSetupMap[currentSetIndex],
+    hostCourt: hostRosterView.court,
+    awayCourt: awayRosterView.court,
+    frontCount: serveLayoutTeam.formation.frontCount,
+    middleCount: serveLayoutTeam.formation.middleCount,
+    backCount: serveLayoutTeam.formation.backCount,
+  });
+  const serveTeamName = servePossession
+    ? (servePossession.team === 'host' ? displayHostName : displayAwayName)
+    : '';
+  const serveBadgeText = servePossession
+    ? `[서브: ${serveTeamName} | ${servePossession.positionLabel}${servePossession.playerName ? ` ${servePossession.playerName}` : ''}]`
+    : '';
+  const showFirstServeModal = !isSpectatorForced
+    && !!myRole
+    && myRole !== 'spectator'
+    && !roleModalVisible
+    && !isMatchRecordingFinished(match)
+    && !serveSetupMap[currentSetIndex];
   const liveSetEvents = (events || []).filter((e) => {
     if (Number(e?.set_index) === currentSetIndex) return true;
     const setNumber = Number((e as any)?.set_number);
@@ -2086,9 +2157,11 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
             <TouchableOpacity style={styles.reportBtnSlim} onPress={() => setReportModalVisible(true)} hitSlop={8}>
               <Text style={styles.reportBtnTextSlim}>📊 경기 리포트</Text>
             </TouchableOpacity>
-            <TouchableOpacity style={styles.switchCourtBtnSlim} onPress={() => setIsSwapped(prev => !prev)} hitSlop={8}>
-              <Text style={styles.switchCourtBtnTextSlim}>🔄 코트 변경</Text>
-            </TouchableOpacity>
+            {!isSpectatorForced ? (
+              <TouchableOpacity style={styles.switchCourtBtnSlim} onPress={() => { void persistCourtSwap(); }} hitSlop={8}>
+                <Text style={styles.switchCourtBtnTextSlim}>🔄 코트 변경</Text>
+              </TouchableOpacity>
+            ) : null}
             {onOpenLineup ? (
               <TouchableOpacity style={styles.lineupBtnSlim} onPress={onOpenLineup} hitSlop={8}>
                 <Text style={styles.lineupBtnTextSlim}>📋 라인업</Text>
@@ -2108,7 +2181,7 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
               <TouchableOpacity style={styles.glassBtnCompact} onPress={() => handleOpenEditModal()} hitSlop={8}>
                 <Text style={styles.glassBtnText}>✏️ 점수 보정</Text>
               </TouchableOpacity>
-              <TouchableOpacity style={styles.glassBtnCompact} onPress={openFormation} hitSlop={8}>
+              <TouchableOpacity style={styles.glassBtnCompact} onPress={() => openFormation(leftTeamData.key)} hitSlop={8}>
                 <Text style={styles.glassBtnText}>📐 포메이션</Text>
               </TouchableOpacity>
               <TouchableOpacity
@@ -2144,7 +2217,7 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
               <TouchableOpacity style={styles.glassBtnCompact} onPress={() => handleOpenEditModal()} hitSlop={8}>
                 <Text style={styles.glassBtnText}>✏️ 점수 보정</Text>
               </TouchableOpacity>
-              <TouchableOpacity style={styles.glassBtnCompact} onPress={openFormation} hitSlop={8}>
+              <TouchableOpacity style={styles.glassBtnCompact} onPress={() => openFormation(rightTeamData.key)} hitSlop={8}>
                 <Text style={styles.glassBtnText}>📐 포메이션</Text>
               </TouchableOpacity>
               <TouchableOpacity
@@ -2176,6 +2249,13 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
             </View>
           </TouchableOpacity>
         </View>
+        {serveBadgeText ? (
+          <View pointerEvents="none" style={styles.serveCenterWrap}>
+            <View style={styles.serveBadge}>
+              <Text style={styles.serveBadgeText} numberOfLines={1}>{serveBadgeText}</Text>
+            </View>
+          </View>
+        ) : null}
       </View>
 
       <View style={styles.footerStack}>
@@ -2249,27 +2329,23 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
         teamName={formationTeam === 'host' ? displayHostName : displayAwayName}
         members={formationTeam === 'host' || isIntramural ? (hostMembers || []) : (awayMembers || [])}
         initial={formationTeam === 'host' ? hostFormationInitial : awayFormationInitial}
+        courtSide={formationTeam === leftTeamData.key ? 'left' : 'right'}
+        lockedOutIds={(formationTeam === 'host' ? awayFormationInitial.court : hostFormationInitial.court) || []}
         onClose={() => setFormationVisible(false)}
         onSave={handleSaveFormation}
-        isSingleRecorder={isSingleRecorderMode}
-        hostSide={{
-          teamName: displayHostName,
-          members: hostMembers || [],
-          initial: hostFormationInitial,
-          canEdit: canControlHost && myRole !== 'spectator',
-        }}
-        awaySide={{
-          teamName: displayAwayName,
-          members: isIntramural ? (hostMembers || []) : (awayMembers || []),
-          initial: awayFormationInitial,
-          canEdit: canControlAway && myRole !== 'spectator',
-        }}
-        onSaveDual={handleSaveDualFormation}
         usedMatchIds={[
           ...collectFormationIds(match?.host_roster),
           ...collectFormationIds(match?.away_roster),
           ...(events || []).flatMap((e) => [e?.player_id, e?.sub_out_id]),
         ]}
+      />
+
+      <FirstServeModal
+        visible={showFirstServeModal}
+        setNumber={currentSetIndex + 1}
+        hostName={displayHostName}
+        awayName={displayAwayName}
+        onConfirm={(team, startLabel) => { void handleConfirmFirstServe(team, startLabel); }}
       />
 
       <Modal visible={editModalVisible} animationType="fade" transparent={true}>
@@ -2476,7 +2552,23 @@ const styles = StyleSheet.create({
   switchCourtBtnTextSlim: { color: '#334155', fontWeight: '800', fontSize: 11 },
   lineupBtnSlim: { paddingHorizontal: 8, paddingVertical: 4, backgroundColor: '#1E3A8A', borderRadius: 8, flexShrink: 0 },
   lineupBtnTextSlim: { color: '#DBEAFE', fontWeight: '800', fontSize: 11 },
-  scoreboardMainGrid: { flex: 1, minHeight: 160, flexDirection: 'row', width: '100%', backgroundColor: '#020617' },
+  scoreboardMainGrid: { flex: 1, minHeight: 160, flexDirection: 'row', width: '100%', backgroundColor: '#020617', position: 'relative' },
+  serveCenterWrap: {
+    ...StyleSheet.absoluteFillObject,
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 18,
+  },
+  serveBadge: {
+    backgroundColor: 'rgba(15, 23, 42, 0.88)',
+    borderWidth: 1,
+    borderColor: '#FDE68A',
+    borderRadius: 999,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    maxWidth: '72%',
+  },
+  serveBadgeText: { color: '#FDE68A', fontSize: 12, fontWeight: '900', textAlign: 'center' },
   teamCourtHalf: { flex: 1, flexShrink: 0, minWidth: 0, position: 'relative', padding: 0, margin: 0 },
   hostCourtBg: { backgroundColor: '#0284C7' },
   awayCourtBg: { backgroundColor: '#BE123C' },

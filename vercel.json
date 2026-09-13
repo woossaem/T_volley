@@ -1,6 +1,17 @@
 {
   "outputDirectory": "dist",
   "rewrites": [
+    {
+      "source": "/live/:id",
+      "has": [
+        {
+          "type": "header",
+          "key": "user-agent",
+          "value": "(?i).*(kakaotalk|facebookexternalhit|twitterbot|slackbot|discordbot|whatsapp|telegrambot|kakaostory).*"
+        }
+      ],
+      "destination": "/api/og-live?id=:id"
+    },
     { "source": "/(.*)", "destination": "/index.html" }
   ]
 }

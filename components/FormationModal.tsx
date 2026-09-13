@@ -50,6 +50,10 @@ interface Props {
   onSaveDual?: (host: SetFormation, away: SetFormation) => void;
   /** 매치 전역에서 이미 쓰인 ID (게스트 채번 충돌 방지) */
   usedMatchIds?: Array<string | null | undefined>;
+  /** 기록자 전광판의 현재 코트 방향. 있으면 해당 팀만 세로네트 뷰로 표시 */
+  courtSide?: 'left' | 'right';
+  /** 상대 팀 코트에 이미 배치된 ID. 대기 벤치 섞임 차단 */
+  lockedOutIds?: Array<string | null | undefined>;
 }
 
 interface SideState {
@@ -151,8 +155,10 @@ export default function FormationModal({
   awaySide,
   onSaveDual,
   usedMatchIds = [],
+  courtSide,
+  lockedOutIds = [],
 }: Props) {
-  const dual = !!(hostSide && awaySide);
+  const dual = !!(hostSide && awaySide) && !courtSide;
   const [hostState, setHostState] = useState<SideState>(EMPTY_SIDE);
   const [awayState, setAwayState] = useState<SideState>(EMPTY_SIDE);
   const [holding, setHolding] = useState<{ side: SideKey; id: string } | null>(null);
@@ -224,6 +230,15 @@ export default function FormationModal({
   const canEditSide = (side: SideKey) => (side === 'host' ? hostCanEdit : awayCanEdit);
 
   /** 대기 로스터 SSOT: 전체 명단 − A/B 코트 9칸에 배치된(null이 아닌) 인원 */
+  const lockedOutSet = useMemo(() => {
+    const next = new Set<string>();
+    lockedOutIds.forEach((id) => {
+      const real = assignedUserId(id);
+      if (real) next.add(real);
+    });
+    return next;
+  }, [lockedOutIds]);
+
   const assignedUserIds = useMemo(() => {
     const teamACourtSlots = hostState.court.map((id) => assignedUserId(id));
     const teamBCourtSlots = awayState.court.map((id) => assignedUserId(id));
@@ -251,10 +266,10 @@ export default function FormationModal({
 
   const benchRoster = (side: SideKey) => {
     if (dual) {
-      return uniqueKeepOrder(sideMembersOf(side).map((m) => m.user_id).filter((id) => !assignedUserIds.has(id)));
+      return uniqueKeepOrder(sideMembersOf(side).map((m) => m.user_id).filter((id) => !assignedUserIds.has(id) && !lockedOutSet.has(id)));
     }
     const used = onCourtSet(getState(side).court);
-    return uniqueKeepOrder(sideMembersOf(side).map((m) => m.user_id).filter((id) => !used.has(id)));
+    return uniqueKeepOrder(sideMembersOf(side).map((m) => m.user_id).filter((id) => !used.has(id) && !lockedOutSet.has(id)));
   };
 
   const courtPlayers = (side: SideKey) =>
@@ -612,11 +627,11 @@ export default function FormationModal({
     <Modal visible={visible} animationType="fade" transparent onRequestClose={onClose}>
       <View style={styles.overlay}>
         <View style={[styles.sheet, dual && styles.sheetDual]}>
-          <Text style={styles.title}>{dual ? '🏐 양팀 네트 포메이션' : '🏐 3줄 코트 포메이션'}</Text>
+          <Text style={styles.title}>{dual ? '🏐 양팀 네트 포메이션' : `🏐 ${teamName} 포메이션`}</Text>
           <Text style={styles.sub}>
             {dual
               ? `${hostSide?.teamName}  vs  ${awaySide?.teamName} · 세로네트 점대칭 · 빈자리 투입 / 교체 / 퇴장`
-              : `${teamName} · 전위 3 / 중위 3 / 후위 3 · 빈자리 투입 / 교체 / 퇴장`}
+              : `${teamName} · 해당 팀 코트와 대기 벤치만 표시 · 빈자리 투입 / 교체 / 퇴장`}
           </Text>
 
           {!dual ? renderLineCtrls('host') : null}
@@ -657,7 +672,13 @@ export default function FormationModal({
             </View>
           ) : (
             <View style={styles.courtWrap}>
-              {renderCourtGrid('host', { interactive: true })}
+              {renderCourtGrid('host', {
+                layout: courtSide ? 'columns' : 'rows',
+                courtSide: courtSide || 'left',
+                hideNet: !!courtSide,
+                teamLabel: teamName,
+                interactive: true,
+              })}
               <Text style={styles.courtMeta}>출전 {hostReal}/{hostTotal} · 빈자리 {hostTotal - hostReal}</Text>
             </View>
           )}

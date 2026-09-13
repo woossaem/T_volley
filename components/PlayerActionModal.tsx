@@ -315,6 +315,7 @@ export default function PlayerActionModal({
                           hideNet
                           layout="columns"
                           courtSide={pane.side}
+                          positionEmphasis
                           accent={isLeft ? '#0284C7' : '#E11D48'}
                           frontCount={pane.layout?.frontCount}
                           middleCount={pane.layout?.middleCount}

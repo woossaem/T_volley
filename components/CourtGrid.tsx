@@ -15,6 +15,7 @@ import {
 } from '../lib/roster';
 import { getSafeDisplayName } from '../lib/utils';
 import { IOS_SHADOW_GLOW, IOS_SHADOW_NONE, IOS_SHADOW_SOFT } from '../lib/nativeSafe';
+import { POSITION_GROUP_COLORS, positionGroupOf } from '../lib/positionGroups';
 
 export interface CourtSlotPlayer {
   user_id: string | null;
@@ -42,6 +43,8 @@ interface CourtGridProps {
   emptySlotLabel?: string;
   /** slate: 모달용 매트 다크. court: 포메이션 기본 그린 코트 */
   tone?: 'court' | 'slate';
+  /** 득점/범실 버튼: 포지션 16px Bold / 선수명 12px */
+  positionEmphasis?: boolean;
   onSlotPress?: (player: CourtSlotPlayer, slotIndex: number) => void;
   onTagPress?: (player: CourtSlotPlayer, slotIndex: number) => void;
 }
@@ -67,18 +70,10 @@ function isEmptySlot(player: CourtSlotPlayer): boolean {
 }
 
 function positionLabelStyle(label: string) {
-  const t = String(label);
-  if (t.includes('세터')) return styles.posSetter;
-  if (
-    t.includes('레프트백') ||
-    t.includes('센터백') ||
-    t.includes('라이트백') ||
-    t.includes('세컨백') ||
-    t.includes('후위')
-  ) return styles.posBack;
-  if (t.includes('백차') || t.includes('센터') || t.includes('중앙')) return styles.posCenter;
-  if (t.includes('라이트') || t.includes('우측') || t.includes('중우') || t.includes('서브')) return styles.posRight;
-  if (t.includes('레프트') || t.includes('앞차') || t.includes('좌측') || t.includes('중좌')) return styles.posLeft;
+  const group = positionGroupOf(label);
+  if (group === 'attack') return styles.posAttack;
+  if (group === 'control') return styles.posControl;
+  if (group === 'defense') return styles.posDefense;
   return styles.posFallback;
 }
 
@@ -101,6 +96,7 @@ export default function CourtGrid({
   disabled = false,
   emptySlotLabel,
   tone = 'court',
+  positionEmphasis = false,
   onSlotPress,
   onTagPress,
 }: CourtGridProps) {
@@ -124,6 +120,8 @@ export default function CourtGrid({
           ? (tagLabel ? label : displaySlotPlayerName(player.user_id, getSafeDisplayName(player), label))
           : (empty ? ANONYMOUS_PLAYER_NAME : getSafeDisplayName(player))));
     const emptyText = emptySlotLabel ?? (compact ? '👤' : ANONYMOUS_PLAYER_NAME);
+    const group = positionGroupOf(label);
+    const groupPalette = positionEmphasis && group ? POSITION_GROUP_COLORS[group] : null;
     return (
       <TouchableOpacity
         key={`${row}-${idx}`}
@@ -134,6 +132,8 @@ export default function CourtGrid({
           compact && layout === 'columns' && styles.slotColumnCompact,
           empty ? styles.slotEmpty : styles.slotFilled,
           slate && styles.slotSlate,
+          positionEmphasis && styles.slotEmphasis,
+          groupPalette && !empty ? { backgroundColor: groupPalette.bg, borderColor: groupPalette.border } : null,
           holding && styles.slotDrop,
           selected && styles.slotSelected,
           highlighted && styles.slotHighlight,
@@ -158,7 +158,9 @@ export default function CourtGrid({
           style={[
             styles.slotPos,
             compact && styles.slotPosCompact,
+            positionEmphasis && styles.slotPosEmphasis,
             positionLabelStyle(label),
+            groupPalette ? { color: groupPalette.pos } : null,
           ]}
           numberOfLines={1}
         >
@@ -169,7 +171,16 @@ export default function CourtGrid({
             {emptyText}
           </Text>
         ) : (
-          <Text style={[styles.slotName, compact && styles.slotNameCompact, slate && styles.slotTextSlate]} numberOfLines={1}>
+          <Text
+            style={[
+              styles.slotName,
+              compact && styles.slotNameCompact,
+              slate && styles.slotTextSlate,
+              positionEmphasis && styles.slotNameEmphasis,
+              groupPalette ? { color: groupPalette.name } : null,
+            ]}
+            numberOfLines={1}
+          >
             {name}
           </Text>
         )}
@@ -277,12 +288,13 @@ const styles = StyleSheet.create({
   },
   slotPosSlate: { color: '#94A3B8' },
   slotTextSlate: { color: '#F8FAFC' },
-  posSetter: { color: '#F59E0B', fontWeight: '800' },
-  posLeft: { color: '#10B981', fontWeight: '700' },
-  posCenter: { color: '#A855F7', fontWeight: '700' },
-  posRight: { color: '#F43F5E', fontWeight: '700' },
-  posBack: { color: '#38BDF8', fontWeight: '600' },
+  posAttack: { color: '#F97316', fontWeight: '800' },
+  posControl: { color: '#818CF8', fontWeight: '800' },
+  posDefense: { color: '#2DD4BF', fontWeight: '800' },
   posFallback: { color: '#94A3B8', fontWeight: '700' },
+  slotEmphasis: { minHeight: 48, paddingVertical: 4 },
+  slotPosEmphasis: { fontSize: 16, lineHeight: 18, fontWeight: '800', marginBottom: 1 },
+  slotNameEmphasis: { fontSize: 12, lineHeight: 15, fontWeight: '600', color: '#CBD5E1' },
   netBarSlate: { backgroundColor: '#334155', borderColor: '#475569' },
   netLabelSlate: { color: '#94A3B8', letterSpacing: 2 },
   teamLabel: { color: '#F8FAFC', fontSize: 9, fontWeight: '900', textAlign: 'center', marginBottom: 1, includeFontPadding: false },

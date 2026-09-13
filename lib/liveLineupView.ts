@@ -13,6 +13,7 @@ import {
 import { parseTempGuestNum } from './tempPlayer';
 import { getSafeDisplayName, getSafeTeamName } from './utils';
 import type { LineupPlayerView, TeamLineupView } from '../components/TeamLineupPanel';
+import { parseServeSetupMap, resolveServePossession } from './serveRotation';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -114,7 +115,16 @@ function liveSetIndexFromRows(rows: MatchSetRecord[], finished: boolean): number
   return openIdx >= 0 ? openIdx : Math.max(0, rows.length - 1);
 }
 
-export async function loadLiveLineups(matchId: string): Promise<{ left: TeamLineupView; right: TeamLineupView } | null> {
+export async function loadLiveLineups(matchId: string): Promise<{
+  left: TeamLineupView;
+  right: TeamLineupView;
+  host: TeamLineupView;
+  away: TeamLineupView;
+  isSwapped: boolean;
+  servingPlayerId: string | null;
+  hostName: string;
+  awayName: string;
+} | null> {
   const { data: match, error } = await supabase.from('matches').select('*').eq('id', matchId).maybeSingle();
   if (error || !match) return null;
 
@@ -123,6 +133,12 @@ export async function loadLiveLineups(matchId: string): Promise<{ left: TeamLine
     .select('*')
     .eq('match_id', matchId)
     .order('set_number', { ascending: true });
+
+  const { data: eventRows } = await supabase
+    .from('match_events')
+    .select('set_index, event_type, is_canceled, team_type, host_score, away_score')
+    .eq('match_id', matchId)
+    .order('created_at', { ascending: true });
 
   const hostFormMap = parseSetFormationMap(match.host_roster);
   const awayFormMap = parseSetFormationMap(match.away_roster);
@@ -169,8 +185,27 @@ export async function loadLiveLineups(matchId: string): Promise<{ left: TeamLine
   );
 
   const metaMap = await loadPlayerMetaMap([...collectIds(hostForm), ...collectIds(awayForm)]);
+  const hostView = formationToView(hostName, hostForm, metaMap);
+  const awayView = formationToView(awayName, awayForm, metaMap);
+  const serveSetup = parseServeSetupMap(match.serve_setup)[liveIdx];
+  const serve = resolveServePossession({
+    events: eventRows || [],
+    setIndex: liveIdx,
+    setup: serveSetup,
+    hostCourt: hostView.court.map((p) => ({ user_id: p.id, full_name: p.name })),
+    awayCourt: awayView.court.map((p) => ({ user_id: p.id, full_name: p.name })),
+    frontCount: hostForm.frontCount,
+    middleCount: hostForm.middleCount,
+    backCount: hostForm.backCount,
+  });
   return {
-    left: formationToView(hostName, hostForm, metaMap),
-    right: formationToView(awayName, awayForm, metaMap),
+    left: hostView,
+    right: awayView,
+    host: hostView,
+    away: awayView,
+    isSwapped: !!match.is_swapped,
+    servingPlayerId: serve?.playerId || null,
+    hostName,
+    awayName,
   };
 }
