@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useMemo } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, Modal, ScrollView, Pressable } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import CourtGrid from './CourtGrid';
 import {
   assignedUserId,
@@ -15,6 +16,7 @@ import {
   type SetFormation,
 } from '../lib/roster';
 import { getSafeDisplayName } from '../lib/utils';
+import { safeInset } from '../lib/nativeSafe';
 
 export interface FormationMember {
   user_id: string;
@@ -158,6 +160,7 @@ export default function FormationModal({
   courtSide,
   lockedOutIds = [],
 }: Props) {
+  const insets = useSafeAreaInsets();
   const dual = !!(hostSide && awaySide) && !courtSide;
   const [hostState, setHostState] = useState<SideState>(EMPTY_SIDE);
   const [awayState, setAwayState] = useState<SideState>(EMPTY_SIDE);
@@ -623,7 +626,13 @@ export default function FormationModal({
 
   return (
     <Modal visible={visible} animationType="fade" transparent onRequestClose={onClose}>
-      <View style={styles.overlay}>
+      <View style={[
+        styles.overlay,
+        {
+          paddingTop: Math.max(safeInset(insets.top), 12),
+          paddingBottom: Math.max(safeInset(insets.bottom), 8),
+        },
+      ]}>
         <Pressable style={StyleSheet.absoluteFill} onPress={onClose} accessibilityRole="button" accessibilityLabel="포메이션 닫기" />
         <View
           style={[styles.sheet, dual && styles.sheetDual]}
@@ -635,53 +644,61 @@ export default function FormationModal({
 
           <Text style={styles.holdHint} numberOfLines={1}>{unusedHint}</Text>
 
-          {dual ? (
-            <View style={styles.dualCourtBlock}>
-              <View style={styles.teamCourtPane}>
-                {renderLineCtrls('host', 'back-first')}
-                <View style={styles.teamCourtFill}>
-                  {renderCourtGrid('host', {
-                    layout: 'columns',
-                    courtSide: 'left',
-                    hideNet: true,
-                    teamLabel: hostSide?.teamName,
-                    interactive: hostCanEdit,
-                    compact: false,
-                  })}
+          <ScrollView
+            style={styles.bodyScroll}
+            contentContainerStyle={styles.bodyScrollContent}
+            nestedScrollEnabled
+            keyboardShouldPersistTaps="handled"
+            showsVerticalScrollIndicator={false}
+          >
+            {dual ? (
+              <View style={styles.dualCourtBlock}>
+                <View style={styles.teamCourtPane}>
+                  {renderLineCtrls('host', 'back-first')}
+                  <View style={styles.teamCourtFill}>
+                    {renderCourtGrid('host', {
+                      layout: 'columns',
+                      courtSide: 'left',
+                      hideNet: true,
+                      teamLabel: hostSide?.teamName,
+                      interactive: hostCanEdit,
+                      compact: false,
+                    })}
+                  </View>
+                </View>
+
+                <View style={styles.verticalNet} />
+
+                <View style={styles.teamCourtPane}>
+                  {renderLineCtrls('away', 'front-first')}
+                  <View style={styles.teamCourtFill}>
+                    {renderCourtGrid('away', {
+                      layout: 'columns',
+                      courtSide: 'right',
+                      hideNet: true,
+                      teamLabel: awaySide?.teamName,
+                      interactive: awayCanEdit,
+                      compact: false,
+                    })}
+                  </View>
                 </View>
               </View>
-
-              <View style={styles.verticalNet} />
-
-              <View style={styles.teamCourtPane}>
-                {renderLineCtrls('away', 'front-first')}
-                <View style={styles.teamCourtFill}>
-                  {renderCourtGrid('away', {
-                    layout: 'columns',
-                    courtSide: 'right',
-                    hideNet: true,
-                    teamLabel: awaySide?.teamName,
-                    interactive: awayCanEdit,
-                    compact: false,
-                  })}
-                </View>
+            ) : (
+              <View style={styles.courtWrap}>
+                {renderCourtGrid('host', {
+                  layout: 'rows',
+                  courtSide: courtSide || 'left',
+                  hideNet: true,
+                  interactive: true,
+                  compact: false,
+                })}
               </View>
-            </View>
-          ) : (
-            <View style={styles.courtWrap}>
-              {renderCourtGrid('host', {
-                layout: 'rows',
-                courtSide: courtSide || 'left',
-                hideNet: true,
-                interactive: true,
-                compact: false,
-              })}
-            </View>
-          )}
+            )}
 
-          <View style={[styles.benchBlock, dual && styles.benchBlockDual]}>
-            {dual ? renderSharedBench() : renderBenchScroll('host', teamName)}
-          </View>
+            <View style={[styles.benchBlock, dual && styles.benchBlockDual]}>
+              {dual ? renderSharedBench() : renderBenchScroll('host', teamName)}
+            </View>
+          </ScrollView>
 
           <View style={styles.btnRow}>
             <TouchableOpacity style={styles.cancelBtn} onPress={onClose}>
@@ -753,46 +770,48 @@ export default function FormationModal({
 }
 
 const styles = StyleSheet.create({
-  overlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.72)', justifyContent: 'center', alignItems: 'center', padding: 4 },
-  sheet: { backgroundColor: '#0F172A', borderRadius: 14, padding: 6, width: 640, maxWidth: '100%', maxHeight: '96%', borderWidth: 1, borderColor: '#334155', zIndex: 1 },
+  overlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.72)', justifyContent: 'center', alignItems: 'center', padding: 4, paddingTop: 12 },
+  sheet: { backgroundColor: '#0F172A', borderRadius: 14, paddingHorizontal: 6, paddingBottom: 6, paddingTop: 12, width: 640, maxWidth: '100%', maxHeight: '92%', borderWidth: 1, borderColor: '#334155', zIndex: 1, flexShrink: 1, overflow: 'hidden' },
   sheetDual: { width: '98%', maxWidth: 980 },
-  title: { fontSize: 13, fontWeight: '900', color: '#F8FAFC', textAlign: 'center', marginBottom: 2 },
-  lineCtrlRow: { flexDirection: 'row', gap: 4, marginBottom: 2, flexShrink: 0, width: '100%' },
+  title: { fontSize: 13, fontWeight: '900', color: '#F8FAFC', textAlign: 'center', marginBottom: 1, flexShrink: 0 },
+  lineCtrlRow: { flexDirection: 'row', gap: 4, marginBottom: 1, flexShrink: 0, width: '100%' },
   lineCtrl: { flex: 1, minWidth: 0, backgroundColor: '#1E293B', borderRadius: 6, padding: 2, borderWidth: 1, borderColor: '#334155', alignItems: 'center' },
   lineCtrlLabel: { fontSize: 8, fontWeight: '800', color: '#CBD5E1', marginBottom: 1 },
   stepper: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   stepBtn: { width: 22, height: 22, borderRadius: 6, backgroundColor: '#334155', alignItems: 'center', justifyContent: 'center' },
   stepBtnText: { color: '#FFFFFF', fontSize: 14, fontWeight: '900' },
   stepVal: { minWidth: 14, textAlign: 'center', color: '#F8FAFC', fontSize: 11, fontWeight: '900' },
-  holdHint: { fontSize: 10, color: '#94A3B8', fontWeight: '700', textAlign: 'center', marginBottom: 2, flexShrink: 0 },
+  holdHint: { fontSize: 10, color: '#94A3B8', fontWeight: '700', textAlign: 'center', marginBottom: 1, flexShrink: 0 },
+  bodyScroll: { flexGrow: 1, flexShrink: 1, minHeight: 0 },
+  bodyScrollContent: { flexGrow: 1, gap: 4, paddingBottom: 2 },
   courtWrap: {
-    marginVertical: 2,
+    marginVertical: 0,
     flexGrow: 1,
     flexShrink: 1,
-    minHeight: 280,
+    minHeight: 168,
     backgroundColor: '#1E293B',
     borderRadius: 12,
     borderWidth: 1,
     borderColor: '#334155',
     overflow: 'hidden',
-    padding: 4,
+    padding: 2,
   },
-  dualCourtBlock: { flexDirection: 'row', alignItems: 'stretch', flexGrow: 1, flexShrink: 1, minHeight: 240, marginBottom: 8 },
-  teamCourtPane: { flex: 1, minWidth: 0, minHeight: 0, flexDirection: 'column', paddingBottom: 8 },
-  teamCourtFill: { flex: 1, minHeight: 200, width: '100%', paddingBottom: 4 },
+  dualCourtBlock: { flexDirection: 'row', alignItems: 'stretch', flexGrow: 1, flexShrink: 1, minHeight: 180, marginBottom: 0 },
+  teamCourtPane: { flex: 1, minWidth: 0, minHeight: 0, flexDirection: 'column', paddingBottom: 2 },
+  teamCourtFill: { flex: 1, minHeight: 140, width: '100%', paddingBottom: 0 },
   verticalNet: {
     width: 6,
     alignSelf: 'stretch',
     backgroundColor: '#3B82F6',
     borderRadius: 3,
-    marginHorizontal: 3,
-    marginVertical: 2,
+    marginHorizontal: 2,
+    marginVertical: 1,
   },
-  benchBlock: { backgroundColor: '#1E293B', borderRadius: 10, padding: 4, borderWidth: 1, borderColor: '#334155', marginTop: 2, height: 70, maxHeight: 70, overflow: 'hidden', flexShrink: 0 },
-  benchBlockDual: { height: 70, maxHeight: 70, flexShrink: 0 },
-  benchDualRow: { flexDirection: 'row', gap: 8, height: 70, maxHeight: 70 },
-  benchPane: { flex: 1, minWidth: 0, height: 70, maxHeight: 70 },
-  benchScroll: { flex: 1, maxHeight: 70 },
+  benchBlock: { backgroundColor: '#1E293B', borderRadius: 10, padding: 4, borderWidth: 1, borderColor: '#334155', marginTop: 0, height: 64, maxHeight: 64, overflow: 'hidden', flexShrink: 0 },
+  benchBlockDual: { height: 64, maxHeight: 64, flexShrink: 0 },
+  benchDualRow: { flexDirection: 'row', gap: 4, height: 64, maxHeight: 64 },
+  benchPane: { flex: 1, minWidth: 0, height: 64, maxHeight: 64 },
+  benchScroll: { flex: 1, maxHeight: 64 },
   benchHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 1, flexShrink: 0 },
   benchTitle: { fontSize: 11, fontWeight: '800', color: '#F8FAFC' },
   benchChipWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 4, paddingBottom: 2 },
@@ -806,7 +825,7 @@ const styles = StyleSheet.create({
   chipLocked: { opacity: 0.7 },
   playerChipText: { color: '#F8FAFC', fontSize: 12, fontWeight: '800' },
   emptyDuty: { fontSize: 10, color: '#64748B', fontWeight: '700' },
-  btnRow: { flexDirection: 'row', gap: 8, marginTop: 4, flexShrink: 0 },
+  btnRow: { flexDirection: 'row', gap: 6, marginTop: 4, flexShrink: 0 },
   cancelBtn: { flex: 1, backgroundColor: '#334155', paddingVertical: 12, borderRadius: 10, alignItems: 'center' },
   cancelText: { color: '#E2E8F0', fontWeight: '800', fontSize: 14 },
   saveBtn: { flex: 2, backgroundColor: '#2563EB', paddingVertical: 10, borderRadius: 10, alignItems: 'center' },

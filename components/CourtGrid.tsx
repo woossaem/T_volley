@@ -170,7 +170,7 @@ export default function CourtGrid({
           ]}
           numberOfLines={1}
           adjustsFontSizeToFit
-          minimumFontScale={0.55}
+          minimumFontScale={enlarge ? 0.8 : 0.55}
         >
           {label}
         </Text>
@@ -184,7 +184,7 @@ export default function CourtGrid({
             ]}
             numberOfLines={1}
             adjustsFontSizeToFit
-            minimumFontScale={0.55}
+            minimumFontScale={enlarge ? 0.8 : 0.55}
           >
             {emptyText}
           </Text>
@@ -200,7 +200,7 @@ export default function CourtGrid({
             ]}
             numberOfLines={1}
             adjustsFontSizeToFit
-            minimumFontScale={0.55}
+            minimumFontScale={enlarge ? 0.8 : 0.55}
           >
             {name}
           </Text>
@@ -333,14 +333,14 @@ const styles = StyleSheet.create({
   colCaption: { fontSize: 8, fontWeight: '800', color: '#BBF7D0', textAlign: 'center', marginBottom: 1 },
   slotRow: { flexDirection: 'row', gap: 4, marginBottom: 4 },
   slotRowCompact: { gap: 1, marginBottom: 0 },
-  slotRowEnlarge: { flex: 1, minHeight: 72, gap: 6, marginBottom: 6 },
-  slotColEnlarge: { flex: 1, gap: 8, minHeight: 0 },
-  columnsRowEnlarge: { flex: 1, gap: 8, minHeight: 220 },
-  courtEnlarge: { flexGrow: 1, flexShrink: 1, minHeight: 240, padding: 4 },
-  slotEnlarge: { minHeight: 72, paddingVertical: 10, paddingHorizontal: 4, margin: 1 },
-  slotPosEnlarge: { fontSize: 15, lineHeight: 18, fontWeight: '800', marginBottom: 3 },
-  slotNameEnlarge: { fontSize: 16, lineHeight: 19, fontWeight: '800' },
-  slotEmptyTextEnlarge: { fontSize: 14, lineHeight: 17, fontWeight: '800' },
+  slotRowEnlarge: { flex: 1, minHeight: 56, gap: 4, marginBottom: 4 },
+  slotColEnlarge: { flex: 1, gap: 4, minHeight: 0 },
+  columnsRowEnlarge: { flex: 1, gap: 4, minHeight: 168 },
+  courtEnlarge: { flexGrow: 1, flexShrink: 1, minHeight: 168, padding: 4 },
+  slotEnlarge: { minHeight: 56, paddingVertical: 4, paddingHorizontal: 4, margin: 0 },
+  slotPosEnlarge: { fontSize: 17, lineHeight: 20, fontWeight: '800', marginBottom: 1 },
+  slotNameEnlarge: { fontSize: 15, lineHeight: 18, fontWeight: '800' },
+  slotEmptyTextEnlarge: { fontSize: 14, lineHeight: 16, fontWeight: '800' },
   columnsRow: { flexGrow: 1, flexShrink: 1, flexDirection: 'row', gap: 2, minHeight: 0, width: '100%', alignItems: 'stretch' },
   slotCol: { flex: 1, minWidth: 0, gap: 4 },
   slotColCompact: { flex: 1, minWidth: 0, gap: 2, flexGrow: 1, flexShrink: 1 },

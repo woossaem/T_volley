@@ -260,6 +260,8 @@ export default function PlayerActionModal({
           styles.overlay,
           isSubMode && (isLeftTeam ? styles.overlayLeft : styles.overlayRight),
           isSubMode && {
+            paddingTop: Math.max(safeInset(insets.top), 20),
+            paddingBottom: Math.max(safeInset(insets.bottom), 8),
             paddingLeft: isLeftTeam ? Math.max(safeInset(insets.left), 8) : 4,
             paddingRight: isLeftTeam ? 4 : Math.max(safeInset(insets.right), 8),
           },
@@ -276,7 +278,20 @@ export default function PlayerActionModal({
             isSubMode && (isLeftTeam ? styles.contentSubLeft : styles.contentSubRight),
           ]}
         >
-          <Text style={[styles.title, isSubMode && styles.titleSub]}>{title}</Text>
+          <View style={[styles.headerRow, isSubMode && styles.headerRowSub]}>
+            <Text style={[styles.title, isSubMode && styles.titleSub]}>{title}</Text>
+            {isSubMode ? (
+              <TouchableOpacity
+                style={styles.closeIconBtn}
+                onPress={onClose}
+                hitSlop={10}
+                accessibilityRole="button"
+                accessibilityLabel="닫기"
+              >
+                <Text style={styles.closeIconText}>✕</Text>
+              </TouchableOpacity>
+            ) : null}
+          </View>
           {isSubMode ? <Text style={styles.subHint} numberOfLines={1}>{subHint}</Text> : null}
 
           {isScoreMode ? (
@@ -417,21 +432,25 @@ export default function PlayerActionModal({
 
 const styles = StyleSheet.create({
   overlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.65)', justifyContent: 'center', alignItems: 'center', padding: 8 },
-  overlayLeft: { alignItems: 'flex-start', paddingVertical: 4, paddingHorizontal: 4 },
-  overlayRight: { alignItems: 'flex-end', paddingVertical: 4, paddingHorizontal: 4 },
+  overlayLeft: { alignItems: 'flex-start', justifyContent: 'flex-start', paddingVertical: 0, paddingHorizontal: 4 },
+  overlayRight: { alignItems: 'flex-end', justifyContent: 'flex-start', paddingVertical: 0, paddingHorizontal: 4 },
   content: { backgroundColor: '#1E293B', borderRadius: 16, padding: 10, width: 640, maxWidth: '100%', borderWidth: 1, borderColor: '#334155' },
-  contentSub: { width: '68%', maxWidth: 560, padding: 6, paddingTop: 8 },
+  contentSub: { width: '68%', maxWidth: 560, padding: 6, paddingTop: 10, maxHeight: '92%' },
   contentSubLeft: { alignSelf: 'flex-start', borderColor: '#0284C7', borderWidth: 1.5 },
   contentSubRight: { alignSelf: 'flex-end', borderColor: '#E11D48', borderWidth: 1.5 },
-  subBody: { flexShrink: 1 },
-  subCourtRow: { flexDirection: 'row', alignItems: 'stretch', minHeight: 280, flexGrow: 1, flexShrink: 1 },
-  subCourtGrid: { flex: 1, minWidth: 0, minHeight: 280, flexShrink: 1 },
+  headerRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center' },
+  headerRowSub: { justifyContent: 'space-between', marginBottom: 2, flexShrink: 0 },
+  closeIconBtn: { width: 32, height: 32, borderRadius: 8, backgroundColor: '#334155', alignItems: 'center', justifyContent: 'center', flexShrink: 0 },
+  closeIconText: { color: '#F8FAFC', fontSize: 16, fontWeight: '900', lineHeight: 18, includeFontPadding: false },
+  subBody: { flexShrink: 1, minHeight: 0 },
+  subCourtRow: { flexDirection: 'row', alignItems: 'stretch', minHeight: 200, flexGrow: 1, flexShrink: 1 },
+  subCourtGrid: { flex: 1, minWidth: 0, minHeight: 200, flexShrink: 1 },
   netGuide: { width: 18, borderRadius: 4, alignItems: 'center', justifyContent: 'center', marginHorizontal: 3, flexShrink: 0 },
   netGuideA: { backgroundColor: '#0284C7' },
   netGuideB: { backgroundColor: '#E11D48' },
   netGuideText: { color: '#F8FAFC', fontSize: 9, lineHeight: 11, fontWeight: '800', textAlign: 'center', includeFontPadding: false },
   title: { fontSize: 16, fontWeight: '700', color: '#F8FAFC', marginBottom: 10, textAlign: 'center' },
-  titleSub: { fontSize: 15, marginBottom: 4 },
+  titleSub: { fontSize: 15, marginBottom: 0, textAlign: 'left', paddingRight: 8, flex: 1 },
   subHint: { fontSize: 11, color: '#94A3B8', textAlign: 'center', marginBottom: 4, fontWeight: '600', lineHeight: 14, includeFontPadding: false },
   dualCourt: { flexDirection: 'row', alignItems: 'stretch', gap: 0 },
   courtPane: { flex: 1, minWidth: 0 },
@@ -449,7 +468,7 @@ const styles = StyleSheet.create({
   actionLabel: { color: '#F8FAFC', fontSize: 12, fontWeight: '800', textAlign: 'center' },
   actionLabelFault: { color: '#F59E0B' },
   courtWrap: { backgroundColor: '#1E293B', borderRadius: 12, borderWidth: 1, borderColor: '#334155', overflow: 'hidden', padding: 2, paddingBottom: 4, minHeight: 148, flexShrink: 0 },
-  courtWrapSub: { minHeight: 280, padding: 2, paddingBottom: 2, flexGrow: 1, flexShrink: 1 },
+  courtWrapSub: { minHeight: 200, padding: 2, paddingBottom: 2, flexGrow: 1, flexShrink: 1 },
   emptyText: { color: '#94A3B8', padding: 8, textAlign: 'center', fontSize: 12, fontWeight: '600' },
   tagPopover: {
     marginTop: 8,
@@ -468,21 +487,21 @@ const styles = StyleSheet.create({
   tagChip: { backgroundColor: '#1E293B', borderRadius: 999, borderWidth: 1, borderColor: '#FBBF24', paddingHorizontal: 10, paddingVertical: 6 },
   tagChipText: { color: '#FDE68A', fontSize: 12, fontWeight: '900', lineHeight: 16, includeFontPadding: false },
   tagClose: { color: '#94A3B8', fontSize: 11, fontWeight: '700', textAlign: 'center', lineHeight: 16, includeFontPadding: false },
-  benchWrap: { marginTop: 6, flexShrink: 0 },
+  benchWrap: { marginTop: 4, flexShrink: 0 },
   benchHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 4, flexShrink: 0 },
-  benchLabel: { color: '#94A3B8', fontSize: 13, fontWeight: '800', lineHeight: 16, includeFontPadding: false, flexShrink: 1 },
+  benchLabel: { color: '#94A3B8', fontSize: 15, fontWeight: '800', lineHeight: 18, includeFontPadding: false, flexShrink: 1 },
   exitBtn: { backgroundColor: '#7F1D1D', borderRadius: 8, paddingHorizontal: 10, paddingVertical: 8, borderWidth: 1, borderColor: '#F87171', flexShrink: 0 },
   exitBtnText: { color: '#FECACA', fontSize: 13, fontWeight: '900', lineHeight: 16, includeFontPadding: false },
   benchScrollWrap: { position: 'relative', flexShrink: 0 },
-  benchScroll: { flexGrow: 0, flexShrink: 0, maxHeight: 76 },
+  benchScroll: { flexGrow: 0, flexShrink: 0, maxHeight: 80 },
   benchRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingRight: 36, minHeight: 64 },
   benchFade: { position: 'absolute', right: 0, top: 0, bottom: 0, width: 32, flexDirection: 'row', flexShrink: 0 },
   benchFadeSoft: { flex: 1, backgroundColor: 'rgba(30, 41, 59, 0.35)' },
   benchFadeHard: { width: 20, backgroundColor: 'rgba(30, 41, 59, 0.92)', alignItems: 'center', justifyContent: 'center' },
   benchFadeArrow: { color: '#FDE68A', fontSize: 18, fontWeight: '900', lineHeight: 20, includeFontPadding: false },
-  benchChip: { backgroundColor: '#334155', borderRadius: 10, paddingHorizontal: 14, paddingVertical: 14, minWidth: 96, minHeight: 56, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: '#64748B', flexShrink: 0 },
+  benchChip: { backgroundColor: '#334155', borderRadius: 10, paddingHorizontal: 14, paddingVertical: 12, minWidth: 96, minHeight: 56, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: '#64748B', flexShrink: 0 },
   benchChipDim: { opacity: 0.7 },
   benchChipText: { color: '#F8FAFC', fontSize: 16, fontWeight: '800', lineHeight: 18, includeFontPadding: false },
-  benchChipAnon: { backgroundColor: '#422006', borderRadius: 10, paddingHorizontal: 12, paddingVertical: 14, minWidth: 112, minHeight: 56, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: '#FBBF24', flexShrink: 0 },
+  benchChipAnon: { backgroundColor: '#422006', borderRadius: 10, paddingHorizontal: 12, paddingVertical: 12, minWidth: 112, minHeight: 56, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: '#FBBF24', flexShrink: 0 },
   benchChipAnonText: { color: '#FDE68A', fontSize: 16, fontWeight: '900', lineHeight: 18, includeFontPadding: false },
 });
