@@ -22,7 +22,7 @@ export function positionGroupOf(label?: string | null): PositionGroup | null {
 }
 
 export const POSITION_GROUP_COLORS: Record<PositionGroup, PositionGroupPalette> = {
-  attack: { bg: '#7F1D1D', border: '#F97316', pos: '#FDBA74', name: '#FED7AA' },
-  control: { bg: '#312E81', border: '#818CF8', pos: '#C4B5FD', name: '#E0E7FF' },
-  defense: { bg: '#064E3B', border: '#2DD4BF', pos: '#5EEAD4', name: '#CCFBF1' },
+  attack: { bg: '#450A0A', border: '#7F1D1D', pos: '#FCA5A5', name: '#FFFFFF' },
+  control: { bg: '#1E1B4B', border: '#312E81', pos: '#C7D2FE', name: '#FFFFFF' },
+  defense: { bg: '#064E3B', border: '#115E59', pos: '#99F6E4', name: '#FFFFFF' },
 };

@@ -756,7 +756,7 @@ const styles = StyleSheet.create({
   overlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.72)', justifyContent: 'center', alignItems: 'center', padding: 4, paddingTop: 12 },
   sheet: { backgroundColor: '#0F172A', borderRadius: 14, paddingHorizontal: 6, paddingBottom: 4, paddingTop: 8, width: 640, maxWidth: '100%', height: '92%', maxHeight: '92%', borderWidth: 1, borderColor: '#334155', zIndex: 1, flexShrink: 1, overflow: 'hidden', gap: 4 },
   sheetDual: { width: '98%', maxWidth: 980 },
-  title: { fontSize: 13, fontWeight: '900', color: '#F8FAFC', textAlign: 'center', marginBottom: 0, flexShrink: 0 },
+  title: { fontSize: 18, fontWeight: '700', color: '#F8FAFC', textAlign: 'center', marginBottom: 0, flexShrink: 0 },
   lineCtrlRow: { flexDirection: 'row', gap: 4, marginBottom: 0, flexShrink: 0, width: '100%' },
   lineCtrl: { flex: 1, minWidth: 0, backgroundColor: '#1E293B', borderRadius: 6, padding: 1, borderWidth: 1, borderColor: '#334155', alignItems: 'center' },
   lineCtrlLabel: { fontSize: 8, fontWeight: '800', color: '#CBD5E1', marginBottom: 0 },

@@ -125,7 +125,7 @@ export default function CourtGrid({
           : (empty ? ANONYMOUS_PLAYER_NAME : getSafeDisplayName(player))));
     const emptyText = emptySlotLabel ?? (compact ? '👤' : ANONYMOUS_PLAYER_NAME);
     const group = positionGroupOf(label);
-    const groupPalette = positionEmphasis && group ? POSITION_GROUP_COLORS[group] : null;
+    const groupPalette = (positionEmphasis || enlarge) && group ? POSITION_GROUP_COLORS[group] : null;
     return (
       <TouchableOpacity
         key={`${row}-${idx}`}
@@ -138,7 +138,7 @@ export default function CourtGrid({
           slate && styles.slotSlate,
           positionEmphasis && styles.slotEmphasis,
           enlarge && styles.slotEnlarge,
-          groupPalette && !empty ? { backgroundColor: groupPalette.bg, borderColor: groupPalette.border } : null,
+          groupPalette ? { backgroundColor: groupPalette.bg, borderColor: groupPalette.border } : null,
           holding && styles.slotDrop,
           selected && styles.slotSelected,
           highlighted && styles.slotHighlight,
@@ -310,13 +310,13 @@ const styles = StyleSheet.create({
   },
   slotPosSlate: { color: '#94A3B8' },
   slotTextSlate: { color: '#F8FAFC' },
-  posAttack: { color: '#F97316', fontWeight: '800' },
-  posControl: { color: '#818CF8', fontWeight: '800' },
-  posDefense: { color: '#2DD4BF', fontWeight: '800' },
+  posAttack: { color: '#FCA5A5', fontWeight: '700' },
+  posControl: { color: '#C7D2FE', fontWeight: '700' },
+  posDefense: { color: '#99F6E4', fontWeight: '700' },
   posFallback: { color: '#94A3B8', fontWeight: '700' },
   slotEmphasis: { minHeight: 32, paddingVertical: 0, paddingHorizontal: 1, margin: 0 },
-  slotPosEmphasis: { fontSize: 16, lineHeight: 17, fontWeight: '800', marginBottom: 0 },
-  slotNameEmphasis: { fontSize: 12, lineHeight: 13, fontWeight: '600', color: '#CBD5E1' },
+  slotPosEmphasis: { fontSize: 16, lineHeight: 17, fontWeight: '700', marginBottom: 0 },
+  slotNameEmphasis: { fontSize: 14, lineHeight: 13, fontWeight: '500', color: '#FFFFFF' },
   netBarSlate: { backgroundColor: '#334155', borderColor: '#475569' },
   netLabelSlate: { color: '#94A3B8', letterSpacing: 2 },
   teamLabel: { color: '#F8FAFC', fontSize: 9, fontWeight: '900', textAlign: 'center', marginBottom: 1, includeFontPadding: false },
@@ -338,8 +338,8 @@ const styles = StyleSheet.create({
   columnsRowEnlarge: { flex: 1, gap: 3, minHeight: 0 },
   courtEnlarge: { flexGrow: 1, flexShrink: 1, minHeight: 0, padding: 2 },
   slotEnlarge: { minHeight: 0, paddingVertical: 3, paddingHorizontal: 4, margin: 0 },
-  slotPosEnlarge: { fontSize: 16, lineHeight: 18, fontWeight: '800', marginBottom: 0 },
-  slotNameEnlarge: { fontSize: 14, lineHeight: 16, fontWeight: '800' },
+  slotPosEnlarge: { fontSize: 16, lineHeight: 18, fontWeight: '700', marginBottom: 0 },
+  slotNameEnlarge: { fontSize: 14, lineHeight: 16, fontWeight: '500', color: '#FFFFFF' },
   slotEmptyTextEnlarge: { fontSize: 14, lineHeight: 16, fontWeight: '800' },
   columnsRow: { flexGrow: 1, flexShrink: 1, flexDirection: 'row', gap: 2, minHeight: 0, width: '100%', alignItems: 'stretch' },
   slotCol: { flex: 1, minWidth: 0, gap: 4 },
