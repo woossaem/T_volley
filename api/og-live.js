@@ -18,8 +18,27 @@ function intramuralNames(description) {
   return { host: m[1] || '홈팀', away: m[2] || '어웨이팀' };
 }
 
+function isOgCrawler(ua) {
+  return /(kakaotalk-scrap|facebookexternalhit|twitterbot|slackbot|discordbot|whatsapp|telegrambot|kakaostory|linkedinbot|embedly|pinterest|redditbot|googlebot)/i.test(
+    String(ua || ''),
+  );
+}
+
 module.exports = async (req, res) => {
   const raw = String(req.query.id || '').trim();
+  const ua = req.headers['user-agent'] || '';
+
+  // Kakao in-app browsers include "Kakaotalk" but are real users, not OG scrapers.
+  // Sending them an empty <body> produces a white screen. Bounce to the SPA.
+  if (!isOgCrawler(ua)) {
+    const dest = raw
+      ? `/live/${encodeURIComponent(raw)}?noscrape=1`
+      : '/?noscrape=1';
+    res.setHeader('Location', dest);
+    res.setHeader('Cache-Control', 'no-store');
+    res.status(302).end();
+    return;
+  }
   let hostName = '홈팀';
   let awayName = '어웨이팀';
 

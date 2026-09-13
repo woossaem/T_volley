@@ -45,6 +45,8 @@ interface CourtGridProps {
   tone?: 'court' | 'slate';
   /** 득점/범실 버튼: 포지션 16px Bold / 선수명 12px */
   positionEmphasis?: boolean;
+  hideRowLabels?: boolean;
+  enlarge?: boolean;
   onSlotPress?: (player: CourtSlotPlayer, slotIndex: number) => void;
   onTagPress?: (player: CourtSlotPlayer, slotIndex: number) => void;
 }
@@ -97,6 +99,8 @@ export default function CourtGrid({
   emptySlotLabel,
   tone = 'court',
   positionEmphasis = false,
+  hideRowLabels = false,
+  enlarge = false,
   onSlotPress,
   onTagPress,
 }: CourtGridProps) {
@@ -133,6 +137,7 @@ export default function CourtGrid({
           empty ? styles.slotEmpty : styles.slotFilled,
           slate && styles.slotSlate,
           positionEmphasis && styles.slotEmphasis,
+          enlarge && styles.slotEnlarge,
           groupPalette && !empty ? { backgroundColor: groupPalette.bg, borderColor: groupPalette.border } : null,
           holding && styles.slotDrop,
           selected && styles.slotSelected,
@@ -159,6 +164,7 @@ export default function CourtGrid({
             styles.slotPos,
             compact && styles.slotPosCompact,
             positionEmphasis && styles.slotPosEmphasis,
+            enlarge && styles.slotPosEnlarge,
             positionLabelStyle(label),
             groupPalette ? { color: groupPalette.pos } : null,
           ]}
@@ -170,7 +176,12 @@ export default function CourtGrid({
         </Text>
         {empty ? (
           <Text
-            style={[styles.slotEmptyText, compact && styles.slotEmptyTextCompact, slate && styles.slotTextSlate]}
+            style={[
+              styles.slotEmptyText,
+              compact && styles.slotEmptyTextCompact,
+              enlarge && styles.slotEmptyTextEnlarge,
+              slate && styles.slotTextSlate,
+            ]}
             numberOfLines={1}
             adjustsFontSizeToFit
             minimumFontScale={0.55}
@@ -184,6 +195,7 @@ export default function CourtGrid({
               compact && styles.slotNameCompact,
               slate && styles.slotTextSlate,
               positionEmphasis && styles.slotNameEmphasis,
+              enlarge && styles.slotNameEnlarge,
               groupPalette ? { color: groupPalette.name } : null,
             ]}
             numberOfLines={1}
@@ -193,7 +205,7 @@ export default function CourtGrid({
             {name}
           </Text>
         )}
-        {!compact && empty && !emptySlotLabel ? (
+        {!compact && !enlarge && !hideRowLabels && empty && !emptySlotLabel ? (
           <Text style={styles.slotAnonHint} numberOfLines={1}>{ANONYMOUS_PLAYER_NAME}</Text>
         ) : null}
       </TouchableOpacity>
@@ -201,7 +213,7 @@ export default function CourtGrid({
   };
 
   const renderRow = (row: CourtRow, offset: number, count: number, depth: number) => (
-    <View style={[styles.slotRow, compact && styles.slotRowCompact, { zIndex: 3 - depth }]}>
+    <View style={[styles.slotRow, compact && styles.slotRowCompact, enlarge && styles.slotRowEnlarge, { zIndex: 3 - depth }]}>
       {rowSlots(court, offset, count, row, false).map(({ player, idx, label }) =>
         renderSlot(player, idx, label, row)
       )}
@@ -209,8 +221,8 @@ export default function CourtGrid({
   );
 
   const renderColumn = (row: CourtRow, offset: number, count: number, depth: number, caption: string) => (
-    <View style={[styles.slotCol, compact && styles.slotColCompact, { zIndex: 3 - depth }]}>
-      {!compact ? <Text style={styles.colCaption} numberOfLines={1}>{caption}</Text> : null}
+    <View style={[styles.slotCol, compact && styles.slotColCompact, enlarge && styles.slotColEnlarge, { zIndex: 3 - depth }]}>
+      {!compact && !hideRowLabels ? <Text style={styles.colCaption} numberOfLines={1}>{caption}</Text> : null}
       {rowSlots(court, offset, count, row, reverseCols).map(({ player, idx, label }) =>
         renderSlot(player, idx, label, row)
       )}
@@ -235,6 +247,7 @@ export default function CourtGrid({
         styles.court,
         slate ? styles.courtSlate : { borderColor: accent },
         compact && styles.courtCompact,
+        enlarge && styles.courtEnlarge,
         layout === 'columns' && styles.courtColumns,
         disabled && styles.courtDisabled,
       ]}
@@ -242,7 +255,7 @@ export default function CourtGrid({
     >
       {teamLabel ? <Text style={styles.teamLabel} numberOfLines={1}>{teamLabel}</Text> : null}
       {layout === 'columns' ? (
-        <View style={styles.columnsRow}>
+        <View style={[styles.columnsRow, enlarge && styles.columnsRowEnlarge]}>
           {columns.map((col) => (
             <React.Fragment key={col.row}>
               {renderColumn(col.row, col.offset, col.count, col.depth, col.caption)}
@@ -256,11 +269,11 @@ export default function CourtGrid({
               <Text style={[styles.netLabel, slate && styles.netLabelSlate]}>네트</Text>
             </View>
           ) : null}
-          {!compact ? <Text style={styles.rowCaption}>전위</Text> : null}
+          {!hideRowLabels && !compact ? <Text style={styles.rowCaption}>전위</Text> : null}
           {renderRow('front', 0, front, 0)}
-          {!compact ? <Text style={styles.rowCaption}>중위</Text> : null}
+          {!hideRowLabels && !compact ? <Text style={styles.rowCaption}>중위</Text> : null}
           {renderRow('middle', front, middle, 1)}
-          {!compact ? <Text style={styles.rowCaption}>후위</Text> : null}
+          {!hideRowLabels && !compact ? <Text style={styles.rowCaption}>후위</Text> : null}
           {renderRow('back', front + middle, back, 2)}
         </>
       )}
@@ -320,6 +333,14 @@ const styles = StyleSheet.create({
   colCaption: { fontSize: 8, fontWeight: '800', color: '#BBF7D0', textAlign: 'center', marginBottom: 1 },
   slotRow: { flexDirection: 'row', gap: 4, marginBottom: 4 },
   slotRowCompact: { gap: 1, marginBottom: 0 },
+  slotRowEnlarge: { flex: 1, minHeight: 72, gap: 6, marginBottom: 6 },
+  slotColEnlarge: { flex: 1, gap: 8, minHeight: 0 },
+  columnsRowEnlarge: { flex: 1, gap: 8, minHeight: 220 },
+  courtEnlarge: { flexGrow: 1, flexShrink: 1, minHeight: 240, padding: 4 },
+  slotEnlarge: { minHeight: 72, paddingVertical: 10, paddingHorizontal: 4, margin: 1 },
+  slotPosEnlarge: { fontSize: 15, lineHeight: 18, fontWeight: '800', marginBottom: 3 },
+  slotNameEnlarge: { fontSize: 16, lineHeight: 19, fontWeight: '800' },
+  slotEmptyTextEnlarge: { fontSize: 14, lineHeight: 17, fontWeight: '800' },
   columnsRow: { flexGrow: 1, flexShrink: 1, flexDirection: 'row', gap: 2, minHeight: 0, width: '100%', alignItems: 'stretch' },
   slotCol: { flex: 1, minWidth: 0, gap: 4 },
   slotColCompact: { flex: 1, minWidth: 0, gap: 2, flexGrow: 1, flexShrink: 1 },

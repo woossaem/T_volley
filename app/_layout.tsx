@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useRef } from 'react';
-import { View, Text, StyleSheet, Animated, Alert, Image } from 'react-native';
+import { View, Text, StyleSheet, Animated, Alert, Image, Platform } from 'react-native';
 import { Stack } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Updates from 'expo-updates';
@@ -16,9 +16,18 @@ try {
   // native splash already gone
 }
 
+function isLiveWebRoute(): boolean {
+  try {
+    if (typeof window === 'undefined' || typeof window.location === 'undefined') return false;
+    return /\/live(\/|$)/.test(String(window.location.pathname || ''));
+  } catch {
+    return false;
+  }
+}
+
 function RootLayoutContent() {
   const { session } = useAuth();
-  const [isSplashDone, setIsSplashDone] = useState(false);
+  const [isSplashDone, setIsSplashDone] = useState(() => isLiveWebRoute());
   const fadeAnim = useRef(new Animated.Value(1)).current;
   const insets = useSafeAreaInsets();
   const safeBottom = safeInset(insets.bottom);
@@ -27,7 +36,7 @@ function RootLayoutContent() {
 
   useEffect(() => {
     async function checkAndApplyUpdate() {
-      if (__DEV__) return;
+      if (__DEV__ || Platform.OS === 'web') return;
       try {
         const update = await Updates.checkForUpdateAsync();
         if (update.isAvailable) {
@@ -61,17 +70,25 @@ function RootLayoutContent() {
 
   useEffect(() => {
     void SplashScreen.hideAsync().catch(() => {});
+    if (isLiveWebRoute()) {
+      setIsSplashDone(true);
+      return;
+    }
+    const failSafe = setTimeout(() => setIsSplashDone(true), 2800);
     const timer = setTimeout(() => {
       Animated.timing(fadeAnim, {
         toValue: 0,
         duration: 350,
-        useNativeDriver: true,
+        useNativeDriver: Platform.OS !== 'web',
       }).start(() => {
         setIsSplashDone(true);
       });
     }, 1800);
 
-    return () => clearTimeout(timer);
+    return () => {
+      clearTimeout(timer);
+      clearTimeout(failSafe);
+    };
   }, []);
 
   return (

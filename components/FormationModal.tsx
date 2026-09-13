@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useMemo } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, Modal, ScrollView } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, Modal, ScrollView, Pressable } from 'react-native';
 import CourtGrid from './CourtGrid';
 import {
   assignedUserId,
@@ -603,7 +603,9 @@ export default function FormationModal({
         frontCount={st.frontCount}
         middleCount={st.middleCount}
         backCount={st.backCount}
-        compact={opts.compact ?? true}
+        compact={opts.compact ?? false}
+        enlarge
+        hideRowLabels
         tone="slate"
         layout={opts.layout}
         courtSide={opts.courtSide}
@@ -622,17 +624,16 @@ export default function FormationModal({
   return (
     <Modal visible={visible} animationType="fade" transparent onRequestClose={onClose}>
       <View style={styles.overlay}>
-        <View style={[styles.sheet, dual && styles.sheetDual]}>
+        <Pressable style={StyleSheet.absoluteFill} onPress={onClose} accessibilityRole="button" accessibilityLabel="포메이션 닫기" />
+        <View
+          style={[styles.sheet, dual && styles.sheetDual]}
+          onStartShouldSetResponder={() => true}
+        >
           <Text style={styles.title}>{dual ? '🏐 양팀 네트 포메이션' : `🏐 ${teamName} 포메이션`}</Text>
-          <Text style={styles.sub}>
-            {dual
-              ? `${hostSide?.teamName}  vs  ${awaySide?.teamName} · 세로네트 점대칭 · 빈자리 투입 / 교체 / 퇴장`
-              : `${teamName} · 해당 팀 코트와 대기 벤치만 표시 · 빈자리 투입 / 교체 / 퇴장`}
-          </Text>
 
           {!dual ? renderLineCtrls('host') : null}
 
-          <Text style={styles.holdHint}>{unusedHint}</Text>
+          <Text style={styles.holdHint} numberOfLines={1}>{unusedHint}</Text>
 
           {dual ? (
             <View style={styles.dualCourtBlock}>
@@ -645,6 +646,7 @@ export default function FormationModal({
                     hideNet: true,
                     teamLabel: hostSide?.teamName,
                     interactive: hostCanEdit,
+                    compact: false,
                   })}
                 </View>
               </View>
@@ -660,6 +662,7 @@ export default function FormationModal({
                     hideNet: true,
                     teamLabel: awaySide?.teamName,
                     interactive: awayCanEdit,
+                    compact: false,
                   })}
                 </View>
               </View>
@@ -751,10 +754,9 @@ export default function FormationModal({
 
 const styles = StyleSheet.create({
   overlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.72)', justifyContent: 'center', alignItems: 'center', padding: 4 },
-  sheet: { backgroundColor: '#0F172A', borderRadius: 14, padding: 4, width: 640, maxWidth: '100%', maxHeight: '96%', borderWidth: 1, borderColor: '#334155' },
+  sheet: { backgroundColor: '#0F172A', borderRadius: 14, padding: 6, width: 640, maxWidth: '100%', maxHeight: '96%', borderWidth: 1, borderColor: '#334155', zIndex: 1 },
   sheetDual: { width: '98%', maxWidth: 980 },
-  title: { fontSize: 13, fontWeight: '900', color: '#F8FAFC', textAlign: 'center' },
-  sub: { fontSize: 10, color: '#94A3B8', textAlign: 'center', marginTop: 1, marginBottom: 2, fontWeight: '700' },
+  title: { fontSize: 13, fontWeight: '900', color: '#F8FAFC', textAlign: 'center', marginBottom: 2 },
   lineCtrlRow: { flexDirection: 'row', gap: 4, marginBottom: 2, flexShrink: 0, width: '100%' },
   lineCtrl: { flex: 1, minWidth: 0, backgroundColor: '#1E293B', borderRadius: 6, padding: 2, borderWidth: 1, borderColor: '#334155', alignItems: 'center' },
   lineCtrlLabel: { fontSize: 8, fontWeight: '800', color: '#CBD5E1', marginBottom: 1 },
@@ -764,20 +766,20 @@ const styles = StyleSheet.create({
   stepVal: { minWidth: 14, textAlign: 'center', color: '#F8FAFC', fontSize: 11, fontWeight: '900' },
   holdHint: { fontSize: 10, color: '#94A3B8', fontWeight: '700', textAlign: 'center', marginBottom: 2, flexShrink: 0 },
   courtWrap: {
-    marginVertical: 4,
+    marginVertical: 2,
     flexGrow: 1,
     flexShrink: 1,
-    minHeight: 220,
+    minHeight: 280,
     backgroundColor: '#1E293B',
     borderRadius: 12,
     borderWidth: 1,
     borderColor: '#334155',
     overflow: 'hidden',
-    padding: 8,
+    padding: 4,
   },
-  dualCourtBlock: { flexDirection: 'row', alignItems: 'stretch', flexGrow: 1, flexShrink: 1, minHeight: 168, marginBottom: 8 },
+  dualCourtBlock: { flexDirection: 'row', alignItems: 'stretch', flexGrow: 1, flexShrink: 1, minHeight: 240, marginBottom: 8 },
   teamCourtPane: { flex: 1, minWidth: 0, minHeight: 0, flexDirection: 'column', paddingBottom: 8 },
-  teamCourtFill: { flex: 1, minHeight: 120, width: '100%', paddingBottom: 4 },
+  teamCourtFill: { flex: 1, minHeight: 200, width: '100%', paddingBottom: 4 },
   verticalNet: {
     width: 6,
     alignSelf: 'stretch',
@@ -805,8 +807,8 @@ const styles = StyleSheet.create({
   playerChipText: { color: '#F8FAFC', fontSize: 12, fontWeight: '800' },
   emptyDuty: { fontSize: 10, color: '#64748B', fontWeight: '700' },
   btnRow: { flexDirection: 'row', gap: 8, marginTop: 4, flexShrink: 0 },
-  cancelBtn: { flex: 1, backgroundColor: '#334155', paddingVertical: 10, borderRadius: 10, alignItems: 'center' },
-  cancelText: { color: '#CBD5E1', fontWeight: '800', fontSize: 13 },
+  cancelBtn: { flex: 1, backgroundColor: '#334155', paddingVertical: 12, borderRadius: 10, alignItems: 'center' },
+  cancelText: { color: '#E2E8F0', fontWeight: '800', fontSize: 14 },
   saveBtn: { flex: 2, backgroundColor: '#2563EB', paddingVertical: 10, borderRadius: 10, alignItems: 'center' },
   saveText: { color: '#FFFFFF', fontWeight: '900', fontSize: 13 },
   actionOverlay: {

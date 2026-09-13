@@ -11,13 +11,12 @@ import {
   ScrollView,
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import Head from 'expo-router/head';
 import { supabase } from '../../lib/supabase';
 import { Colors } from '../../constants/Colors';
 import ScoreboardScreen from '../scoreboard';
 import TeamLineupPanel, { type TeamLineupView } from '../../components/TeamLineupPanel';
 import { loadLiveLineups } from '../../lib/liveLineupView';
-import { LIVE_OG_DESCRIPTION, LIVE_OG_IMAGE_URL, liveOgTitle } from '../../lib/liveLink';
+import { liveOgTitle } from '../../lib/liveLink';
 
 const PLAY_STORE_URL = 'https://play.google.com/store/apps/details?id=com.rudolfuu.tvolley&pcampaignid=web_share';
 const APP_STORE_URL = 'https://apps.apple.com/kr/app/%ED%8B%B0%EB%B3%BC%EB%A6%AC/id6799385540';
@@ -32,6 +31,117 @@ function resolveLiveParam(raw: string | string[] | undefined): string {
   }
 }
 
+function isWebDomAvailable(): boolean {
+  try {
+    return Platform.OS === 'web' && typeof window !== 'undefined' && typeof document !== 'undefined';
+  } catch {
+    return false;
+  }
+}
+
+function readUserAgent(): string {
+  if (!isWebDomAvailable()) return '';
+  try {
+    return String(window.navigator?.userAgent || '');
+  } catch {
+    return '';
+  }
+}
+
+function isLikelyInAppBrowser(): boolean {
+  const ua = readUserAgent();
+  return /Kakaotalk|FBAN|FBAV|Instagram|NAVER|Line\//i.test(ua);
+}
+
+function openExternalUrl(url: string) {
+  if (!isWebDomAvailable()) return;
+  try {
+    window.open(url, '_blank');
+  } catch {
+    try {
+      window.location.href = url;
+    } catch {
+      // In-app WebViews may block both open and assign.
+    }
+  }
+}
+
+function setDocumentTitleSafe(title: string) {
+  if (!isWebDomAvailable()) return;
+  try {
+    document.title = title;
+  } catch {
+    // Some WebView engines reject title writes.
+  }
+}
+
+type FullscreenDocument = Document & {
+  webkitFullscreenElement?: Element | null;
+  msFullscreenElement?: Element | null;
+  webkitExitFullscreen?: () => Promise<void> | void;
+  msExitFullscreen?: () => Promise<void> | void;
+};
+
+type FullscreenElement = HTMLElement & {
+  webkitRequestFullscreen?: () => Promise<void> | void;
+  webkitRequestFullScreen?: () => Promise<void> | void;
+  msRequestFullscreen?: () => Promise<void> | void;
+};
+
+function getFullscreenElement(): Element | null {
+  if (!isWebDomAvailable()) return null;
+  try {
+    const doc = document as FullscreenDocument;
+    return document.fullscreenElement || doc.webkitFullscreenElement || doc.msFullscreenElement || null;
+  } catch {
+    return null;
+  }
+}
+
+function canUseFullscreenApi(): boolean {
+  if (!isWebDomAvailable()) return false;
+  try {
+    const el = document.documentElement as FullscreenElement;
+    return typeof (
+      el.requestFullscreen ||
+      el.webkitRequestFullscreen ||
+      el.webkitRequestFullScreen ||
+      el.msRequestFullscreen
+    ) === 'function';
+  } catch {
+    return false;
+  }
+}
+
+async function toggleDocumentFullscreen(): Promise<boolean> {
+  if (!isWebDomAvailable()) return false;
+  try {
+    const doc = document as FullscreenDocument;
+    const el = document.documentElement as FullscreenElement;
+    if (getFullscreenElement()) {
+      const exit = document.exitFullscreen || doc.webkitExitFullscreen || doc.msExitFullscreen;
+      if (typeof exit === 'function') {
+        await Promise.resolve(exit.call(document));
+        return true;
+      }
+      return false;
+    }
+    if (!canUseFullscreenApi()) return false;
+    const req =
+      el.requestFullscreen ||
+      el.webkitRequestFullscreen ||
+      el.webkitRequestFullScreen ||
+      el.msRequestFullscreen;
+    if (typeof req === 'function') {
+      await Promise.resolve(req.call(el));
+      return true;
+    }
+  } catch {
+    return false;
+  }
+  return false;
+}
+
 function PlgPromoBanner() {
   const router = useRouter();
   const { width } = useWindowDimensions();
@@ -40,19 +150,19 @@ function PlgPromoBanner() {
 
   const handleDownload = () => {
     if (Platform.OS !== 'web') return;
-    const userAgent = String(window.navigator.userAgent || '').toLowerCase();
+    const userAgent = readUserAgent().toLowerCase();
     if (/android/.test(userAgent)) {
-      window.open(PLAY_STORE_URL, '_blank');
+      openExternalUrl(PLAY_STORE_URL);
     } else if (/iphone|ipad|ipod/.test(userAgent)) {
-      window.open(APP_STORE_URL, '_blank');
+      openExternalUrl(APP_STORE_URL);
     } else {
-      window.open(PLAY_STORE_URL, '_blank');
+      openExternalUrl(PLAY_STORE_URL);
     }
   };
 
   if (!isBannerVisible) return null;
 
-  const webFixed = Platform.OS === 'web'
+  const webFixed = isWebDomAvailable() && !isLikelyInAppBrowser()
     ? { position: 'fixed' as any, zIndex: 1000, elevation: 1000 }
     : null;
 
@@ -113,6 +223,7 @@ export default function LiveScoreboardScreen() {
   const [ogAway, setOgAway] = useState('어웨이팀');
   const [isLineupModalOpen, setIsLineupModalOpen] = useState(false);
   const [focusedTeam, setFocusedTeam] = useState<'ALL' | 'HOME' | 'AWAY'>('ALL');
+  const [isFullscreen, setIsFullscreen] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -193,24 +304,34 @@ export default function LiveScoreboardScreen() {
   }, [matchId, isDesktop, isLineupModalOpen]);
 
   useEffect(() => {
-    if (Platform.OS !== 'web' || typeof document === 'undefined') return;
-    const title = liveOgTitle(ogHost, ogAway);
-    document.title = title;
-    const upsertMeta = (attr: string, key: string, value: string) => {
-      let tag = document.head.querySelector(`meta[${attr}="${key}"]`);
-      if (!tag) {
-        tag = document.createElement('meta');
-        tag.setAttribute(attr, key);
-        document.head.appendChild(tag);
-      }
-      tag.setAttribute('content', value);
-    };
-    upsertMeta('name', 'description', LIVE_OG_DESCRIPTION);
-    upsertMeta('property', 'og:title', title);
-    upsertMeta('property', 'og:description', LIVE_OG_DESCRIPTION);
-    upsertMeta('property', 'og:image', LIVE_OG_IMAGE_URL);
-    upsertMeta('property', 'og:type', 'website');
+    setDocumentTitleSafe(liveOgTitle(ogHost, ogAway));
   }, [ogHost, ogAway]);
+
+  useEffect(() => {
+    if (!isWebDomAvailable()) return;
+    const sync = () => {
+      try {
+        setIsFullscreen(!!getFullscreenElement());
+      } catch {
+        setIsFullscreen(false);
+      }
+    };
+    sync();
+    try {
+      document.addEventListener('fullscreenchange', sync);
+      document.addEventListener('webkitfullscreenchange', sync);
+    } catch {
+      return;
+    }
+    return () => {
+      try {
+        document.removeEventListener('fullscreenchange', sync);
+        document.removeEventListener('webkitfullscreenchange', sync);
+      } catch {
+        // ignore
+      }
+    };
+  }, []);
 
   if (loading) {
     return (
@@ -235,35 +356,39 @@ export default function LiveScoreboardScreen() {
   const boardSwapped = dbSwapped === localCourtFlip;
   const leftLineup = boardSwapped ? awayLineup : hostLineup;
   const rightLineup = boardSwapped ? hostLineup : awayLineup;
-  const ogTitle = liveOgTitle(ogHost, ogAway);
 
   return (
     <View style={styles.page}>
-      {Platform.OS === 'web' ? (
-        <Head>
-          <title>{ogTitle}</title>
-          <meta name="description" content={LIVE_OG_DESCRIPTION} />
-          <meta property="og:title" content={ogTitle} />
-          <meta property="og:description" content={LIVE_OG_DESCRIPTION} />
-          <meta property="og:image" content={LIVE_OG_IMAGE_URL} />
-          <meta property="og:type" content="website" />
-          <meta name="twitter:card" content="summary_large_image" />
-          <meta name="twitter:title" content={ogTitle} />
-          <meta name="twitter:description" content={LIVE_OG_DESCRIPTION} />
-          <meta name="twitter:image" content={LIVE_OG_IMAGE_URL} />
-        </Head>
-      ) : null}
       <View style={styles.liveTopBar}>
         <Text style={styles.liveTopTitle} numberOfLines={1}>티볼리 라이브 전광판</Text>
-        <TouchableOpacity
-          style={[styles.flipBtn, localCourtFlip && styles.flipBtnOn]}
-          onPress={() => setLocalCourtFlip((prev) => !prev)}
-          hitSlop={8}
-        >
-          <Text style={[styles.flipBtnText, localCourtFlip && styles.flipBtnTextOn]}>
-            {localCourtFlip ? '코트 반전 ON' : '코트 반전'}
-          </Text>
-        </TouchableOpacity>
+        <View style={styles.liveTopActions}>
+          <TouchableOpacity
+            style={[styles.flipBtn, localCourtFlip && styles.flipBtnOn]}
+            onPress={() => setLocalCourtFlip((prev) => !prev)}
+            hitSlop={8}
+          >
+            <Text style={[styles.flipBtnText, localCourtFlip && styles.flipBtnTextOn]}>
+              {localCourtFlip ? '코트 반전 ON' : '코트 반전'}
+            </Text>
+          </TouchableOpacity>
+          {Platform.OS === 'web' ? (
+            <TouchableOpacity
+              style={[styles.flipBtn, isFullscreen && styles.flipBtnOn]}
+              onPress={() => {
+                void toggleDocumentFullscreen().then((ok) => {
+                  if (ok) setIsFullscreen(!!getFullscreenElement());
+                });
+              }}
+              hitSlop={8}
+              accessibilityRole="button"
+              accessibilityLabel={isFullscreen ? '전체화면 종료' : '전체화면'}
+            >
+              <Text style={[styles.flipBtnText, isFullscreen && styles.flipBtnTextOn]}>
+                {isFullscreen ? '전체화면 종료' : '전체화면'}
+              </Text>
+            </TouchableOpacity>
+          ) : null}
+        </View>
       </View>
       <View style={isDesktop ? styles.desktopShell : styles.mobileBoard}>
         {isDesktop ? (
@@ -381,6 +506,7 @@ const styles = StyleSheet.create({
     borderBottomColor: '#1E293B',
   },
   liveTopTitle: { color: '#F8FAFC', fontSize: 13, fontWeight: '800', flex: 1, paddingRight: 8 },
+  liveTopActions: { flexDirection: 'row', alignItems: 'center', gap: 6, flexShrink: 0 },
   flipBtn: {
     backgroundColor: '#1E293B',
     borderRadius: 8,

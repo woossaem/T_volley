@@ -7,7 +7,13 @@
         {
           "type": "header",
           "key": "user-agent",
-          "value": "(?i).*(kakaotalk|facebookexternalhit|twitterbot|slackbot|discordbot|whatsapp|telegrambot|kakaostory).*"
+          "value": "(?i).*(kakaotalk-scrap|facebookexternalhit|twitterbot|slackbot|discordbot|whatsapp|telegrambot|kakaostory|linkedinbot|embedly).*"
+        }
+      ],
+      "missing": [
+        {
+          "type": "query",
+          "key": "noscrape"
         }
       ],
       "destination": "/api/og-live?id=:id"
