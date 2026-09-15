@@ -502,6 +502,11 @@ export default function MatchResultModal({
           ...collectFormationSlotIds(match?.host_roster),
           ...collectFormationSlotIds(match?.away_roster),
         ]}
+        teamSide={formationSide === 'away' ? 'away' : 'host'}
+        matchId={match?.id}
+        statsTeamName={formationSide === 'away'
+          ? getSafeTeamName(match.away_team_name || '상대팀')
+          : getSafeTeamName(match.host_team_name || match)}
         onClose={() => setFormationSide(null)}
         onSave={(formation) => {
           const isHost = formationSide !== 'away';

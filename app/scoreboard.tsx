@@ -2465,6 +2465,11 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
         initial={formationTeam === 'host' ? hostFormationInitial : awayFormationInitial}
         courtSide={formationTeam === leftTeamData.key ? 'left' : 'right'}
         lockedOutIds={(formationTeam === 'host' ? awayFormationInitial.court : hostFormationInitial.court) || []}
+        teamSide={formationTeam}
+        matchId={matchId}
+        statsTeamName={isIntramural
+          ? getSafeTeamName(match?.host_team_name || match)
+          : (formationTeam === 'host' ? displayHostName : displayAwayName)}
         onClose={() => setFormationVisible(false)}
         onSave={handleSaveFormation}
         usedMatchIds={[

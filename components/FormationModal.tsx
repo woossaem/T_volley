@@ -1,5 +1,16 @@
-import React, { useEffect, useState, useMemo } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, Modal, ScrollView, Pressable } from 'react-native';
+import React, { useEffect, useState, useMemo, useRef } from 'react';
+import {
+  View,
+  Text,
+  StyleSheet,
+  TouchableOpacity,
+  Modal,
+  ScrollView,
+  Pressable,
+  Animated,
+  ActivityIndicator,
+  Alert,
+} from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import CourtGrid from './CourtGrid';
 import {
@@ -17,6 +28,11 @@ import {
 } from '../lib/roster';
 import { getSafeDisplayName } from '../lib/utils';
 import { safeInset } from '../lib/nativeSafe';
+import {
+  suggestBalancedDual,
+  suggestFormation,
+  type FormationAlgoMode,
+} from '../lib/formationAlgorithm';
 
 export interface FormationMember {
   user_id: string;
@@ -56,6 +72,10 @@ interface Props {
   courtSide?: 'left' | 'right';
   /** 상대 팀 코트에 이미 배치된 ID. 대기 벤치 섞임 차단 */
   lockedOutIds?: Array<string | null | undefined>;
+  /** 통계·교류전 라인업 조회용 팀명 (내전은 클럽명) */
+  statsTeamName?: string;
+  teamSide?: SideKey;
+  matchId?: string | null;
 }
 
 interface SideState {
@@ -159,6 +179,9 @@ export default function FormationModal({
   usedMatchIds = [],
   courtSide,
   lockedOutIds = [],
+  statsTeamName,
+  teamSide = 'host',
+  matchId = null,
 }: Props) {
   const insets = useSafeAreaInsets();
   const dual = !!(hostSide && awaySide) && !courtSide;
@@ -166,6 +189,9 @@ export default function FormationModal({
   const [awayState, setAwayState] = useState<SideState>(EMPTY_SIDE);
   const [holding, setHolding] = useState<{ side: SideKey; id: string } | null>(null);
   const [intent, setIntent] = useState<SlotIntent | null>(null);
+  const [algoBusy, setAlgoBusy] = useState(false);
+  const [activeAlgo, setActiveAlgo] = useState<FormationAlgoMode | null>(null);
+  const courtPulse = useRef(new Animated.Value(1)).current;
 
   const hostCanEdit = dual ? (isSingleRecorder || !!hostSide?.canEdit) : true;
   const awayCanEdit = dual ? (isSingleRecorder || !!awaySide?.canEdit) : true;
@@ -283,6 +309,151 @@ export default function FormationModal({
         full_name: real ? nameOf(side, real) : '',
       };
     });
+
+  const statsNameOf = (side: SideKey) => {
+    if (dual) {
+      return side === 'host'
+        ? (statsTeamName || hostSide?.teamName || teamName)
+        : (awaySide?.teamName || statsTeamName || teamName);
+    }
+    return statsTeamName || teamName;
+  };
+
+  const availableForAlgo = (side: SideKey) => {
+    const st = getState(side);
+    const late = new Set(st.late.map((id) => assignedUserId(id)).filter((id): id is string => !!id));
+    const ids = uniqueKeepOrder([
+      ...st.court,
+      ...benchRoster(side),
+    ]).filter((id) => !late.has(id) && !lockedOutSet.has(id));
+    return ids.map((id) => ({ user_id: id, full_name: nameOf(side, id) }));
+  };
+
+  const playCourtPulse = () => {
+    courtPulse.setValue(1);
+    Animated.sequence([
+      Animated.timing(courtPulse, { toValue: 0.28, duration: 90, useNativeDriver: true }),
+      Animated.timing(courtPulse, { toValue: 1, duration: 110, useNativeDriver: true }),
+    ]).start();
+  };
+
+  const applyCourt = (side: SideKey, court: Array<string | null>) => {
+    if (!canEditSide(side)) return;
+    setState(side, (prev) => {
+      const total = prev.frontCount + prev.middleCount + prev.backCount;
+      return { ...prev, court: padCourtSlots(court, total) };
+    });
+  };
+
+  const runQuickPlace = async (mode: FormationAlgoMode) => {
+    if (algoBusy) return;
+    if (dual) {
+      if (mode !== 'BALANCE' && !hostCanEdit && !awayCanEdit) return;
+    } else if (!canEditSide('host')) {
+      return;
+    }
+    setAlgoBusy(true);
+    setActiveAlgo(mode);
+    setHolding(null);
+    setIntent(null);
+    try {
+      if (dual && mode === 'BALANCE') {
+        const late = new Set(
+          [...hostState.late, ...awayState.late].map((id) => assignedUserId(id)).filter((id): id is string => !!id),
+        );
+        const pool = allPlayers.filter((p) => p.user_id && !late.has(p.user_id));
+        const result = await suggestBalancedDual({
+          players: pool,
+          frontCount: hostState.frontCount,
+          middleCount: hostState.middleCount,
+          backCount: hostState.backCount,
+          hostTeamName: statsNameOf('host'),
+          awayTeamName: statsNameOf('away'),
+          excludeMatchId: matchId,
+        });
+        applyCourt('host', result.host);
+        applyCourt('away', result.away);
+      } else if (dual) {
+        const hostPlayers = availableForAlgo('host');
+        const hostCourt = await suggestFormation({
+          mode,
+          players: hostPlayers,
+          frontCount: hostState.frontCount,
+          middleCount: hostState.middleCount,
+          backCount: hostState.backCount,
+          teamName: statsNameOf('host'),
+          teamSide: 'host',
+          excludeMatchId: matchId,
+        });
+        const used = new Set(hostCourt.filter((id): id is string => !!id));
+        const awayPlayers = availableForAlgo('away').filter((p) => !used.has(p.user_id));
+        const awayCourt = await suggestFormation({
+          mode,
+          players: awayPlayers,
+          frontCount: awayState.frontCount,
+          middleCount: awayState.middleCount,
+          backCount: awayState.backCount,
+          teamName: statsNameOf('away'),
+          teamSide: 'away',
+          excludeMatchId: matchId,
+        });
+        applyCourt('host', hostCourt);
+        applyCourt('away', awayCourt);
+      } else {
+        const court = await suggestFormation({
+          mode,
+          players: availableForAlgo('host'),
+          frontCount: hostState.frontCount,
+          middleCount: hostState.middleCount,
+          backCount: hostState.backCount,
+          teamName: statsNameOf('host'),
+          teamSide,
+          excludeMatchId: matchId,
+        });
+        applyCourt('host', court);
+      }
+      playCourtPulse();
+    } catch (err: any) {
+      Alert.alert('자동 배치', err?.message || '라인업을 만들지 못했습니다. 잠시 후 다시 시도해 주세요.');
+    } finally {
+      setAlgoBusy(false);
+      setActiveAlgo(null);
+    }
+  };
+
+  const renderQuickButtons = () => {
+    const chips: Array<{ mode: FormationAlgoMode; label: string }> = [
+      { mode: 'DATA_MAIN', label: '주포지션' },
+      { mode: 'EXCHANGE_STARTERS', label: '교류전주전' },
+      { mode: 'RANDOM', label: '랜덤' },
+      { mode: 'BALANCE', label: '전력밸런스' },
+    ];
+    return (
+      <View style={styles.quickRowWrap}>
+        <View style={styles.quickRow}>
+          {chips.map((chip) => {
+            const on = activeAlgo === chip.mode;
+            return (
+              <TouchableOpacity
+                key={chip.mode}
+                style={[styles.quickChip, on && styles.quickChipOn]}
+                onPress={() => { void runQuickPlace(chip.mode); }}
+                disabled={algoBusy}
+              >
+                {on && algoBusy ? (
+                  <ActivityIndicator size="small" color="#BFDBFE" />
+                ) : (
+                  <Text style={[styles.quickChipText, on && styles.quickChipTextOn]} numberOfLines={1}>
+                    {chip.label}
+                  </Text>
+                )}
+              </TouchableOpacity>
+            );
+          })}
+        </View>
+      </View>
+    );
+  };
 
   const resizeCourt = (side: SideKey, nextFront: number, nextMiddle: number, nextBack: number) => {
     if (!canEditSide(side)) return;
@@ -620,8 +791,8 @@ export default function FormationModal({
       <View style={[
         styles.overlay,
         {
-          paddingTop: Math.max(safeInset(insets.top), 12),
-          paddingBottom: Math.max(safeInset(insets.bottom), 8),
+          paddingTop: Math.max(safeInset(insets.top), 8),
+          paddingBottom: Math.max(safeInset(insets.bottom), 6),
         },
       ]}>
         <Pressable style={StyleSheet.absoluteFill} onPress={onClose} accessibilityRole="button" accessibilityLabel="포메이션 닫기" />
@@ -630,6 +801,7 @@ export default function FormationModal({
           onStartShouldSetResponder={() => true}
         >
           <Text style={styles.title}>{dual ? '🏐 양팀 네트 포메이션' : `🏐 ${teamName} 포메이션`}</Text>
+          {renderQuickButtons()}
 
           <View style={styles.bodyFit}>
             {dual ? (
@@ -637,6 +809,7 @@ export default function FormationModal({
                 <View style={styles.teamCourtPane}>
                   {renderLineCtrls('host', 'back-first')}
                   <View style={styles.teamCourtFill}>
+                    <Animated.View style={[styles.courtPulse, { opacity: courtPulse }]}>
                     {renderCourtGrid('host', {
                       layout: 'columns',
                       courtSide: 'left',
@@ -645,6 +818,7 @@ export default function FormationModal({
                       interactive: hostCanEdit,
                       compact: false,
                     })}
+                    </Animated.View>
                   </View>
                 </View>
 
@@ -653,6 +827,7 @@ export default function FormationModal({
                 <View style={styles.teamCourtPane}>
                   {renderLineCtrls('away', 'front-first')}
                   <View style={styles.teamCourtFill}>
+                    <Animated.View style={[styles.courtPulse, { opacity: courtPulse }]}>
                     {renderCourtGrid('away', {
                       layout: 'columns',
                       courtSide: 'right',
@@ -661,6 +836,7 @@ export default function FormationModal({
                       interactive: awayCanEdit,
                       compact: false,
                     })}
+                    </Animated.View>
                   </View>
                 </View>
               </View>
@@ -668,6 +844,7 @@ export default function FormationModal({
               <View style={styles.courtWrap}>
                 {renderLineCtrls('host', (courtSide || 'left') === 'right' ? 'front-first' : 'back-first')}
                 <View style={styles.teamCourtFill}>
+                  <Animated.View style={[styles.courtPulse, { opacity: courtPulse }]}>
                   {renderCourtGrid('host', {
                     layout: 'columns',
                     courtSide: courtSide || 'left',
@@ -675,6 +852,7 @@ export default function FormationModal({
                     interactive: true,
                     compact: false,
                   })}
+                  </Animated.View>
                 </View>
               </View>
             )}
@@ -754,18 +932,36 @@ export default function FormationModal({
 }
 
 const styles = StyleSheet.create({
-  overlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.72)', justifyContent: 'center', alignItems: 'center', padding: 4, paddingTop: 12 },
-  sheet: { backgroundColor: '#0F172A', borderRadius: 14, paddingHorizontal: 6, paddingBottom: 4, paddingTop: 8, width: 640, maxWidth: '100%', height: '92%', maxHeight: '92%', borderWidth: 1, borderColor: '#334155', zIndex: 1, flexShrink: 1, overflow: 'hidden', gap: 4 },
+  overlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.72)', justifyContent: 'center', alignItems: 'center', padding: 4, paddingTop: 8 },
+  sheet: { backgroundColor: '#0F172A', borderRadius: 14, paddingHorizontal: 6, paddingBottom: 4, paddingTop: 4, width: 640, maxWidth: '100%', height: '92%', maxHeight: '92%', borderWidth: 1, borderColor: '#334155', zIndex: 1, flexShrink: 1, overflow: 'hidden', gap: 2 },
   sheetDual: { width: '98%', maxWidth: 980 },
-  title: { fontSize: 18, fontWeight: '700', color: '#F8FAFC', textAlign: 'center', marginBottom: 0, flexShrink: 0 },
+  title: { fontSize: 16, fontWeight: '700', color: '#F8FAFC', textAlign: 'center', marginBottom: 0, flexShrink: 0 },
+  quickRowWrap: { flexShrink: 0, width: '100%', maxHeight: 28, overflow: 'hidden' },
+  quickRow: { flexDirection: 'row', flexWrap: 'nowrap', gap: 8, justifyContent: 'center', alignItems: 'center' },
+  quickChip: {
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 8,
+    backgroundColor: '#1E293B',
+    borderWidth: 1,
+    borderColor: '#334155',
+    minHeight: 24,
+    maxHeight: 24,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  quickChipOn: { backgroundColor: '#1E3A8A', borderColor: '#3B82F6' },
+  quickChipText: { color: '#E2E8F0', fontSize: 11, fontWeight: '800' },
+  quickChipTextOn: { color: '#DBEAFE' },
+  courtPulse: { flex: 1, minHeight: 0, width: '100%' },
   lineCtrlRow: { flexDirection: 'row', gap: 4, marginBottom: 0, flexShrink: 0, width: '100%' },
-  lineCtrl: { flex: 1, minWidth: 0, backgroundColor: '#1E293B', borderRadius: 6, padding: 1, borderWidth: 1, borderColor: '#334155', alignItems: 'center' },
+  lineCtrl: { flex: 1, minWidth: 0, backgroundColor: '#1E293B', borderRadius: 6, padding: 0, borderWidth: 1, borderColor: '#334155', alignItems: 'center' },
   lineCtrlLabel: { fontSize: 8, fontWeight: '800', color: '#CBD5E1', marginBottom: 0 },
   stepper: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   stepBtn: { width: 22, height: 22, borderRadius: 6, backgroundColor: '#334155', alignItems: 'center', justifyContent: 'center' },
   stepBtnText: { color: '#FFFFFF', fontSize: 14, fontWeight: '900' },
   stepVal: { minWidth: 14, textAlign: 'center', color: '#F8FAFC', fontSize: 11, fontWeight: '900' },
-  bodyFit: { flexGrow: 1, flexShrink: 1, minHeight: 0, gap: 4 },
+  bodyFit: { flexGrow: 1, flexShrink: 1, minHeight: 0, gap: 2 },
   courtWrap: {
     marginVertical: 0,
     flexGrow: 1,
