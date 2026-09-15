@@ -35,17 +35,25 @@ export type PowerRatioResult = {
 function netScoreOf(entry: PowerRatioPlayer | number | string | null | undefined): number {
   if (typeof entry === 'number' && Number.isFinite(entry)) return entry;
   if (!entry || typeof entry !== 'object') return 0;
+  if (typeof entry.power === 'number' && Number.isFinite(entry.power)) return entry.power;
   const points = Number(entry.points);
   const faults = Number(entry.faults);
   if (Number.isFinite(points) || Number.isFinite(faults)) {
     return (Number.isFinite(points) ? points : 0) - (Number.isFinite(faults) ? faults : 0);
   }
-  if (typeof entry.power === 'number' && Number.isFinite(entry.power)) return entry.power;
   return 0;
 }
 
+function idSpread(id?: string | null): number {
+  const s = String(id || '');
+  if (!s) return 0;
+  let h = 0;
+  for (let i = 0; i < s.length; i += 1) h = (h + s.charCodeAt(i) * (i + 3)) % 5;
+  return h;
+}
+
 /**
- * 양 팀 누적 득실(득점-범실)로 전력 비율과 균형도를 구한다.
+ * 양 팀 누적 득실(득점-범실) + 기본 전투력으로 전력 비율과 균형도를 구한다.
  * balanceScore = 100 - |A_ratio - B_ratio|
  */
 export function calculatePowerRatio(
@@ -54,12 +62,19 @@ export function calculatePowerRatio(
 ): PowerRatioResult {
   const aNet = (teamA || []).reduce<number>((sum, row) => sum + netScoreOf(row), 0);
   const bNet = (teamB || []).reduce<number>((sum, row) => sum + netScoreOf(row), 0);
+  console.log('[PowerBalance Debug]', aNet, bNet);
   const floor = Math.min(0, aNet, bNet);
   const aShift = aNet - floor;
   const bShift = bNet - floor;
   const sum = aShift + bShift;
-  const aRatio = sum > 0 ? Math.round((aShift / sum) * 100) : 50;
-  const bRatio = 100 - aRatio;
+  let aRatio = 50;
+  let bRatio = 50;
+  if (sum > 0) {
+    aRatio = Math.round((aShift / sum) * 100);
+    if (aRatio < 1) aRatio = 1;
+    if (aRatio > 99) aRatio = 99;
+    bRatio = 100 - aRatio;
+  }
   const balanceScore = Math.max(0, Math.min(100, 100 - Math.abs(aRatio - bRatio)));
   return { aRatio, bRatio, balanceScore, aNet, bNet };
 }
@@ -155,19 +170,44 @@ function emptySlotShare(n: number): number[] {
   return Array.from({ length: n }, () => 0);
 }
 
-function combatPower(stats: PlayerCareerStats, dataWeight: number): number {
-  const net = (stats.points || 0) - (stats.faults || 0);
-  const efficiency = (stats.points + stats.faults) > 0
-    ? net / (stats.points + stats.faults)
-    : 0;
+function profileWeight(
+  preferredPos: string,
+  hand: DominantHand,
+  setsPlayed: number,
+  userId?: string | null,
+): number {
+  const posBonus = preferredPos && preferredPos !== '직접 입력' ? 5 : 0;
+  const handPts = hand !== 'unknown' ? 2 : 0;
+  const setPts = Math.min(10, Math.max(0, setsPlayed)) * 1.5;
+  return posBonus + handPts + setPts + idSpread(userId);
+}
+
+const BASE_RATING = 50;
+
+function combatPower(
+  stats: PlayerCareerStats,
+  dataWeight: number,
+  preferredPos: string,
+  hand: DominantHand,
+  userId?: string | null,
+): number {
+  const points = stats.points || 0;
+  const faults = stats.faults || 0;
+  const net = points - faults;
+  const fallback = BASE_RATING + profileWeight(preferredPos, hand, stats.setsPlayed || 0, userId);
+  const hasRecord = points > 0 || faults > 0 || (stats.setsPlayed || 0) > 0;
+  if (!hasRecord) return fallback;
+  const efficiency = (points + faults) > 0 ? net / (points + faults) : 0;
   const setShare = Math.min(1, (stats.setsPlayed || 0) / 12);
   const win = (stats.setWinRate || 0) / 100;
   return (
-    net * 3
+    BASE_RATING
+    + net * 3
     + efficiency * 12
     + setShare * 10
     + win * 8
     + dataWeight * 4
+    + profileWeight(preferredPos, hand, stats.setsPlayed || 0, userId)
   );
 }
 
@@ -323,6 +363,36 @@ function primaryRoleFromSlots(share: number[], front: number, middle: number, ba
   return positionKeyFromCourtIndex(bestIdx, front, middle, back);
 }
 
+async function fetchDirectEventStats(userIds: string[]): Promise<Map<string, { points: number; faults: number; sets: number }>> {
+  const out = new Map<string, { points: number; faults: number; sets: number; setKeys: Set<string> }>();
+  const ids = (userIds || []).filter((id) => isRegisteredUserId(id)).slice(0, 80);
+  if (!ids.length) return new Map();
+  const { data } = await supabase
+    .from('match_events')
+    .select('player_id, event_type, is_canceled, match_id, set_index')
+    .in('player_id', ids)
+    .limit(4000);
+  (data || []).forEach((row: any) => {
+    const pid = String(row?.player_id || '');
+    if (!pid) return;
+    let acc = out.get(pid);
+    if (!acc) {
+      acc = { points: 0, faults: 0, sets: 0, setKeys: new Set<string>() };
+      out.set(pid, acc);
+    }
+    if (row?.is_canceled) return;
+    if (row?.event_type === 'score') acc.points += 1;
+    if (row?.event_type === 'fault') acc.faults += 1;
+    const setKey = `${row?.match_id || ''}:${row?.set_index ?? ''}`;
+    if (row?.match_id != null && row?.set_index != null) acc.setKeys.add(setKey);
+  });
+  const compact = new Map<string, { points: number; faults: number; sets: number }>();
+  out.forEach((acc, pid) => {
+    compact.set(pid, { points: acc.points, faults: acc.faults, sets: acc.setKeys.size });
+  });
+  return compact;
+}
+
 async function loadMetrics(
   players: FormationAlgoPlayer[],
   teamName: string,
@@ -343,6 +413,7 @@ async function loadMetrics(
     });
   }
   const matches = await fetchTeamMatches(teamName, excludeMatchId);
+  const directStats = await fetchDirectEventStats(ids);
   return list.map((p) => {
     const profilePos = profileMap.get(p.user_id) || '';
     const preferredPos = parsePreferredPos(profilePos);
@@ -361,6 +432,12 @@ async function loadMetrics(
         });
       }
     });
+    const direct = directStats.get(p.user_id);
+    if (direct) {
+      stats.points = Math.max(stats.points || 0, direct.points);
+      stats.faults = Math.max(stats.faults || 0, direct.faults);
+      stats.setsPlayed = Math.max(stats.setsPlayed || 0, direct.sets);
+    }
     const fromSlots = primaryRoleFromSlots(slotShare, front, middle, back);
     const role = fromSlots || parseRole(preferredPos, tempRole || 'allrounder');
     const dataWeight = Math.min(1, (stats.setsPlayed || 0) / 6);
@@ -372,10 +449,28 @@ async function loadMetrics(
       hand,
       role,
       slotShare,
-      power: combatPower(stats, dataWeight),
+      power: combatPower(stats, dataWeight, preferredPos, hand, p.user_id),
       dataWeight,
     };
   });
+}
+
+export async function loadPlayerPowerMetrics(args: {
+  players: FormationAlgoPlayer[];
+  teamName: string;
+  frontCount?: number;
+  middleCount?: number;
+  backCount?: number;
+  excludeMatchId?: string | null;
+}): Promise<PlayerMetric[]> {
+  return loadMetrics(
+    args.players,
+    args.teamName,
+    args.frontCount ?? 3,
+    args.middleCount ?? 3,
+    args.backCount ?? 3,
+    args.excludeMatchId,
+  );
 }
 
 function slotScore(metric: PlayerMetric, slotIndex: number, front: number, middle: number, back: number): number {
@@ -568,10 +663,14 @@ function ratingsForCourt(court: Array<string | null | undefined>, byId: Map<stri
   return (court || []).map((id) => {
     const real = assignedUserId(id);
     const hit = real ? byId.get(real) : null;
+    const fallbackPower = real
+      ? BASE_RATING + profileWeight(hit?.preferredPos || '', hit?.hand || 'unknown', hit?.stats.setsPlayed || 0, real)
+      : 0;
     return {
       user_id: real,
       points: hit?.stats.points || 0,
       faults: hit?.stats.faults || 0,
+      power: hit?.power ?? fallbackPower,
     };
   });
 }
@@ -619,19 +718,22 @@ export async function previewPowerBalance(args: {
   excludeMatchId?: string | null;
   splitBothTeams?: boolean;
   rebalanceSide?: 'host' | 'away';
+  preloadedMetrics?: PlayerMetric[] | null;
 }): Promise<PowerBalancePreview> {
   const front = Number(args.frontCount) || 0;
   const middle = Number(args.middleCount) || 0;
   const back = Number(args.backCount) || 0;
   const total = slotTotal(front, middle, back);
-  const metrics = await loadMetrics(
-    args.players,
-    args.teamName,
-    front,
-    middle,
-    back,
-    args.excludeMatchId,
-  );
+  const metrics = (args.preloadedMetrics && args.preloadedMetrics.length)
+    ? args.preloadedMetrics
+    : await loadMetrics(
+      args.players,
+      args.teamName,
+      front,
+      middle,
+      back,
+      args.excludeMatchId,
+    );
   const byId = metricById(metrics);
   const current = calculatePowerRatio(
     ratingsForCourt(args.currentHost, byId),

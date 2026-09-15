@@ -29,9 +29,11 @@ import {
 import { getSafeDisplayName } from '../lib/utils';
 import { safeInset } from '../lib/nativeSafe';
 import {
+  loadPlayerPowerMetrics,
   previewPowerBalance,
   suggestFormation,
   type FormationAlgoMode,
+  type FormationAlgoPlayer,
   type PowerBalancePreview,
 } from '../lib/formationAlgorithm';
 
@@ -205,7 +207,9 @@ export default function FormationModal({
   const [algoBusy, setAlgoBusy] = useState(false);
   const [activeAlgo, setActiveAlgo] = useState<FormationAlgoMode | null>(null);
   const [balancePreview, setBalancePreview] = useState<PowerBalancePreview | null>(null);
+  const [powerReady, setPowerReady] = useState(false);
   const courtPulse = useRef(new Animated.Value(1)).current;
+  const powerPromiseRef = useRef<ReturnType<typeof loadPlayerPowerMetrics> | null>(null);
 
   const hostCanEdit = dual ? (isSingleRecorder || !!hostSide?.canEdit) : true;
   const awayCanEdit = dual ? (isSingleRecorder || !!awaySide?.canEdit) : true;
@@ -226,7 +230,11 @@ export default function FormationModal({
   }, [awayMembers]);
 
   useEffect(() => {
-    if (!visible) return;
+    if (!visible) {
+      setPowerReady(false);
+      powerPromiseRef.current = null;
+      return;
+    }
     if (dual && hostSide && awaySide) {
       const hostHydrated = hydrateSide(hostSide.members, hostSide.initial, [
         ...usedMatchIds,
@@ -258,6 +266,30 @@ export default function FormationModal({
     setBalancePreview(null);
     setAlgoBusy(false);
     setActiveAlgo(null);
+    setPowerReady(false);
+    const powerPlayers: FormationAlgoPlayer[] = uniqueKeepOrder([
+      ...members.map((m) => m.user_id),
+      ...(peerMembers || []).map((m) => m.user_id),
+      ...(hostSide?.members || []).map((m) => m.user_id),
+      ...(awaySide?.members || []).map((m) => m.user_id),
+      ...(initial?.court || []),
+      ...(initial?.bench || []),
+      ...(peerInitial?.court || []),
+      ...(peerInitial?.bench || []),
+    ]).map((id) => ({ user_id: id }));
+    const job = loadPlayerPowerMetrics({
+      players: powerPlayers,
+      teamName: statsTeamName || teamName,
+      excludeMatchId: matchId,
+    });
+    powerPromiseRef.current = job;
+    job.then(
+      () => { if (powerPromiseRef.current === job) setPowerReady(true); },
+      () => { if (powerPromiseRef.current === job) setPowerReady(true); },
+    );
+    return () => {
+      if (powerPromiseRef.current === job) powerPromiseRef.current = null;
+    };
   }, [visible]);
 
   const nameOf = (side: SideKey, id: string | null) => {
@@ -420,6 +452,26 @@ export default function FormationModal({
         const pool = uniqueKeepOrder(poolSource.map((p) => p.user_id))
           .filter((id) => !late.has(id))
           .map((id) => ({ user_id: id, full_name: nameOf(teamSide, id) || nameOf('host', id) || nameOf('away', id) }));
+        let metrics: Awaited<ReturnType<typeof loadPlayerPowerMetrics>> = [];
+        try {
+          metrics = powerPromiseRef.current ? await powerPromiseRef.current : [];
+        } catch {
+          metrics = [];
+        }
+        const missing = pool.some((p) => !metrics.some((m) => m.id === p.user_id));
+        if (!metrics.length || missing) {
+          const job = loadPlayerPowerMetrics({
+            players: pool,
+            teamName: statsNameOf('host'),
+            frontCount: hostState.frontCount,
+            middleCount: hostState.middleCount,
+            backCount: hostState.backCount,
+            excludeMatchId: matchId,
+          });
+          powerPromiseRef.current = job;
+          metrics = await job;
+          setPowerReady(true);
+        }
         const preview = await previewPowerBalance({
           players: pool,
           currentHost: matchHostCourt(),
@@ -431,6 +483,7 @@ export default function FormationModal({
           excludeMatchId: matchId,
           splitBothTeams: dual || sharePlayerPool,
           rebalanceSide: teamSide,
+          preloadedMetrics: metrics,
         });
         setBalancePreview(preview);
         return;
@@ -500,9 +553,11 @@ export default function FormationModal({
                 key={chip.mode}
                 style={[styles.quickChip, on && styles.quickChipOn]}
                 onPress={() => { void runQuickPlace(chip.mode); }}
-                disabled={algoBusy}
+                disabled={algoBusy || (chip.mode === 'BALANCE' && !powerReady)}
               >
-                {on && algoBusy ? (
+                {chip.mode === 'BALANCE' && (!powerReady || (on && algoBusy)) ? (
+                  <ActivityIndicator size="small" color="#BFDBFE" />
+                ) : on && algoBusy ? (
                   <ActivityIndicator size="small" color="#BFDBFE" />
                 ) : (
                   <Text style={[styles.quickChipText, on && styles.quickChipTextOn]} numberOfLines={1}>
