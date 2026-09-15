@@ -16,6 +16,7 @@ import {
 } from '../lib/roster';
 import { getSafeDisplayName, getSafeTeamName } from '../lib/utils';
 import { TEAM_COLORS } from '../constants/Colors';
+import { toPositionSlot } from '../lib/slotAttribution';
 
 export interface Member {
   user_id: string;
@@ -51,7 +52,7 @@ interface Props {
   courtLayout?: CourtLayout;
   opponentCourtLayout?: CourtLayout;
   onClose: () => void;
-  onScoreConfirm: (member: Member | null, kind?: ScoreKind) => void;
+  onScoreConfirm: (member: Member | null, kind?: ScoreKind, positionSlot?: number | null) => void;
   onSubConfirm: (outMember: Member, inMember: Member) => void;
   onLineupApply?: (payload: LineupApplyPayload) => void;
 }
@@ -154,16 +155,17 @@ export default function PlayerActionModal({
     return { user_id: id, full_name: formatTempGuestLabel(id) || formatTempPlayerLabel(id) };
   };
 
-  const confirmKind = (player: CourtSlotPlayer | null, kind: ScoreKind) => {
+  const confirmKind = (player: CourtSlotPlayer | null, kind: ScoreKind, slotIndex0?: number | null) => {
+    const positionSlot = toPositionSlot(slotIndex0);
     const id = assignedUserId(player?.user_id);
     if (!id) {
-      onScoreConfirm(null, kind);
+      onScoreConfirm(null, kind, positionSlot);
       return;
     }
     const name = isRegisteredUserId(id)
       ? getSafeDisplayName(player)
       : displaySlotPlayerName(id, getSafeDisplayName(player));
-    onScoreConfirm({ user_id: id, full_name: name }, kind);
+    onScoreConfirm({ user_id: id, full_name: name }, kind, positionSlot);
   };
 
   const commitLineup = (
@@ -314,7 +316,7 @@ export default function PlayerActionModal({
                     <View style={styles.courtPane}>
                       <TouchableOpacity
                         style={[styles.kindCard, { borderWidth: 1.5, borderColor: paneColor }]}
-                        onPress={() => confirmKind(null, pane.kind)}
+                        onPress={() => confirmKind(null, pane.kind, null)}
                       >
                         <View style={[styles.kindCardRow, !isLeft && styles.kindCardRowReverse]}>
                           <View style={[styles.teamChip, { backgroundColor: paneColor }]}>
@@ -345,7 +347,7 @@ export default function PlayerActionModal({
                           frontCount={pane.layout?.frontCount}
                           middleCount={pane.layout?.middleCount}
                           backCount={pane.layout?.backCount}
-                          onSlotPress={(player) => confirmKind(player, pane.kind)}
+                          onSlotPress={(player, idx) => confirmKind(player, pane.kind, idx)}
                         />
                       </View>
                     </View>

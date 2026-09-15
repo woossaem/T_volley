@@ -17,6 +17,7 @@ import { parseRosterUserIds, parseSetRosterMap, safeIncludes } from '../lib/rost
 import { isPersonalFault, isPersonalKill } from '../lib/playerStats';
 import { getSafeTeamName } from '../lib/utils';
 import { formatPlayerDisplayName, isAwardEligiblePlayer, parseTempGuestNum } from '../lib/tempPlayer';
+import { attributeTimelineEvents, courtsBySetFromRoster } from '../lib/slotAttribution';
 
 interface MatchPostgameReportModalProps {
   visible: boolean;
@@ -254,6 +255,7 @@ export default function MatchPostgameReportModal({
           team_type: log?.team_type,
           player_id: log?.player_id,
           player_name: formatPlayerDisplayName(log?.player_id, log?.player_name),
+          position_slot: log?.position_slot ?? log?.positionSlot ?? null,
           host_score: Number(log?.host_score) || 0,
           away_score: Number(log?.away_score) || 0,
           is_canceled: !!log?.is_canceled,
@@ -298,6 +300,16 @@ export default function MatchPostgameReportModal({
   const hostIcon = isIntramural ? '⚔️' : hostTeamType === 'club' ? '🛡️' : '🏫';
   const awayIcon = isIntramural ? '⚔️' : awayTeamType === 'club' ? '🛡️' : '🏫';
 
+  const attributedEvents = useMemo(
+    () => attributeTimelineEvents(
+      events,
+      courtsBySetFromRoster(match?.host_roster),
+      courtsBySetFromRoster(match?.away_roster),
+      (id, fallback) => formatPlayerDisplayName(id, fallback),
+    ),
+    [events, match?.host_roster, match?.away_roster],
+  );
+
   const analytics = useMemo(() => {
     const hostRosterMap = parseSetRosterMap(match?.host_roster);
     const awayRosterMap = parseSetRosterMap(match?.away_roster);
@@ -314,8 +326,8 @@ export default function MatchPostgameReportModal({
       return e.team_type;
     };
 
-    const validScores = events.filter((e) => (e.event_type === 'score' || e.event_type === 'fault') && !e.is_canceled);
-    const scoredEvents = events.filter(
+    const validScores = attributedEvents.filter((e) => (e.event_type === 'score' || e.event_type === 'fault') && !e.is_canceled);
+    const scoredEvents = attributedEvents.filter(
       (e) => !e.is_canceled && (e.event_type === 'score' || e.event_type === 'fault' || e.event_type === 'manual')
     );
 
@@ -336,7 +348,7 @@ export default function MatchPostgameReportModal({
       }
     };
 
-    events.forEach((e) => {
+    attributedEvents.forEach((e) => {
       if (e.is_canceled) return;
       if (isPersonalKill(e.event_type)) bump(resolveTeam(e), e, 'points');
       if (isPersonalFault(e.event_type)) {
@@ -445,7 +457,7 @@ export default function MatchPostgameReportModal({
       awaySetWins,
       isDraw: isDrawResult(match?.winner_team),
     };
-  }, [events, match?.set_scores, match?.winner_team, match?.host_roster, match?.away_roster]);
+  }, [attributedEvents, match?.set_scores, match?.winner_team, match?.host_roster, match?.away_roster]);
 
   const winnerLabel = useMemo(() => {
     if (analytics.isDraw) return '🤝 무승부';
@@ -466,7 +478,7 @@ export default function MatchPostgameReportModal({
   };
 
   const activeSetSummary = analytics.setSummaries[activeSetIndex] || analytics.setSummaries[0];
-  const activeSetEvents = events.filter((e) => Number(e.set_index) === activeSetIndex);
+  const activeSetEvents = attributedEvents.filter((e) => Number(e.set_index) === activeSetIndex);
 
   if (!match) return null;
 

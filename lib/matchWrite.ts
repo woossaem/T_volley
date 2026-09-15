@@ -4,7 +4,7 @@ import { generateShortCode } from './utils';
 /** PostgREST 스키마 캐시에 없는 컬럼. insert/update 시 제외한다. */
 const KNOWN_MISSING_MATCH_COLUMNS = ['submitted_by_name'] as const;
 
-function extractMissingColumn(error: { message?: string; code?: string } | null | undefined): string | null {
+export function extractMissingColumn(error: { message?: string; code?: string } | null | undefined): string | null {
   if (!error) return null;
   const msg = String(error.message || '');
   const matched = msg.match(/Could not find the '([^']+)' column/i);
@@ -16,7 +16,7 @@ function extractMissingColumn(error: { message?: string; code?: string } | null 
   return null;
 }
 
-function isUnknownColumnError(error: { message?: string; code?: string } | null | undefined): boolean {
+export function isUnknownColumnError(error: { message?: string; code?: string } | null | undefined): boolean {
   if (!error) return false;
   if (error.code === 'PGRST204') return true;
   const msg = String(error.message || '');

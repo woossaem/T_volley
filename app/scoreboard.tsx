@@ -34,7 +34,7 @@ import { ANONYMOUS_PLAYER_NAME, assignedUserId, clampLineCount, DEFAULT_LINE_COU
 import { parseServeSetupMap, resolveServePossession, shiftServeSetupMap, slotIndexForServeLabel, type ServeSetupMap, type ServeTeam } from '../lib/serveRotation';
 import { getSafeDisplayName, getSafeTeamName } from '../lib/utils';
 import { appendMatchScoreLog } from '../lib/retroactiveBinding';
-import { updateMatchIgnoringUnknownColumns } from '../lib/matchWrite';
+import { updateMatchIgnoringUnknownColumns, extractMissingColumn, isUnknownColumnError } from '../lib/matchWrite';
 import { resolveTeamName } from '../lib/nameUtils';
 import {
   MAX_SETS,
@@ -52,6 +52,12 @@ import {
   isMatchRecordingFinished,
   type MatchSetRecord,
 } from '../lib/matchSets';
+import {
+  attributeTimelineEvents,
+  courtsBySetFromRoster,
+  findSlotIndexForPlayer,
+  toPositionSlot,
+} from '../lib/slotAttribution';
 
 const safeNativeCall = async (action: () => Promise<any>) => {
   if (Platform.OS === 'web') return;
@@ -102,6 +108,7 @@ function mapScoreLogToEvent(log: any, matchId: string, fallbackId: string): Matc
     team_type: log?.team_type,
     player_id: log?.player_id ?? null,
     player_name: log?.player_name ?? null,
+    position_slot: log?.position_slot ?? log?.positionSlot ?? null,
     host_score: Number(log?.host_score) || 0,
     away_score: Number(log?.away_score) || 0,
     is_canceled: !!log?.is_canceled,
@@ -122,9 +129,11 @@ function normalizeMatchEvent(row: any, fallbackId = ''): MatchEvent | null {
     player_name: row.player_name ?? null,
     sub_out_id: row.sub_out_id ?? null,
     sub_out_name: row.sub_out_name ?? null,
+    position_slot: row.position_slot ?? row.positionSlot ?? null,
     host_score: Number(row.host_score) || 0,
     away_score: Number(row.away_score) || 0,
     is_canceled: !!row.is_canceled,
+    created_at: row.created_at ?? null,
     ...(row.set_number != null ? { set_number: Number(row.set_number) } : {}),
   } as MatchEvent;
 }
@@ -308,22 +317,36 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
     tempEvent: MatchEvent,
     payload: Record<string, unknown>,
   ): Promise<MatchEvent> => {
-    const { data, error } = await supabase
-      .from('match_events')
-      .insert(payload)
-      .select('*')
-      .maybeSingle();
-    if (error) {
+    let nextPayload: Record<string, unknown> = { ...payload };
+    for (let attempt = 0; attempt < 6; attempt++) {
+      const { data, error } = await supabase
+        .from('match_events')
+        .insert(nextPayload)
+        .select('*')
+        .maybeSingle();
+      if (!error) {
+        const persisted = normalizeMatchEvent(data, tempEvent.id) || tempEvent;
+        setEvents((prev) => {
+          const next = prev.map((event) => event.id === tempEvent.id ? persisted : event);
+          eventsRef.current = next;
+          return next;
+        });
+        return persisted;
+      }
+      if (!isUnknownColumnError(error)) {
+        console.error('match_events 저장 실패:', error);
+        return tempEvent;
+      }
+      const missing = extractMissingColumn(error);
+      if (missing && missing in nextPayload) {
+        const { [missing]: _dropped, ...rest } = nextPayload;
+        nextPayload = rest;
+        continue;
+      }
       console.error('match_events 저장 실패:', error);
       return tempEvent;
     }
-    const persisted = normalizeMatchEvent(data, tempEvent.id) || tempEvent;
-    setEvents((prev) => {
-      const next = prev.map((event) => event.id === tempEvent.id ? persisted : event);
-      eventsRef.current = next;
-      return next;
-    });
-    return persisted;
+    return tempEvent;
   };
 
   useEffect(() => {
@@ -744,16 +767,6 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
 
   const canControlHost = myRole === 'integrated_recorder' || myRole === 'host_recorder' || isSingleRecorderMode;
   const canControlAway = myRole === 'integrated_recorder' || myRole === 'away_recorder' || isSingleRecorderMode;
-  const isSubstitutionLocked =
-    matchClosedRef.current
-    || isMatchRecordingFinished(match)
-    || String(match?.status || '') === 'submitted';
-
-  useEffect(() => {
-    if (!isSubstitutionLocked) return;
-    if (actionMode !== 'sub') return;
-    setActionModalVisible(false);
-  }, [isSubstitutionLocked, actionMode]);
 
   const handleSelectRole = async (role: 'spectator' | 'host_recorder' | 'away_recorder' | 'integrated_recorder') => {
     if (!matchId || !currentUserId) return;
@@ -801,7 +814,6 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
 
   const openActionModal = (team: 'host' | 'away', mode: 'score' | 'sub') => {
     if (myRole === 'spectator') return;
-    if (mode === 'sub' && isSubstitutionLocked) return;
     setActionTeam(team);
     setActionMode(mode);
     setActionModalVisible(true);
@@ -815,19 +827,21 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
     setActionModalVisible(true);
   };
 
-  const handleScoreConfirm = async (player: Member | null, kind: ScoreKind = 'kill') => {
+  const handleScoreConfirm = async (player: Member | null, kind: ScoreKind = 'kill', positionSlot: number | null = null) => {
     setActionModalVisible(false);
+    const savedSlot = positionSlot ?? null;
     
     if (actionMode === 'edit' && editingEventId) {
       const eventType = kind === 'fault' ? 'fault' : 'score';
       const keepId = player?.user_id && (isRegisteredUserId(player.user_id) || isTempSlotId(player.user_id)) ? player.user_id : null;
       const savedPlayerId = keepId;
       const savedPlayerName = isRegisteredUserId(keepId) ? getSafeDisplayName(player) : displaySlotPlayerName(keepId, getSafeDisplayName(player));
-      setEvents(prev => prev.map(e => e.id === editingEventId ? { ...e, player_id: savedPlayerId, player_name: savedPlayerName, event_type: eventType } : e));
+      setEvents(prev => prev.map(e => e.id === editingEventId ? { ...e, player_id: savedPlayerId, player_name: savedPlayerName, event_type: eventType, position_slot: savedSlot ?? e.position_slot } : e));
       await supabase.from('match_events').update({
         player_id: savedPlayerId,
         player_name: savedPlayerName,
         event_type: eventType,
+        ...(savedSlot != null ? { position_slot: savedSlot } : {}),
       }).eq('id', editingEventId);
       return;
     }
@@ -850,6 +864,7 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
       team_type: scoringTeam,
       player_id: savedPlayerId,
       player_name: savedPlayerName,
+      position_slot: savedSlot,
       host_score: newHostScore,
       away_score: newAwayScore,
       is_canceled: false
@@ -868,6 +883,7 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
       team_type: scoringTeam,
       player_id: savedPlayerId,
       player_name: savedPlayerName,
+      position_slot: savedSlot,
       host_score: newHostScore,
       away_score: newAwayScore,
       is_canceled: false,
@@ -887,7 +903,7 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
     }
   };
 
-  const persistSubstitutionEvent = async (outMember: Member, inMember: Member) => {
+  const persistSubstitutionEvent = async (outMember: Member, inMember: Member, positionSlot: number | null) => {
     const tempEvent: MatchEvent = {
       id: `temp-${Date.now()}`,
       match_id: matchId,
@@ -898,6 +914,7 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
       player_name: getSafeDisplayName(inMember),
       sub_out_id: outMember.user_id,
       sub_out_name: getSafeDisplayName(outMember),
+      position_slot: positionSlot,
       host_score: currentScores.host,
       away_score: currentScores.away,
       is_canceled: false,
@@ -917,6 +934,7 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
       player_name: getSafeDisplayName(inMember),
       sub_out_id: outMember.user_id,
       sub_out_name: getSafeDisplayName(outMember),
+      position_slot: positionSlot,
       host_score: currentScores.host,
       away_score: currentScores.away,
       is_canceled: false,
@@ -944,6 +962,50 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
     if (matchId) await writeLiveSetLineup(matchId, currentSetIndex, side, courtSlots);
   };
 
+  const reattributeAfterLineupChange = async (hostRoster?: unknown, awayRoster?: unknown) => {
+    const attributed = attributeTimelineEvents(
+      eventsRef.current,
+      courtsBySetFromRoster(hostRoster ?? match?.host_roster),
+      courtsBySetFromRoster(awayRoster ?? match?.away_roster),
+      (id, fallback) => {
+        const hit = [...(hostMembers || []), ...(awayMembers || [])].find((m) => m.user_id === id);
+        return hit ? getSafeDisplayName(hit) : displaySlotPlayerName(id, fallback);
+      },
+    );
+    const prev = eventsRef.current;
+    eventsRef.current = attributed;
+    setEvents(attributed);
+    const changed = attributed.filter((ev, i) => (
+      !!prev[i]
+      && (prev[i].player_id !== ev.player_id || prev[i].player_name !== ev.player_name)
+      && !!ev.id
+      && !String(ev.id).startsWith('temp-')
+    ));
+    await Promise.all(changed.map((ev) => supabase.from('match_events').update({
+      player_id: ev.player_id ?? null,
+      player_name: ev.player_name ?? null,
+    }).eq('id', ev.id)));
+    if (matchId) {
+      const scoreLogs = attributed.map((e) => ({
+        id: e.id,
+        match_id: matchId,
+        set_index: e.set_index,
+        set_number: Number(e.set_index) + 1,
+        event_type: e.event_type,
+        team_type: e.team_type,
+        player_id: e.player_id,
+        player_name: e.player_name,
+        sub_out_id: e.sub_out_id,
+        sub_out_name: e.sub_out_name,
+        position_slot: e.position_slot ?? null,
+        host_score: e.host_score,
+        away_score: e.away_score,
+        is_canceled: e.is_canceled,
+      }));
+      await updateMatchIgnoringUnknownColumns(matchId, { score_logs: scoreLogs });
+    }
+  };
+
   const persistServeSetup = async (nextMap: ServeSetupMap) => {
     setServeSetupMap(nextMap);
     setMatch((prev) => prev ? { ...prev, serve_setup: nextMap } : prev);
@@ -969,13 +1031,14 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
 
   const handleSubConfirm = async (outMember: Member, inMember: Member) => {
     setActionModalVisible(false);
-    if (isSubstitutionLocked || myRole === 'spectator') return;
+    if (myRole === 'spectator') return;
     const isHost = actionTeam === 'host';
     const targetRosterStr = isHost ? match?.host_roster : match?.away_roster;
 
     const formMap = parseSetFormationMap(targetRosterStr);
     const currentForm = formMap[currentSetIndex] || parseSetFormation(targetRosterStr, currentSetIndex);
     const courtIds = (currentForm.court.length > 0 ? currentForm.court : (parseSetRosterMap(targetRosterStr)[currentSetIndex] || parseSetRosterMap(targetRosterStr)[0] || []));
+    const slotIndex0 = findSlotIndexForPlayer(courtIds.map((id) => assignedUserId(id)), outMember.user_id);
     const updatedCourt = courtIds.map((id) => {
       if (id && (id === outMember.user_id || safeIncludes(id, outMember.user_id))) return inMember.user_id;
       return id;
@@ -998,13 +1061,17 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
       : { away_roster: updatedRosterJson };
 
     setMatch((prev) => prev ? { ...prev, ...updatePayload } : prev);
-    await persistSubstitutionEvent(outMember, inMember);
+    await persistSubstitutionEvent(outMember, inMember, toPositionSlot(slotIndex0));
     await supabase.from('matches').update(updatePayload).eq('id', matchId);
     await persistCurrentSetLineupOnly(isHost ? 'host' : 'away', updatedCourt, updatedBench);
+    await reattributeAfterLineupChange(
+      isHost ? updatedRosterJson : match?.host_roster,
+      !isHost ? updatedRosterJson : match?.away_roster,
+    );
   };
 
   const handleLineupApply = async (payload: LineupApplyPayload) => {
-    if (isSubstitutionLocked || myRole === 'spectator') return;
+    if (myRole === 'spectator') return;
     const isHost = actionTeam === 'host';
     const targetRosterStr = isHost ? match?.host_roster : match?.away_roster;
     const formMap = parseSetFormationMap(targetRosterStr);
@@ -1039,10 +1106,17 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
       : { away_roster: updatedRosterJson };
     setMatch((prev) => prev ? { ...prev, ...updatePayload } : prev);
     if (payload.sub) {
-      await persistSubstitutionEvent(payload.sub.out, payload.sub.in);
+      const prevCourt = (currentForm.court || []).map((id) => assignedUserId(id));
+      const slotIndex0 = findSlotIndexForPlayer(prevCourt, payload.sub.out.user_id)
+        ?? findSlotIndexForPlayer(payload.courtIds.map((id) => assignedUserId(id)), payload.sub.in.user_id);
+      await persistSubstitutionEvent(payload.sub.out, payload.sub.in, toPositionSlot(slotIndex0));
     }
     await supabase.from('matches').update(updatePayload).eq('id', matchId);
     await persistCurrentSetLineupOnly(isHost ? 'host' : 'away', courtSlots, benchIds);
+    await reattributeAfterLineupChange(
+      isHost ? updatedRosterJson : match?.host_roster,
+      !isHost ? updatedRosterJson : match?.away_roster,
+    );
   };
 
   const persistSetsFromHistory = async (
@@ -1293,6 +1367,7 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
       player_name: e.player_name,
       sub_out_id: e.sub_out_id,
       sub_out_name: e.sub_out_name,
+      position_slot: e.position_slot ?? null,
       host_score: e.host_score,
       away_score: e.away_score,
       is_canceled: e.is_canceled,
@@ -1933,6 +2008,10 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
         currentUserId,
       );
     }
+    await reattributeAfterLineupChange(
+      isHost ? updatedRosterJson : match?.host_roster,
+      !isHost ? updatedRosterJson : match?.away_roster,
+    );
   };
 
   const handleSaveDualFormation = async (hostFormation: SetFormation, awayFormation: SetFormation) => {
@@ -2007,6 +2086,7 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
         currentUserId,
       );
     }
+    await reattributeAfterLineupChange(hostJson, awayJson);
   };
 
   const isHostMaster = match?.recorder_host_id && !match?.recorder_away_id;
@@ -2048,7 +2128,16 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
     && !roleModalVisible
     && !isMatchRecordingFinished(match)
     && !serveSetupMap[currentSetIndex];
-  const liveSetEvents = (events || []).filter((e) => {
+  const attributedEvents = attributeTimelineEvents(
+    events || [],
+    courtsBySetFromRoster(match?.host_roster),
+    courtsBySetFromRoster(match?.away_roster),
+    (id, fallback) => {
+      const hit = [...(hostMembers || []), ...(awayMembers || [])].find((m) => m.user_id === id);
+      return hit ? getSafeDisplayName(hit) : displaySlotPlayerName(id, fallback);
+    },
+  );
+  const liveSetEvents = attributedEvents.filter((e) => {
     if (Number(e?.set_index) === currentSetIndex) return true;
     const setNumber = Number((e as any)?.set_number);
     return Number.isFinite(setNumber) && setNumber === currentSetIndex + 1;
@@ -2229,9 +2318,8 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
                 <Text style={styles.glassBtnText}>📐 포메이션</Text>
               </TouchableOpacity>
               <TouchableOpacity
-                style={[styles.glassBtnCompact, isSubstitutionLocked && styles.glassBtnDisabled]}
+                style={styles.glassBtnCompact}
                 onPress={() => openActionModal(leftTeamData.key, 'sub')}
-                disabled={isSubstitutionLocked}
                 hitSlop={8}
               >
                 <Text style={styles.glassBtnText}>🔄 선수 교체</Text>
@@ -2265,9 +2353,8 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
                 <Text style={styles.glassBtnText}>📐 포메이션</Text>
               </TouchableOpacity>
               <TouchableOpacity
-                style={[styles.glassBtnCompact, isSubstitutionLocked && styles.glassBtnDisabled]}
+                style={styles.glassBtnCompact}
                 onPress={() => openActionModal(rightTeamData.key, 'sub')}
-                disabled={isSubstitutionLocked}
                 hitSlop={8}
               >
                 <Text style={styles.glassBtnText}>🔄 선수 교체</Text>
@@ -2339,7 +2426,7 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
       </View>
 
       <PlayerActionModal
-        visible={actionModalVisible && !(isSubstitutionLocked && actionMode === 'sub')}
+        visible={actionModalVisible}
         mode={actionMode}
         teamName={actionTeam === 'host' ? displayHostName : displayAwayName}
         opponentTeamName={actionTeam === 'host' ? displayAwayName : displayHostName}
@@ -2549,7 +2636,7 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
             if (!isSpectatorForced) router.back();
           }}
           match={match}
-          initialEvents={events}
+          initialEvents={attributedEvents}
         />
       )}
     </SafeAreaView>

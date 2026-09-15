@@ -12,9 +12,11 @@ export interface MatchEvent {
   player_name?: string | null;
   sub_out_id?: string | null;
   sub_out_name?: string | null;
+  position_slot?: number | null;
   host_score: number;
   away_score: number;
   is_canceled: boolean;
+  created_at?: string | null;
 }
 
 interface Props {
