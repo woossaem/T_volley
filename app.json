@@ -7,6 +7,7 @@
     "icon": "./assets/icon.png",
     "orientation": "default",
     "userInterfaceStyle": "dark",
+    "newArchEnabled": false,
     "splash": {
       "image": "./assets/icon.png",
       "resizeMode": "contain",
@@ -29,6 +30,14 @@
           "imageWidth": 200,
           "resizeMode": "contain"
         }
+      ],
+      [
+        "expo-speech-recognition",
+        {
+          "microphonePermission": "이어폰 버튼으로 음성 득점 기록을 하기 위해 마이크가 필요합니다.",
+          "speechRecognitionPermission": "이어폰 음성 명령을 한글로 알아듣기 위해 음성 인식이 필요합니다.",
+          "androidSpeechServicePackages": ["com.google.android.googlequicksearchbox"]
+        }
       ]
     ],
     "android": {
@@ -37,7 +46,13 @@
       "adaptiveIcon": {
         "foregroundImage": "./assets/icon.png",
         "backgroundColor": "#0F172A"
-      }
+      },
+      "permissions": [
+        "RECORD_AUDIO",
+        "BLUETOOTH_CONNECT",
+        "BLUETOOTH_SCAN",
+        "MODIFY_AUDIO_SETTINGS"
+      ]
     },
     "ios": {
       "bundleIdentifier": "com.rudolfuu.tvolley",
@@ -45,7 +60,10 @@
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false,
         "NSPhotoLibraryUsageDescription": "프로필 사진 등록 및 변경을 위해 사진앨범 접근 권한이 필요합니다.",
-        "NSCameraUsageDescription": "프로필 사진 직접 촬영 및 등록을 위해 카메라 접근 권한이 필요합니다."
+        "NSCameraUsageDescription": "프로필 사진 직접 촬영 및 등록을 위해 카메라 접근 권한이 필요합니다.",
+        "NSMicrophoneUsageDescription": "이어폰 버튼으로 음성 득점 기록을 하기 위해 마이크가 필요합니다.",
+        "NSSpeechRecognitionUsageDescription": "이어폰 음성 명령을 한글로 알아듣기 위해 음성 인식이 필요합니다.",
+        "UIBackgroundModes": ["audio", "bluetooth-central"]
       }
     },
     "extra": {

@@ -14,6 +14,10 @@ import {
   ScrollView,
   useWindowDimensions,
 } from 'react-native';
+import { startListening } from '../lib/voiceListen';
+import { formatVoiceConfirm, parseVoiceCommand } from '../lib/voiceParser';
+import { setupHeadsetRemote } from '../lib/headsetRemote';
+import { speakKorean } from '../lib/voiceSpeak';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter, useLocalSearchParams, useFocusEffect } from 'expo-router';
 import { useKeepAwake } from 'expo-keep-awake';
@@ -56,6 +60,7 @@ import {
   attributeTimelineEvents,
   courtsBySetFromRoster,
   findSlotIndexForPlayer,
+  positionSlotToIndex,
   toPositionSlot,
 } from '../lib/slotAttribution';
 
@@ -224,6 +229,67 @@ async function updateMatchSetScoreNow(
   return { host: hostScore, away: awayScore };
 }
 
+function resolveSetRosters(args: {
+  isHost: boolean;
+  isIntramural: boolean;
+  match: MatchRecord | null;
+  hostMembers: Member[];
+  awayMembers: Member[];
+  matchSets: MatchSetRecord[];
+  currentSetIndex: number;
+}): { court: Member[]; bench: Member[]; late: Member[]; formation: SetFormation } {
+  const { isHost, isIntramural, match, hostMembers, awayMembers, matchSets, currentSetIndex } = args;
+  const rosterRaw = isHost ? match?.host_roster : match?.away_roster;
+  const baseMembers = isHost || isIntramural ? (hostMembers || []) : (awayMembers || []);
+  const setRow = (matchSets || [])[currentSetIndex];
+  const formation = resolveFormationFromSources(
+    rosterRaw,
+    currentSetIndex,
+    isHost ? setRow?.hostLineup : setRow?.awayLineup,
+    isHost
+      ? { bench: setRow?.hostBench || [], late: setRow?.hostLate || [], frontCount: setRow?.hostFrontCount, middleCount: setRow?.hostMiddleCount, backCount: setRow?.hostBackCount }
+      : { bench: setRow?.awayBench || [], late: setRow?.awayLate || [], frontCount: setRow?.awayFrontCount, middleCount: setRow?.awayMiddleCount, backCount: setRow?.awayBackCount },
+  );
+  const frontCount = clampLineCount(formation.frontCount, DEFAULT_LINE_COUNT);
+  const middleCount = clampLineCount(formation.middleCount, DEFAULT_LINE_COUNT);
+  const backCount = clampLineCount(formation.backCount, DEFAULT_LINE_COUNT);
+  const slotTotal = frontCount + middleCount + backCount;
+  const rawCourt = formation.court || [];
+  const benchIds = formation.bench || [];
+  const lateIds = formation.late || [];
+
+  const hasFormation = rawCourt.length > 0 || benchIds.length > 0 || lateIds.length > 0 || !!formation.frontCount || !!formation.middleCount || !!formation.backCount;
+  if (!hasFormation) {
+    return { court: baseMembers, bench: [] as Member[], late: [] as Member[], formation };
+  }
+
+  const slots = [...rawCourt];
+  while (slots.length < slotTotal) slots.push('');
+  const court = slots.slice(0, slotTotal).map((id) => {
+    const real = baseMembers.find((m) => m.user_id === id || listHasUser([id], m.user_id) || safeIncludes(id, m.user_id));
+    if (real) return real;
+    const kept = assignedUserId(id);
+    if (!kept) return { user_id: '', full_name: ANONYMOUS_PLAYER_NAME };
+    return { user_id: kept, full_name: displaySlotPlayerName(kept, ANONYMOUS_PLAYER_NAME) };
+  });
+  const courtIds = court.map((m) => assignedUserId(m.user_id)).filter((id): id is string => !!id);
+  const formMap = parseSetFormationMap(rosterRaw);
+  const guestPool: string[] = [];
+  Object.values(formMap).forEach((f) => {
+    [...(f.court || []), ...(f.bench || []), ...(f.late || [])].forEach((id) => {
+      const real = assignedUserId(id);
+      if (real && isTempSlotId(real)) guestPool.push(real);
+    });
+  });
+  const benchFromMembers = baseMembers.filter((m) => listHasUser(benchIds, m.user_id) || (!listHasUser(courtIds, m.user_id) && !listHasUser(lateIds, m.user_id)));
+  const extraIds = [...new Set([...(benchIds || []), ...guestPool])]
+    .map((id) => assignedUserId(id))
+    .filter((id): id is string => !!id && !courtIds.includes(id) && !benchFromMembers.some((m) => m.user_id === id));
+  const extraBench = extraIds.map((id) => ({ user_id: id, full_name: displaySlotPlayerName(id, ANONYMOUS_PLAYER_NAME) }));
+  const bench = [...benchFromMembers, ...extraBench];
+  return { court, bench, late: baseMembers.filter((m) => listHasUser(lateIds, m.user_id)), formation };
+}
+
 export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
   const router = useRouter();
   const params = useLocalSearchParams<{ matchId: string }>();
@@ -294,6 +360,7 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
   const [formationVisible, setFormationVisible] = useState(false);
   const [formationTeam, setFormationTeam] = useState<'host' | 'away'>('host');
   const [serveSetupMap, setServeSetupMap] = useState<ServeSetupMap>({});
+  const [voiceListening, setVoiceListening] = useState(false);
 
   const isInitialLoadRef = useRef(true);
   const didAutofillSet1Ref = useRef(false);
@@ -309,6 +376,9 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
 
   const eventsRef = useRef(events);
   eventsRef.current = events;
+
+  const scoresRef = useRef(currentScores);
+  scoresRef.current = currentScores;
 
   const myRoleRef = useRef(myRole);
   myRoleRef.current = myRole;
@@ -846,9 +916,19 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
       return;
     }
 
-    const scoringTeam = actionTeam;
-    const newHostScore = scoringTeam === 'host' ? currentScores.host + 1 : currentScores.host;
-    const newAwayScore = scoringTeam === 'away' ? currentScores.away + 1 : currentScores.away;
+    await persistRally(actionTeam, kind, player, savedSlot);
+  };
+
+  const persistRally = async (
+    scoringTeam: 'host' | 'away',
+    kind: ScoreKind,
+    player: Member | null,
+    positionSlot: number | null,
+  ) => {
+    const savedSlot = positionSlot ?? null;
+    const scores = scoresRef.current;
+    const newHostScore = scoringTeam === 'host' ? scores.host + 1 : scores.host;
+    const newAwayScore = scoringTeam === 'away' ? scores.away + 1 : scores.away;
     const eventType = kind === 'fault' ? 'fault' : 'score';
     const keepId = player?.user_id && (isRegisteredUserId(player.user_id) || isTempSlotId(player.user_id)) ? player.user_id : null;
     const savedPlayerId = keepId;
@@ -902,6 +982,113 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
       }
     }
   };
+
+  const persistRallyRef = useRef(persistRally);
+  persistRallyRef.current = persistRally;
+
+  const applyVoiceText = async (transcript: string) => {
+    const first = parseVoiceCommand(transcript);
+    if (!first.ok) {
+      speakKorean('다시 말씀해 주세요');
+      return;
+    }
+    const slotTeam = first.teamId;
+    const kind: ScoreKind = first.actionType === 'FAULT' ? 'fault' : 'kill';
+    const scoringTeam: 'host' | 'away' = kind === 'fault'
+      ? (slotTeam === 'host' ? 'away' : 'host')
+      : slotTeam;
+    const canScore = scoringTeam === 'host' ? canControlHost : canControlAway;
+    if (!canScore || myRoleRef.current === 'spectator' || !myRoleRef.current) {
+      speakKorean('다시 말씀해 주세요');
+      return;
+    }
+    const rosters = resolveSetRosters({
+      isHost: slotTeam === 'host',
+      isIntramural,
+      match,
+      hostMembers,
+      awayMembers,
+      matchSets,
+      currentSetIndex,
+    });
+    const parsed = parseVoiceCommand(transcript, {
+      frontCount: rosters.formation.frontCount,
+      middleCount: rosters.formation.middleCount,
+      backCount: rosters.formation.backCount,
+    });
+    if (!parsed.ok) {
+      speakKorean('다시 말씀해 주세요');
+      return;
+    }
+    const idx = positionSlotToIndex(parsed.positionSlot);
+    const player = idx != null ? (rosters.court[idx] || null) : null;
+    await persistRallyRef.current(scoringTeam, kind, player, parsed.positionSlot);
+    speakKorean(formatVoiceConfirm(parsed));
+  };
+
+  const applyVoiceTextRef = useRef(applyVoiceText);
+  applyVoiceTextRef.current = applyVoiceText;
+  const voiceStopRef = useRef<null | (() => void)>(null);
+  const voiceBusyRef = useRef(false);
+
+  useEffect(() => {
+    if (Platform.OS === 'web' || isSpectatorForced) return;
+    if (!myRole || myRole === 'spectator') return;
+
+    let alive = true;
+    let unsub = () => {};
+
+    const onPlayPause = () => {
+      if (!alive) return;
+      if (matchClosedRef.current) return;
+      if (myRoleRef.current === 'spectator' || !myRoleRef.current) return;
+      if (voiceBusyRef.current) return;
+      voiceBusyRef.current = true;
+      setVoiceListening(true);
+      try { voiceStopRef.current?.(); } catch {}
+      const timeout = setTimeout(() => {
+        if (!voiceBusyRef.current) return;
+        voiceBusyRef.current = false;
+        setVoiceListening(false);
+        try { voiceStopRef.current?.(); } catch {}
+        speakKorean('다시 말씀해 주세요');
+      }, 8000);
+      void startListening(
+        (text) => {
+          clearTimeout(timeout);
+          voiceBusyRef.current = false;
+          setVoiceListening(false);
+          void applyVoiceTextRef.current(text);
+        },
+        () => {
+          clearTimeout(timeout);
+          voiceBusyRef.current = false;
+          setVoiceListening(false);
+          speakKorean('다시 말씀해 주세요');
+        },
+      ).then((stop) => {
+        voiceStopRef.current = () => {
+          clearTimeout(timeout);
+          stop();
+        };
+      });
+    };
+
+    setupHeadsetRemote(onPlayPause).then((u) => {
+      if (!alive) {
+        u();
+        return;
+      }
+      unsub = u;
+    });
+
+    return () => {
+      alive = false;
+      unsub();
+      try { voiceStopRef.current?.(); } catch {}
+      voiceBusyRef.current = false;
+    };
+  }, [isSpectatorForced, myRole]);
 
   const persistSubstitutionEvent = async (outMember: Member, inMember: Member, positionSlot: number | null) => {
     const tempEvent: MatchEvent = {
@@ -1895,57 +2082,15 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
   const isMyHostTeam = match && teamsInclude(myTeams, match.host_team_name);
   const isMyAwayTeam = !!(match?.away_team_name && teamsInclude(myTeams, match.away_team_name));
 
-  const getSetRosters = (isHost: boolean) => {
-    const rosterRaw = isHost ? match?.host_roster : match?.away_roster;
-    const baseMembers = isHost || isIntramural ? (hostMembers || []) : (awayMembers || []);
-    const setRow = (matchSets || [])[currentSetIndex];
-    const formation = resolveFormationFromSources(
-      rosterRaw,
-      currentSetIndex,
-      isHost ? setRow?.hostLineup : setRow?.awayLineup,
-      isHost
-        ? { bench: setRow?.hostBench || [], late: setRow?.hostLate || [], frontCount: setRow?.hostFrontCount, middleCount: setRow?.hostMiddleCount, backCount: setRow?.hostBackCount }
-        : { bench: setRow?.awayBench || [], late: setRow?.awayLate || [], frontCount: setRow?.awayFrontCount, middleCount: setRow?.awayMiddleCount, backCount: setRow?.awayBackCount },
-    );
-    const frontCount = clampLineCount(formation.frontCount, DEFAULT_LINE_COUNT);
-    const middleCount = clampLineCount(formation.middleCount, DEFAULT_LINE_COUNT);
-    const backCount = clampLineCount(formation.backCount, DEFAULT_LINE_COUNT);
-    const slotTotal = frontCount + middleCount + backCount;
-    const rawCourt = formation.court || [];
-    const benchIds = formation.bench || [];
-    const lateIds = formation.late || [];
-
-    const hasFormation = rawCourt.length > 0 || benchIds.length > 0 || lateIds.length > 0 || !!formation.frontCount || !!formation.middleCount || !!formation.backCount;
-    if (!hasFormation) {
-      return { court: baseMembers, bench: [] as Member[], late: [] as Member[], formation };
-    }
-
-    const slots = [...rawCourt];
-    while (slots.length < slotTotal) slots.push('');
-    const court = slots.slice(0, slotTotal).map((id) => {
-      const real = baseMembers.find((m) => m.user_id === id || listHasUser([id], m.user_id) || safeIncludes(id, m.user_id));
-      if (real) return real;
-      const kept = assignedUserId(id);
-      if (!kept) return { user_id: '', full_name: ANONYMOUS_PLAYER_NAME };
-      return { user_id: kept, full_name: displaySlotPlayerName(kept, ANONYMOUS_PLAYER_NAME) };
-    });
-    const courtIds = court.map((m) => assignedUserId(m.user_id)).filter((id): id is string => !!id);
-    const formMap = parseSetFormationMap(rosterRaw);
-    const guestPool: string[] = [];
-    Object.values(formMap).forEach((f) => {
-      [...(f.court || []), ...(f.bench || []), ...(f.late || [])].forEach((id) => {
-        const real = assignedUserId(id);
-        if (real && isTempSlotId(real)) guestPool.push(real);
-      });
-    });
-    const benchFromMembers = baseMembers.filter((m) => listHasUser(benchIds, m.user_id) || (!listHasUser(courtIds, m.user_id) && !listHasUser(lateIds, m.user_id)));
-    const extraIds = [...new Set([...(benchIds || []), ...guestPool])]
-      .map((id) => assignedUserId(id))
-      .filter((id): id is string => !!id && !courtIds.includes(id) && !benchFromMembers.some((m) => m.user_id === id));
-    const extraBench = extraIds.map((id) => ({ user_id: id, full_name: displaySlotPlayerName(id, ANONYMOUS_PLAYER_NAME) }));
-    const bench = [...benchFromMembers, ...extraBench];
-    return { court, bench, late: baseMembers.filter((m) => listHasUser(lateIds, m.user_id)), formation };
-  };
+  const getSetRosters = (isHost: boolean) => resolveSetRosters({
+    isHost,
+    isIntramural,
+    match,
+    hostMembers,
+    awayMembers,
+    matchSets,
+    currentSetIndex,
+  });
 
   const openFormation = (team: 'host' | 'away') => {
     if (isSpectatorForced || myRole === 'spectator') return;
@@ -2232,6 +2377,11 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
       </Modal>
 
       <View style={[styles.headerBlock, { paddingLeft: Math.max(safeInset(insets.left), 8), paddingRight: Math.max(safeInset(insets.right), 8) }]}>
+        {voiceListening ? (
+          <View style={styles.voiceListenBanner} pointerEvents="none">
+            <Text style={styles.voiceListenText}>🎧 음성 대기 중 · A팀 앞차 득점</Text>
+          </View>
+        ) : null}
         <View style={styles.headerSlim}>
           <View style={styles.headerSlimLeft}>
             <TouchableOpacity style={styles.backBtnSlim} onPress={() => router.back()} hitSlop={10}>
@@ -2663,6 +2813,15 @@ const styles = StyleSheet.create({
   loadingContainer: { flex: 1, backgroundColor: '#020617', justifyContent: 'center', alignItems: 'center' },
   loadingText: { color: '#94A3B8', marginTop: 12, fontSize: 13, fontWeight: '700' },
   headerBlock: { minHeight: 38, flexShrink: 0, backgroundColor: '#0F172A', borderBottomWidth: 1, borderBottomColor: '#1E293B', overflow: 'visible' },
+  voiceListenBanner: {
+    alignSelf: 'center',
+    backgroundColor: '#1D4ED8',
+    borderRadius: 999,
+    paddingHorizontal: 12,
+    paddingVertical: 4,
+    marginTop: 4,
+  },
+  voiceListenText: { color: '#F8FAFC', fontSize: 12, fontWeight: '800' },
   headerSlim: { minHeight: 38, flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 6, paddingHorizontal: 10, paddingTop: 4, paddingBottom: 4 },
   headerSlimLeft: { flexDirection: 'row', alignItems: 'center', gap: 6, flexGrow: 1, flexShrink: 1, minWidth: 120 },
   backBtnSlim: { width: 24, height: 24, justifyContent: 'center', alignItems: 'center' },
