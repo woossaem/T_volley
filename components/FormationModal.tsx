@@ -29,9 +29,10 @@ import {
 import { getSafeDisplayName } from '../lib/utils';
 import { safeInset } from '../lib/nativeSafe';
 import {
-  suggestBalancedDual,
+  previewPowerBalance,
   suggestFormation,
   type FormationAlgoMode,
+  type PowerBalancePreview,
 } from '../lib/formationAlgorithm';
 
 export interface FormationMember {
@@ -76,6 +77,13 @@ interface Props {
   statsTeamName?: string;
   teamSide?: SideKey;
   matchId?: string | null;
+  /** 상대 팀 현재 포메이션. 전력밸런스 미리보기·양팀 적용에 사용 */
+  peerInitial?: SetFormation | null;
+  peerMembers?: FormationMember[];
+  teamAName?: string;
+  teamBName?: string;
+  /** true면 공유 명단을 A/B로 나눠 양 팀 코트를 함께 재배치 */
+  sharePlayerPool?: boolean;
 }
 
 interface SideState {
@@ -182,6 +190,11 @@ export default function FormationModal({
   statsTeamName,
   teamSide = 'host',
   matchId = null,
+  peerInitial = null,
+  peerMembers,
+  teamAName,
+  teamBName,
+  sharePlayerPool = false,
 }: Props) {
   const insets = useSafeAreaInsets();
   const dual = !!(hostSide && awaySide) && !courtSide;
@@ -191,6 +204,7 @@ export default function FormationModal({
   const [intent, setIntent] = useState<SlotIntent | null>(null);
   const [algoBusy, setAlgoBusy] = useState(false);
   const [activeAlgo, setActiveAlgo] = useState<FormationAlgoMode | null>(null);
+  const [balancePreview, setBalancePreview] = useState<PowerBalancePreview | null>(null);
   const courtPulse = useRef(new Animated.Value(1)).current;
 
   const hostCanEdit = dual ? (isSingleRecorder || !!hostSide?.canEdit) : true;
@@ -230,10 +244,20 @@ export default function FormationModal({
       setAwayState(awayHydrated);
     } else {
       setHostState(hydrateSide(members, initial, usedMatchIds));
-      setAwayState(EMPTY_SIDE);
+      setAwayState(peerInitial
+        ? hydrateSide(peerMembers || members, peerInitial, [
+          ...usedMatchIds,
+          ...(initial?.court || []),
+          ...(initial?.bench || []),
+          ...(initial?.late || []),
+        ])
+        : EMPTY_SIDE);
     }
     setHolding(null);
     setIntent(null);
+    setBalancePreview(null);
+    setAlgoBusy(false);
+    setActiveAlgo(null);
   }, [visible]);
 
   const nameOf = (side: SideKey, id: string | null) => {
@@ -338,11 +362,40 @@ export default function FormationModal({
   };
 
   const applyCourt = (side: SideKey, court: Array<string | null>) => {
-    if (!canEditSide(side)) return;
+    if (!canEditSide(side) && side === 'host') return;
+    if (side === 'away' && dual && !canEditSide('away')) return;
     setState(side, (prev) => {
       const total = prev.frontCount + prev.middleCount + prev.backCount;
       return { ...prev, court: padCourtSlots(court, total) };
     });
+  };
+
+  const matchHostCourt = () => (teamSide === 'away' ? awayState.court : hostState.court);
+  const matchAwayCourt = () => (teamSide === 'away' ? hostState.court : awayState.court);
+  const labelA = teamAName || hostSide?.teamName || 'A팀';
+  const labelB = teamBName || awaySide?.teamName || 'B팀';
+
+  const applyMatchCourts = (hostCourt: Array<string | null>, awayCourt: Array<string | null>) => {
+    if (dual) {
+      applyCourt('host', hostCourt);
+      applyCourt('away', awayCourt);
+      return;
+    }
+    if (teamSide === 'away') {
+      applyCourt('host', awayCourt);
+      applyCourt('away', hostCourt);
+    } else {
+      applyCourt('host', hostCourt);
+      applyCourt('away', awayCourt);
+    }
+  };
+
+  const confirmBalanceApply = () => {
+    if (!balancePreview) return;
+    applyMatchCourts(balancePreview.host, balancePreview.away);
+    setBalancePreview(null);
+    setActiveAlgo(null);
+    playCourtPulse();
   };
 
   const runQuickPlace = async (mode: FormationAlgoMode) => {
@@ -357,23 +410,32 @@ export default function FormationModal({
     setHolding(null);
     setIntent(null);
     try {
-      if (dual && mode === 'BALANCE') {
+      if (mode === 'BALANCE') {
         const late = new Set(
           [...hostState.late, ...awayState.late].map((id) => assignedUserId(id)).filter((id): id is string => !!id),
         );
-        const pool = allPlayers.filter((p) => p.user_id && !late.has(p.user_id));
-        const result = await suggestBalancedDual({
+        const poolSource = dual || sharePlayerPool
+          ? allPlayers
+          : [...availableForAlgo('host'), ...availableForAlgo('away')];
+        const pool = uniqueKeepOrder(poolSource.map((p) => p.user_id))
+          .filter((id) => !late.has(id))
+          .map((id) => ({ user_id: id, full_name: nameOf(teamSide, id) || nameOf('host', id) || nameOf('away', id) }));
+        const preview = await previewPowerBalance({
           players: pool,
+          currentHost: matchHostCourt(),
+          currentAway: matchAwayCourt(),
           frontCount: hostState.frontCount,
           middleCount: hostState.middleCount,
           backCount: hostState.backCount,
-          hostTeamName: statsNameOf('host'),
-          awayTeamName: statsNameOf('away'),
+          teamName: statsNameOf('host'),
           excludeMatchId: matchId,
+          splitBothTeams: dual || sharePlayerPool,
+          rebalanceSide: teamSide,
         });
-        applyCourt('host', result.host);
-        applyCourt('away', result.away);
-      } else if (dual) {
+        setBalancePreview(preview);
+        return;
+      }
+      if (dual) {
         const hostPlayers = availableForAlgo('host');
         const hostCourt = await suggestFormation({
           mode,
@@ -417,7 +479,7 @@ export default function FormationModal({
       Alert.alert('자동 배치', err?.message || '라인업을 만들지 못했습니다. 잠시 후 다시 시도해 주세요.');
     } finally {
       setAlgoBusy(false);
-      setActiveAlgo(null);
+      if (mode !== 'BALANCE') setActiveAlgo(null);
     }
   };
 
@@ -887,6 +949,21 @@ export default function FormationModal({
                     ...awayState.late,
                   ]);
                   onSaveDual(hostForm, awayForm);
+                } else if (onSaveDual && (sharePlayerPool || peerInitial)) {
+                  const editing = toFormation(hostState, [
+                    ...usedMatchIds,
+                    ...awayState.court,
+                    ...hostState.bench,
+                    ...hostState.late,
+                  ]);
+                  const peer = toFormation(awayState, [
+                    ...usedMatchIds,
+                    ...editing.court,
+                    ...awayState.bench,
+                    ...awayState.late,
+                  ]);
+                  if (teamSide === 'away') onSaveDual(peer, editing);
+                  else onSaveDual(editing, peer);
                 } else {
                   onSave(toFormation(hostState, [
                     ...usedMatchIds,
@@ -899,6 +976,53 @@ export default function FormationModal({
               <Text style={styles.saveText}>이 세트 포메이션 저장</Text>
             </TouchableOpacity>
           </View>
+
+          {balancePreview ? (
+            <View style={styles.actionOverlay}>
+              <TouchableOpacity
+                style={styles.actionBackdrop}
+                activeOpacity={1}
+                onPress={() => { setBalancePreview(null); setActiveAlgo(null); }}
+              />
+              <View style={styles.balanceSheet}>
+                <Text style={styles.balanceTitle}>⚠️ 양 팀 전력 밸런스 재배치</Text>
+                <Text style={styles.balanceBody}>
+                  {(dual || sharePlayerPool)
+                    ? `자체내전 전력 균형을 위해 ${labelA}과 ${labelB}의 포메이션이 함께 재배치됩니다.`
+                    : `전력 균형을 위해 현재 팀 포메이션이 다시 배치됩니다. 상대 팀 코트는 유지됩니다.`}
+                </Text>
+                <View style={styles.balanceCard}>
+                  <Text style={styles.balanceLine}>
+                    • 현재 예상 전력비 : {labelA} {balancePreview.current.aRatio} : {labelB} {balancePreview.current.bRatio} (전력 균형도 {balancePreview.current.balanceScore}%)
+                  </Text>
+                  <View style={styles.ratioTrack}>
+                    <View style={[styles.ratioA, { flex: Math.max(1, balancePreview.current.aRatio) }]} />
+                    <View style={[styles.ratioB, { flex: Math.max(1, balancePreview.current.bRatio) }]} />
+                  </View>
+                  <Text style={[styles.balanceLine, styles.balanceNext]}>
+                    • 재배치 후 전력비 : {labelA} {balancePreview.next.aRatio} : {labelB} {balancePreview.next.bRatio} (전력 균형도 {balancePreview.next.balanceScore}%)
+                  </Text>
+                  <View style={styles.ratioTrack}>
+                    <View style={[styles.ratioA, { flex: Math.max(1, balancePreview.next.aRatio) }]} />
+                    <View style={[styles.ratioB, { flex: Math.max(1, balancePreview.next.bRatio) }]} />
+                  </View>
+                </View>
+                <View style={styles.balanceBtnRow}>
+                  <TouchableOpacity
+                    style={styles.balanceCancel}
+                    onPress={() => { setBalancePreview(null); setActiveAlgo(null); }}
+                  >
+                    <Text style={styles.balanceCancelText}>취소</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={styles.balanceApply} onPress={confirmBalanceApply}>
+                    <Text style={styles.balanceApplyText}>
+                      {(dual || sharePlayerPool) ? '양 팀 포메이션 적용' : '포메이션 적용'}
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            </View>
+          ) : null}
 
           {menuState && menuOccupant ? (
             <View style={styles.actionOverlay}>
@@ -1033,4 +1157,28 @@ const styles = StyleSheet.create({
   actionBtnDangerText: { color: '#FECDD3' },
   actionCancel: { paddingVertical: 8, alignItems: 'center' },
   actionCancelText: { color: '#94A3B8', fontSize: 13, fontWeight: '800' },
+  balanceSheet: {
+    width: '94%',
+    maxWidth: 460,
+    backgroundColor: '#1E293B',
+    borderRadius: 14,
+    padding: 12,
+    marginBottom: 16,
+    borderWidth: 1,
+    borderColor: '#F59E0B',
+    gap: 8,
+  },
+  balanceTitle: { fontSize: 15, fontWeight: '900', color: '#FDE68A', textAlign: 'center' },
+  balanceBody: { fontSize: 12, fontWeight: '700', color: '#E2E8F0', lineHeight: 18, textAlign: 'center' },
+  balanceCard: { backgroundColor: '#0F172A', borderRadius: 10, padding: 8, gap: 6, borderWidth: 1, borderColor: '#334155' },
+  balanceLine: { fontSize: 12, fontWeight: '800', color: '#CBD5E1', lineHeight: 18 },
+  balanceNext: { color: '#BBF7D0' },
+  ratioTrack: { height: 8, borderRadius: 4, overflow: 'hidden', flexDirection: 'row', backgroundColor: '#334155' },
+  ratioA: { backgroundColor: '#2563EB' },
+  ratioB: { backgroundColor: '#DC2626' },
+  balanceBtnRow: { flexDirection: 'row', gap: 8, marginTop: 4 },
+  balanceCancel: { flex: 1, backgroundColor: '#334155', borderRadius: 10, paddingVertical: 10, alignItems: 'center' },
+  balanceCancelText: { color: '#E2E8F0', fontWeight: '800', fontSize: 13 },
+  balanceApply: { flex: 2, backgroundColor: '#D97706', borderRadius: 10, paddingVertical: 10, alignItems: 'center' },
+  balanceApplyText: { color: '#FFFBEB', fontWeight: '900', fontSize: 13 },
 });

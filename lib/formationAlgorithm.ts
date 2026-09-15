@@ -17,6 +17,53 @@ export type FormationAlgoPlayer = {
   full_name?: string | null;
 };
 
+export type PowerRatioPlayer = {
+  user_id?: string | null;
+  points?: number | null;
+  faults?: number | null;
+  power?: number | null;
+};
+
+export type PowerRatioResult = {
+  aRatio: number;
+  bRatio: number;
+  balanceScore: number;
+  aNet: number;
+  bNet: number;
+};
+
+function netScoreOf(entry: PowerRatioPlayer | number | string | null | undefined): number {
+  if (typeof entry === 'number' && Number.isFinite(entry)) return entry;
+  if (!entry || typeof entry !== 'object') return 0;
+  const points = Number(entry.points);
+  const faults = Number(entry.faults);
+  if (Number.isFinite(points) || Number.isFinite(faults)) {
+    return (Number.isFinite(points) ? points : 0) - (Number.isFinite(faults) ? faults : 0);
+  }
+  if (typeof entry.power === 'number' && Number.isFinite(entry.power)) return entry.power;
+  return 0;
+}
+
+/**
+ * 양 팀 누적 득실(득점-범실)로 전력 비율과 균형도를 구한다.
+ * balanceScore = 100 - |A_ratio - B_ratio|
+ */
+export function calculatePowerRatio(
+  teamA: Array<PowerRatioPlayer | number | string | null | undefined> | null | undefined,
+  teamB: Array<PowerRatioPlayer | number | string | null | undefined> | null | undefined,
+): PowerRatioResult {
+  const aNet = (teamA || []).reduce<number>((sum, row) => sum + netScoreOf(row), 0);
+  const bNet = (teamB || []).reduce<number>((sum, row) => sum + netScoreOf(row), 0);
+  const floor = Math.min(0, aNet, bNet);
+  const aShift = aNet - floor;
+  const bShift = bNet - floor;
+  const sum = aShift + bShift;
+  const aRatio = sum > 0 ? Math.round((aShift / sum) * 100) : 50;
+  const bRatio = 100 - aRatio;
+  const balanceScore = Math.max(0, Math.min(100, 100 - Math.abs(aRatio - bRatio)));
+  return { aRatio, bRatio, balanceScore, aNet, bNet };
+}
+
 export type FormationAlgoInput = {
   mode: FormationAlgoMode;
   players: FormationAlgoPlayer[];
@@ -511,6 +558,110 @@ export async function suggestFormation(input: FormationAlgoInput): Promise<Array
   return assignByScore(metrics, front, middle, back);
 }
 
+function metricById(metrics: PlayerMetric[]): Map<string, PlayerMetric> {
+  const map = new Map<string, PlayerMetric>();
+  metrics.forEach((m) => map.set(m.id, m));
+  return map;
+}
+
+function ratingsForCourt(court: Array<string | null | undefined>, byId: Map<string, PlayerMetric>): PowerRatioPlayer[] {
+  return (court || []).map((id) => {
+    const real = assignedUserId(id);
+    const hit = real ? byId.get(real) : null;
+    return {
+      user_id: real,
+      points: hit?.stats.points || 0,
+      faults: hit?.stats.faults || 0,
+    };
+  });
+}
+
+function splitDualPools(metrics: PlayerMetric[], total: number): { hostPool: PlayerMetric[]; awayPool: PlayerMetric[] } {
+  const sorted = metrics.slice().sort((a, b) => b.power - a.power);
+  const hostPool: PlayerMetric[] = [];
+  const awayPool: PlayerMetric[] = [];
+  sorted.forEach((m) => {
+    const hostFull = hostPool.length >= total;
+    const awayFull = awayPool.length >= total;
+    if (hostFull && awayFull) return;
+    if (hostFull) {
+      awayPool.push(m);
+      return;
+    }
+    if (awayFull) {
+      hostPool.push(m);
+      return;
+    }
+    const hostLoad = hostPool.reduce((sum, row) => sum + row.power, 0);
+    const awayLoad = awayPool.reduce((sum, row) => sum + row.power, 0);
+    if (hostLoad <= awayLoad) hostPool.push(m);
+    else awayPool.push(m);
+  });
+  return { hostPool, awayPool };
+}
+
+export type PowerBalancePreview = {
+  current: PowerRatioResult;
+  next: PowerRatioResult;
+  host: Array<string | null>;
+  away: Array<string | null>;
+};
+
+/** 현재 라인업 vs 재배치 후 라인업의 전력비·코트 배치를 함께 반환 */
+export async function previewPowerBalance(args: {
+  players: FormationAlgoPlayer[];
+  currentHost: Array<string | null | undefined>;
+  currentAway: Array<string | null | undefined>;
+  frontCount: number;
+  middleCount: number;
+  backCount: number;
+  teamName: string;
+  excludeMatchId?: string | null;
+  splitBothTeams?: boolean;
+  rebalanceSide?: 'host' | 'away';
+}): Promise<PowerBalancePreview> {
+  const front = Number(args.frontCount) || 0;
+  const middle = Number(args.middleCount) || 0;
+  const back = Number(args.backCount) || 0;
+  const total = slotTotal(front, middle, back);
+  const metrics = await loadMetrics(
+    args.players,
+    args.teamName,
+    front,
+    middle,
+    back,
+    args.excludeMatchId,
+  );
+  const byId = metricById(metrics);
+  const current = calculatePowerRatio(
+    ratingsForCourt(args.currentHost, byId),
+    ratingsForCourt(args.currentAway, byId),
+  );
+
+  let host: Array<string | null>;
+  let away: Array<string | null>;
+  if (args.splitBothTeams === false) {
+    const placed = assignBalanced(metrics, front, middle, back);
+    if (args.rebalanceSide === 'away') {
+      host = padCourt((args.currentHost || []).map((id) => assignedUserId(id)), total);
+      away = placed;
+    } else {
+      host = placed;
+      away = padCourt((args.currentAway || []).map((id) => assignedUserId(id)), total);
+    }
+  } else {
+    const { hostPool, awayPool } = splitDualPools(metrics, total);
+    host = assignByScore(hostPool, front, middle, back);
+    away = assignByScore(awayPool, front, middle, back);
+  }
+
+  const next = calculatePowerRatio(
+    ratingsForCourt(host, byId),
+    ratingsForCourt(away, byId),
+  );
+  return { current, next, host, away };
+}
+
 /** 내전 양팀 모달용: 가용 인원을 전투력 스네이크로 나눠 각각 배치 */
 export async function suggestBalancedDual(args: {
   players: FormationAlgoPlayer[];
@@ -520,32 +671,19 @@ export async function suggestBalancedDual(args: {
   hostTeamName: string;
   awayTeamName: string;
   excludeMatchId?: string | null;
+  currentHost?: Array<string | null | undefined>;
+  currentAway?: Array<string | null | undefined>;
 }): Promise<{ host: Array<string | null>; away: Array<string | null> }> {
-  const front = Number(args.frontCount) || 0;
-  const middle = Number(args.middleCount) || 0;
-  const back = Number(args.backCount) || 0;
-  const total = slotTotal(front, middle, back);
-  const metrics = await loadMetrics(
-    args.players,
-    args.hostTeamName || args.awayTeamName,
-    front,
-    middle,
-    back,
-    args.excludeMatchId,
-  );
-  const sorted = metrics.slice().sort((a, b) => b.power - a.power);
-  const hostPool: PlayerMetric[] = [];
-  const awayPool: PlayerMetric[] = [];
-  sorted.forEach((m, i) => {
-    const toHost = i % 2 === 0
-      ? hostPool.length <= awayPool.length
-      : awayPool.length < hostPool.length;
-    if (toHost && hostPool.length < total) hostPool.push(m);
-    else if (awayPool.length < total) awayPool.push(m);
-    else if (hostPool.length < total) hostPool.push(m);
+  const preview = await previewPowerBalance({
+    players: args.players,
+    currentHost: args.currentHost || [],
+    currentAway: args.currentAway || [],
+    frontCount: args.frontCount,
+    middleCount: args.middleCount,
+    backCount: args.backCount,
+    teamName: args.hostTeamName || args.awayTeamName,
+    excludeMatchId: args.excludeMatchId,
+    splitBothTeams: true,
   });
-  return {
-    host: assignByScore(hostPool, front, middle, back),
-    away: assignByScore(awayPool, front, middle, back),
-  };
+  return { host: preview.host, away: preview.away };
 }

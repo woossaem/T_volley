@@ -2470,6 +2470,12 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
         statsTeamName={isIntramural
           ? getSafeTeamName(match?.host_team_name || match)
           : (formationTeam === 'host' ? displayHostName : displayAwayName)}
+        sharePlayerPool={isIntramural}
+        teamAName={displayHostName}
+        teamBName={displayAwayName}
+        peerInitial={formationTeam === 'host' ? awayFormationInitial : hostFormationInitial}
+        peerMembers={isIntramural ? (hostMembers || []) : (formationTeam === 'host' ? (awayMembers || []) : (hostMembers || []))}
+        onSaveDual={isIntramural ? handleSaveDualFormation : undefined}
         onClose={() => setFormationVisible(false)}
         onSave={handleSaveFormation}
         usedMatchIds={[
