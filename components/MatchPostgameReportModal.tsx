@@ -13,11 +13,24 @@ import { supabase } from '../lib/supabase';
 import { Colors } from '../constants/Colors';
 import { safeInset } from '../lib/nativeSafe';
 import ScoreTimeline, { MatchEvent } from './ScoreTimeline';
-import { parseRosterUserIds, parseSetRosterMap, safeIncludes } from '../lib/roster';
+import {
+  assignedUserId,
+  courtSlotLabelAt,
+  parseRosterUserIds,
+  parseSetFormationMap,
+  parseSetRosterMap,
+  resolveFormationForSet,
+  safeIncludes,
+} from '../lib/roster';
 import { isPersonalFault, isPersonalKill } from '../lib/playerStats';
 import { getSafeTeamName } from '../lib/utils';
-import { formatPlayerDisplayName, isAwardEligiblePlayer, parseTempGuestNum } from '../lib/tempPlayer';
-import { attributeTimelineEvents, courtsBySetFromRoster } from '../lib/slotAttribution';
+import { formatPlayerDisplayName, isAwardEligiblePlayer } from '../lib/tempPlayer';
+import {
+  attributeTimelineEvents,
+  courtsBySetFromRoster,
+  courtTeamForEvent,
+  readPositionSlot,
+} from '../lib/slotAttribution';
 
 interface MatchPostgameReportModalProps {
   visible: boolean;
@@ -68,15 +81,63 @@ function formatMvpLine(players: PlayerStat[]): string {
   const max = Math.max(...eligible.map((p) => p.points));
   if (max <= 0) return '[없음]';
   const tied = eligible.filter((p) => p.points === max).sort((a, b) => a.name.localeCompare(b.name, 'ko'));
-  if (tied.length === 1) return `${tied[0].name} (${tied[0].points}점)`;
-  return `${tied.map((p) => p.name).join(', ')} (공동 ${max}점)`;
+  if (tied.length <= 2) return `${tied.map((p) => p.name).join(', ')} (${max}점)`;
+  return `공동 1위 (${tied.length}명) - ${max}점`;
 }
 
-function jerseyLabel(playerId: string | null, name: string): string {
-  const fromId = parseTempGuestNum(playerId);
-  if (fromId) return String(fromId);
-  const fromName = String(name || '').match(/(?:#|No\.?\s*)(\d{1,2})\b/i);
-  return fromName ? fromName[1] : '-';
+function collectPlayerPositionLabels(
+  player: PlayerStat,
+  events: MatchEvent[],
+  hostRoster: unknown,
+  awayRoster: unknown,
+): string[] {
+  const playerId = assignedUserId(player.playerId);
+  if (!playerId) return [];
+  const labels = new Set<string>();
+  const hostMap = parseSetFormationMap(hostRoster);
+  const awayMap = parseSetFormationMap(awayRoster);
+  const formOf = (team: 'host' | 'away', setIndex: number) =>
+    resolveFormationForSet(team === 'host' ? hostMap : awayMap, setIndex);
+
+  const addSlot = (team: 'host' | 'away', setIndex: number, index0: number) => {
+    if (index0 < 0) return;
+    const form = formOf(team, setIndex);
+    labels.add(courtSlotLabelAt(index0, form.frontCount, form.middleCount, form.backCount));
+  };
+
+  events.forEach((event) => {
+    if (event.is_canceled) return;
+    const slot = readPositionSlot(event);
+    if (slot == null) return;
+    const setIndex = Number(event.set_index) || 0;
+    if (event.event_type === 'sub') {
+      if (event.team_type !== player.team) return;
+      if (assignedUserId(event.player_id) !== playerId && assignedUserId(event.sub_out_id) !== playerId) return;
+      addSlot(player.team, setIndex, slot - 1);
+      return;
+    }
+    if (assignedUserId(event.player_id) !== playerId) return;
+    if (courtTeamForEvent(event) !== player.team) return;
+    addSlot(player.team, setIndex, slot - 1);
+  });
+
+  const formMap = player.team === 'host' ? hostMap : awayMap;
+  Object.keys(formMap).forEach((key) => {
+    const setIndex = Number(key);
+    if (!Number.isFinite(setIndex)) return;
+    const form = formOf(player.team, setIndex);
+    (form.court || []).forEach((id, idx) => {
+      if (assignedUserId(id) === playerId) addSlot(player.team, setIndex, idx);
+    });
+  });
+
+  return Array.from(labels);
+}
+
+function playerPositionCaption(labels: string[]): string | null {
+  if (labels.length === 0) return null;
+  if (labels.length === 1) return labels[0];
+  return '포지션 믹스';
 }
 
 function parseSetScoreString(raw?: string | null): { host: number; away: number }[] {
@@ -519,12 +580,12 @@ export default function MatchPostgameReportModal({
         <View style={styles.shareStatChip}>
           <Text style={styles.shareStatEmoji}>👑</Text>
           <Text style={styles.shareStatTitle}>경기 MVP</Text>
-          <Text style={styles.shareStatValue} numberOfLines={1} ellipsizeMode="tail">{analytics.mvpLine}</Text>
+          <Text style={styles.shareStatValue}>{analytics.mvpLine}</Text>
         </View>
         <View style={styles.shareStatChip}>
           <Text style={styles.shareStatEmoji}>🎯</Text>
           <Text style={styles.shareStatTitle}>클러치 요정</Text>
-          <Text style={styles.shareStatValue} numberOfLines={1} ellipsizeMode="tail">
+          <Text style={styles.shareStatValue}>
             {analytics.matchClutchNames.length > 0 ? analytics.matchClutchNames.join(', ') : '[없음]'}
           </Text>
         </View>
@@ -532,12 +593,12 @@ export default function MatchPostgameReportModal({
 
       <View style={styles.shareTopRow}>
         <View style={[styles.shareTopBox, { borderColor: '#38BDF8' }]}>
-          <Text style={[styles.shareTopLabel, { color: '#7DD3FC' }]} numberOfLines={1} ellipsizeMode="tail">{displayHostName} 최다득점</Text>
-          <Text style={styles.shareTopValue} numberOfLines={1} ellipsizeMode="tail">{analytics.hostTopLine}</Text>
+          <Text style={[styles.shareTopLabel, { color: '#7DD3FC' }]}>{displayHostName} 최다득점</Text>
+          <Text style={styles.shareTopValue}>{analytics.hostTopLine}</Text>
         </View>
         <View style={[styles.shareTopBox, { borderColor: '#FB7185' }]}>
-          <Text style={[styles.shareTopLabel, { color: '#FDA4AF' }]} numberOfLines={1} ellipsizeMode="tail">{displayAwayName} 최다득점</Text>
-          <Text style={styles.shareTopValue} numberOfLines={1} ellipsizeMode="tail">{analytics.awayTopLine}</Text>
+          <Text style={[styles.shareTopLabel, { color: '#FDA4AF' }]}>{displayAwayName} 최다득점</Text>
+          <Text style={styles.shareTopValue}>{analytics.awayTopLine}</Text>
         </View>
       </View>
     </View>
@@ -551,9 +612,12 @@ export default function MatchPostgameReportModal({
       ) : (
         <View style={styles.playerCardRow}>
           {players.map((p) => {
+            const positionText = playerPositionCaption(
+              collectPlayerPositionLabels(p, attributedEvents, match?.host_roster, match?.away_roster),
+            );
             return (
               <View key={`${p.team}-${p.playerId || p.name}`} style={styles.playerStatCard}>
-                <Text style={styles.playerJersey}>{jerseyLabel(p.playerId, p.name)}</Text>
+                {positionText ? <Text style={styles.playerPosition}>{positionText}</Text> : null}
                 <Text style={styles.playerName} numberOfLines={1}>
                   {formatPlayerDisplayName(p.playerId, p.name)}
                 </Text>
@@ -707,11 +771,11 @@ export default function MatchPostgameReportModal({
                       <View style={styles.setClutchRow}>
                         <View style={styles.setClutchChip}>
                           <Text style={styles.setClutchLabel}>🏆 세트 MVP</Text>
-                          <Text style={styles.setClutchValue} numberOfLines={1} ellipsizeMode="tail">{activeSetSummary.mvpLine}</Text>
+                          <Text style={styles.setClutchValue}>{activeSetSummary.mvpLine}</Text>
                         </View>
                         <View style={[styles.setClutchChip, { backgroundColor: '#EEF2FF' }]}>
                           <Text style={styles.setClutchLabel}>🎯 세트 클러치</Text>
-                          <Text style={styles.setClutchValue} numberOfLines={1} ellipsizeMode="tail">{activeSetSummary.clutchName || '[없음]'}</Text>
+                          <Text style={styles.setClutchValue}>{activeSetSummary.clutchName || '[없음]'}</Text>
                         </View>
                       </View>
                       <MomentumBar events={activeSetEvents} hostName={displayHostName} awayName={displayAwayName} />
@@ -744,7 +808,16 @@ export default function MatchPostgameReportModal({
 
 const styles = StyleSheet.create({
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center', padding: 16 },
-  modalContent: { backgroundColor: Colors.surface, borderRadius: 20, padding: 16, width: '100%', maxHeight: '88%', elevation: 5 },
+  modalContent: {
+    backgroundColor: Colors.surface,
+    borderRadius: 20,
+    padding: 16,
+    width: '100%',
+    maxWidth: 800,
+    alignSelf: 'center',
+    maxHeight: '88%',
+    elevation: 5,
+  },
   modalTitle: { fontSize: 18, fontWeight: '900', color: Colors.text, marginBottom: 2 },
   modalSub: { fontSize: 13, color: Colors.textMuted, marginBottom: 12 },
 
@@ -792,8 +865,8 @@ const styles = StyleSheet.create({
 
   shareTopRow: { flexDirection: 'row', gap: 8 },
   shareTopBox: { flex: 1, borderRadius: 10, padding: 10, borderWidth: 1, backgroundColor: '#111827' },
-  shareTopLabel: { fontSize: 10, fontWeight: '800', marginBottom: 4 },
-  shareTopValue: { fontSize: 12, fontWeight: '900', color: '#F8FAFC', includeFontPadding: false, lineHeight: 16 },
+  shareTopLabel: { fontSize: 10, fontWeight: '800', marginBottom: 4, flexShrink: 1 },
+  shareTopValue: { fontSize: 12, fontWeight: '900', color: '#F8FAFC', includeFontPadding: false, lineHeight: 18, flexShrink: 1 },
 
   highlightContainer: { gap: 10 },
   scoreSummaryBox: { backgroundColor: '#EFF6FF', borderRadius: 12, padding: 16, alignItems: 'center', borderWidth: 1, borderColor: '#BFDBFE' },
@@ -835,7 +908,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#1E293B',
   },
-  playerJersey: { color: '#64748B', fontWeight: '700', fontSize: 12, fontVariant: ['tabular-nums'] },
+  playerPosition: { color: '#94A3B8', fontWeight: '700', fontSize: 11, marginBottom: 2 },
   playerName: { color: '#F8FAFC', fontWeight: '800', fontSize: 14, letterSpacing: -0.3 },
   playerBadgeRow: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 8, gap: 6 },
   scoreBadge: { flex: 1, backgroundColor: '#1E3A8A', borderRadius: 8, paddingVertical: 4, alignItems: 'center' },
