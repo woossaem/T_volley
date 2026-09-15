@@ -16,19 +16,18 @@ import ScoreTimeline, { MatchEvent } from './ScoreTimeline';
 import {
   assignedUserId,
   courtSlotLabelAt,
-  parseRosterUserIds,
   parseSetFormationMap,
-  parseSetRosterMap,
   resolveFormationForSet,
-  safeIncludes,
 } from '../lib/roster';
 import { isPersonalFault, isPersonalKill } from '../lib/playerStats';
 import { getSafeTeamName } from '../lib/utils';
 import { formatPlayerDisplayName, isAwardEligiblePlayer } from '../lib/tempPlayer';
 import {
   attributeTimelineEvents,
+  concedingTeamOf,
   courtsBySetFromRoster,
-  courtTeamForEvent,
+  scoringTeamOf,
+  slotOwnerTeam,
   readPositionSlot,
 } from '../lib/slotAttribution';
 
@@ -117,7 +116,7 @@ function collectPlayerPositionLabels(
       return;
     }
     if (assignedUserId(event.player_id) !== playerId) return;
-    if (courtTeamForEvent(event) !== player.team) return;
+    if (slotOwnerTeam(event) !== player.team) return;
     addSlot(player.team, setIndex, slot - 1);
   });
 
@@ -372,21 +371,6 @@ export default function MatchPostgameReportModal({
   );
 
   const analytics = useMemo(() => {
-    const hostRosterMap = parseSetRosterMap(match?.host_roster);
-    const awayRosterMap = parseSetRosterMap(match?.away_roster);
-    const hostRosterIds = parseRosterUserIds(match?.host_roster);
-    const awayRosterIds = parseRosterUserIds(match?.away_roster);
-
-    const resolveTeam = (e: MatchEvent): 'host' | 'away' => {
-      if (e.player_id && (safeIncludes(match?.away_roster, e.player_id) || awayRosterIds.includes(e.player_id))) {
-        if (!hostRosterIds.includes(e.player_id) && Object.keys(awayRosterMap).length > 0) return 'away';
-      }
-      if (e.player_id && (safeIncludes(match?.host_roster, e.player_id) || hostRosterIds.includes(e.player_id))) {
-        if (!awayRosterIds.includes(e.player_id) && Object.keys(hostRosterMap).length > 0) return 'host';
-      }
-      return e.team_type;
-    };
-
     const validScores = attributedEvents.filter((e) => (e.event_type === 'score' || e.event_type === 'fault') && !e.is_canceled);
     const scoredEvents = attributedEvents.filter(
       (e) => !e.is_canceled && (e.event_type === 'score' || e.event_type === 'fault' || e.event_type === 'manual')
@@ -411,10 +395,13 @@ export default function MatchPostgameReportModal({
 
     attributedEvents.forEach((e) => {
       if (e.is_canceled) return;
-      if (isPersonalKill(e.event_type)) bump(resolveTeam(e), e, 'points');
+      if (isPersonalKill(e.event_type)) {
+        const scoringTeam = scoringTeamOf(e);
+        if (scoringTeam) bump(scoringTeam, e, 'points');
+      }
       if (isPersonalFault(e.event_type)) {
-        const faultTeam = e.team_type === 'host' ? 'away' : 'host';
-        bump(faultTeam, e, 'faults');
+        const faultTeam = concedingTeamOf(e);
+        if (faultTeam) bump(faultTeam, e, 'faults');
       }
     });
 
@@ -447,6 +434,7 @@ export default function MatchPostgameReportModal({
       const setScores = validScores.filter((e) => Number(e.set_index) === idx);
       const setAll = scoredEvents.filter((e) => Number(e.set_index) === idx);
       const lastScore = setScores[setScores.length - 1];
+      const lastKill = [...setScores].reverse().find((e) => isPersonalKill(e.event_type));
       const lastAny = setAll[setAll.length - 1];
       const stored = storedSets[idx];
 
@@ -457,7 +445,8 @@ export default function MatchPostgameReportModal({
       setScores.forEach((e) => {
         if (!isPersonalKill(e.event_type)) return;
         if (!isAwardEligiblePlayer(e.player_id, e.player_name)) return;
-        const team = resolveTeam(e);
+        const team = scoringTeamOf(e);
+        if (!team) return;
         const displayName = formatPlayerDisplayName(e.player_id, e.player_name);
         const key = `${team}:${e.player_id || displayName}`;
         const prev = setPlayerMap.get(key);
@@ -474,10 +463,10 @@ export default function MatchPostgameReportModal({
         setIndex: idx,
         hostScore,
         awayScore,
-        clutchName: lastScore && isAwardEligiblePlayer(lastScore.player_id, lastScore.player_name)
-          ? formatPlayerDisplayName(lastScore.player_id, lastScore.player_name)
+        clutchName: lastKill && isAwardEligiblePlayer(lastKill.player_id, lastKill.player_name)
+          ? formatPlayerDisplayName(lastKill.player_id, lastKill.player_name)
           : null,
-        clutchTeam: lastScore?.team_type || null,
+        clutchTeam: lastKill ? (scoringTeamOf(lastKill) || lastKill.team_type) : null,
         mvp: setMvp,
         mvpLine: setMvpLine,
         maxHostStreak: hostStreak.length,
@@ -518,7 +507,7 @@ export default function MatchPostgameReportModal({
       awaySetWins,
       isDraw: isDrawResult(match?.winner_team),
     };
-  }, [attributedEvents, match?.set_scores, match?.winner_team, match?.host_roster, match?.away_roster]);
+  }, [attributedEvents, match?.set_scores, match?.winner_team]);
 
   const winnerLabel = useMemo(() => {
     if (analytics.isDraw) return '🤝 무승부';

@@ -1,6 +1,7 @@
 import { listMatchSetRows } from './matchSets';
 import { parseMatchScoreLogs, resolvePlayerSetPlay, setLineupsAreEmpty, type ScoreLogLike } from './rankingService';
 import { isAnonymousSlotId, listHasUser, parseRosterUserIds, safeIncludes } from './roster';
+import { attributeTimelineEvents, courtsBySetFromRoster } from './slotAttribution';
 
 export interface PlayerCareerStats {
   points: number;
@@ -174,7 +175,12 @@ export function addMatchPlayerStats(
     else if (setLossesThisMatch > setWinsThisMatch) acc.matchLosses += 1;
   }
 
-  events.forEach((e) => {
+  const attributedEvents = attributeTimelineEvents(
+    events,
+    courtsBySetFromRoster(match.host_roster),
+    courtsBySetFromRoster(match.away_roster),
+  );
+  attributedEvents.forEach((e) => {
     if (!e || e.is_canceled) return;
     const eventPlayerId = String(e.player_id ?? e.playerId ?? '').trim();
     if (!eventPlayerId || isAnonymousSlotId(eventPlayerId) || eventPlayerId !== userId) return;
