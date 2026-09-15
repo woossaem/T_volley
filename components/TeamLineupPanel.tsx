@@ -1,5 +1,6 @@
 import React from 'react';
 import { View, Text, StyleSheet, ScrollView } from 'react-native';
+import { TEAM_COLORS } from '../constants/Colors';
 
 export type LineupPlayerView = {
   id: string;
@@ -24,8 +25,8 @@ type TeamLineupPanelProps = {
   teamTone?: 'host' | 'away';
 };
 
-const HOST_ACCENT = '#0284C7';
-const AWAY_ACCENT = '#BE123C';
+const HOST_ACCENT = TEAM_COLORS.host;
+const AWAY_ACCENT = TEAM_COLORS.away;
 
 export default function TeamLineupPanel({
   team,

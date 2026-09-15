@@ -1,4 +1,4 @@
-import { Colors } from '../constants/Colors';
+import { Colors, TEAM_COLORS } from '../constants/Colors';
 import React, { useEffect, useState, useMemo, useCallback, useRef } from 'react';
 import {
   View,
@@ -16,11 +16,13 @@ import {
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter, useLocalSearchParams, useFocusEffect } from 'expo-router';
+import { useKeepAwake } from 'expo-keep-awake';
+import * as ScreenOrientation from 'expo-screen-orientation';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
 import { sendNotificationToTeam } from '../lib/notificationService';
 import { isGuestBindPending, isSoloGuestMatch } from '../lib/guestMatch';
-import { asArray, safeInset, safeLockLandscape, safeLockPortrait, safeStyleNumber } from '../lib/nativeSafe';
+import { asArray, safeInset, safeLockPortrait, safeStyleNumber } from '../lib/nativeSafe';
 import { MatchEvent } from '../components/ScoreTimeline';
 import ScoreTimeline from '../components/ScoreTimeline';
 import PlayerActionModal, { Member, ScoreKind, type LineupApplyPayload } from '../components/PlayerActionModal';
@@ -222,6 +224,8 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
   const onOpenLineup = props.onOpenLineup;
   const spectatorCourtFlip = props.spectatorCourtFlip === true;
 
+  useKeepAwake(undefined, { suppressDeactivateWarnings: true });
+
   const { session } = useAuth();
   const { width: windowWidth } = useWindowDimensions();
   const isPcWeb = Platform.OS === 'web' && windowWidth >= 1024;
@@ -333,12 +337,52 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
 
   useFocusEffect(
     useCallback(() => {
-      if (Platform.OS === 'web') return;
-      if (!matchClosedRef.current) {
-        void safeNativeCall(() => safeLockLandscape());
+      if (Platform.OS === 'web') return undefined;
+
+      let cancelled = false;
+      let timeoutId: ReturnType<typeof setTimeout> | undefined;
+      let rafId = 0;
+
+      const lockLandscapeWhenReady = () => {
+        timeoutId = setTimeout(() => {
+          if (cancelled || matchClosedRef.current) return;
+          void (async () => {
+            try {
+              if (Platform.OS === 'web') return;
+              await ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE);
+            } catch (error) {
+              console.warn('[Scoreboard] orientation lock skipped:', error);
+            } finally {
+              // 락 실패가 Unhandled Rejection / 라우터 이탈로 번지지 않게 화면을 유지한다.
+            }
+          })();
+        }, 100);
+      };
+
+      try {
+        rafId = requestAnimationFrame(lockLandscapeWhenReady);
+      } catch {
+        lockLandscapeWhenReady();
       }
+
       return () => {
-        void safeNativeCall(() => safeLockPortrait());
+        cancelled = true;
+        try {
+          if (rafId) cancelAnimationFrame(rafId);
+        } catch {
+          // ignore
+        }
+        if (timeoutId != null) clearTimeout(timeoutId);
+        void (async () => {
+          try {
+            if (Platform.OS === 'web') return;
+            await ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT);
+          } catch (error) {
+            console.warn('[Scoreboard] orientation restore skipped:', error);
+          } finally {
+            // 복구 실패여도 이전 화면으로 튕기지 않는다.
+          }
+        })();
       };
     }, [])
   );
@@ -2070,14 +2114,14 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
               ) : (
                 <>
                   {isMyHostTeam && (!match?.recorder_host_id || match?.recorder_host_id === currentUserId) && (
-                    <TouchableOpacity style={[styles.roleBtn, { backgroundColor: '#0284C7' }]} onPress={() => handleSelectRole('host_recorder')}>
+                    <TouchableOpacity style={[styles.roleBtn, { backgroundColor: TEAM_COLORS.host }]} onPress={() => handleSelectRole('host_recorder')}>
                       <Text style={styles.roleBtnText}>
                         {match?.recorder_host_id === currentUserId ? `⚡ 🔵 ${displayHostName} 기록자로 계속하기` : `⚡ 🔵 ${displayHostName} 기록자로 참여`}
                       </Text>
                     </TouchableOpacity>
                   )}
                   {isMyAwayTeam && (!match?.recorder_away_id || match?.recorder_away_id === currentUserId) && (
-                    <TouchableOpacity style={[styles.roleBtn, { backgroundColor: '#BE123C' }]} onPress={() => handleSelectRole('away_recorder')}>
+                    <TouchableOpacity style={[styles.roleBtn, { backgroundColor: TEAM_COLORS.away }]} onPress={() => handleSelectRole('away_recorder')}>
                       <Text style={styles.roleBtnText}>
                         {match?.recorder_away_id === currentUserId ? `⚡ 🔴 ${displayAwayName} 기록자로 계속하기` : `⚡ 🔴 ${displayAwayName} 기록자로 참여`}
                       </Text>
@@ -2300,6 +2344,7 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
         teamName={actionTeam === 'host' ? displayHostName : displayAwayName}
         opponentTeamName={actionTeam === 'host' ? displayAwayName : displayHostName}
         boardSide={actionTeam === leftTeamData.key ? 'left' : 'right'}
+        leftTeamKey={leftTeamData.key}
         courtMembers={actionRoster?.court || []}
         benchMembers={actionRoster?.bench || []}
         opponentCourtMembers={opponentRoster?.court || []}
@@ -2415,10 +2460,10 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
             <Text style={styles.modalTitle}>{isIntramural ? '🏆 팀 내전 경기 최종 마감' : '🏆 공식전 경기 최종 마감'}</Text>
             <Text style={styles.modalSub}>승 / 무 / 패 결과를 선택하여 경기를 확정하세요.</Text>
             <View style={{ gap: 10, marginVertical: 14, width: '100%' }}>
-              <TouchableOpacity style={[styles.finishChoiceBtn, { backgroundColor: '#0284C7' }]} onPress={() => handleConfirmFinishChoice(isIntramural ? displayHostName : (match?.host_team_name || displayHostName))} activeOpacity={0.85}>
+              <TouchableOpacity style={[styles.finishChoiceBtn, { backgroundColor: TEAM_COLORS.host }]} onPress={() => handleConfirmFinishChoice(isIntramural ? displayHostName : (match?.host_team_name || displayHostName))} activeOpacity={0.85}>
                 <Text style={{ color: '#FFFFFF', fontSize: 15, fontWeight: '900', textAlign: 'center' }}>🥇 🔵 {displayHostName} 승리</Text>
               </TouchableOpacity>
-              <TouchableOpacity style={[styles.finishChoiceBtn, { backgroundColor: '#BE123C' }]} onPress={() => handleConfirmFinishChoice(isIntramural ? displayAwayName : (match?.away_team_name || displayAwayName))} activeOpacity={0.85}>
+              <TouchableOpacity style={[styles.finishChoiceBtn, { backgroundColor: TEAM_COLORS.away }]} onPress={() => handleConfirmFinishChoice(isIntramural ? displayAwayName : (match?.away_team_name || displayAwayName))} activeOpacity={0.85}>
                 <Text style={{ color: '#FFFFFF', fontSize: 15, fontWeight: '900', textAlign: 'center' }}>🥇 🔴 {displayAwayName} 승리</Text>
               </TouchableOpacity>
               <TouchableOpacity style={[styles.finishChoiceBtn, { backgroundColor: '#334155' }]} onPress={() => handleConfirmFinishChoice('draw')} activeOpacity={0.85}>
@@ -2583,8 +2628,8 @@ const styles = StyleSheet.create({
   serveBadgeText: { color: '#FDE68A', fontSize: 12, fontWeight: '900', textAlign: 'center' },
   serveBadgeTextSpectator: { fontSize: 18, lineHeight: 22 },
   teamCourtHalf: { flex: 1, flexShrink: 0, minWidth: 0, position: 'relative', padding: 0, margin: 0 },
-  hostCourtBg: { backgroundColor: '#0284C7' },
-  awayCourtBg: { backgroundColor: '#BE123C' },
+  hostCourtBg: { backgroundColor: TEAM_COLORS.host },
+  awayCourtBg: { backgroundColor: TEAM_COLORS.away },
   courtTeamName: {
     position: 'absolute',
     top: 8,

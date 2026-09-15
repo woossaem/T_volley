@@ -50,15 +50,36 @@ export const IOS_SHADOW_GLOW = {
 } as const;
 
 export async function safeLockLandscape(): Promise<void> {
-  await safeNativeCall(() => ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE));
+  if (Platform.OS === 'web') return;
+  try {
+    await ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE);
+  } catch (e) {
+    console.warn('[Native Safe Guard] landscape lock bypassed:', e);
+  } finally {
+    // 락 실패가 라우터 이탈로 번지지 않게 여기서 끝낸다.
+  }
 }
 
 export async function safeLockPortrait(): Promise<void> {
-  await safeNativeCall(() => ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT));
+  if (Platform.OS === 'web') return;
+  try {
+    await ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT);
+  } catch (e) {
+    console.warn('[Native Safe Guard] portrait lock bypassed:', e);
+  } finally {
+    // 복구 실패여도 호출부 화면을 유지한다.
+  }
 }
 
 export async function safeUnlockOrientation(): Promise<void> {
-  await safeNativeCall(() => ScreenOrientation.unlockAsync());
+  if (Platform.OS === 'web') return;
+  try {
+    await ScreenOrientation.unlockAsync();
+  } catch (e) {
+    console.warn('[Native Safe Guard] orientation unlock bypassed:', e);
+  } finally {
+    // no-op
+  }
 }
 
 /** expo-haptics 네이티브 모듈 예외를 삼킨다. 호출부가 없어도 안전하다. */

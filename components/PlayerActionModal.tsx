@@ -15,6 +15,7 @@ import {
   nextTempGuestId,
 } from '../lib/roster';
 import { getSafeDisplayName, getSafeTeamName } from '../lib/utils';
+import { TEAM_COLORS } from '../constants/Colors';
 
 export interface Member {
   user_id: string;
@@ -41,6 +42,8 @@ interface Props {
   teamName: string;
   opponentTeamName?: string;
   boardSide?: 'left' | 'right';
+  /** 전광판 왼쪽 팀. 코트 반전 시 away가 왼쪽에 올 수 있다. */
+  leftTeamKey?: 'host' | 'away';
   usedGuestIds?: Array<string | null | undefined>;
   courtMembers: Member[];
   benchMembers: Member[];
@@ -81,6 +84,7 @@ export default function PlayerActionModal({
   teamName,
   opponentTeamName,
   boardSide = 'left',
+  leftTeamKey = 'host',
   usedGuestIds = [],
   courtMembers,
   benchMembers,
@@ -117,6 +121,12 @@ export default function PlayerActionModal({
   const rightKind: ScoreKind = boardSide === 'left' ? 'fault' : 'kill';
   const scoringTeamName = safeTeamName;
   const concedingTeamName = getSafeTeamName(oppName);
+  const leftTone: 'host' | 'away' = leftTeamKey === 'away' ? 'away' : 'host';
+  const rightTone: 'host' | 'away' = leftTone === 'host' ? 'away' : 'host';
+  const colorOf = (tone: 'host' | 'away') => (tone === 'host' ? TEAM_COLORS.host : TEAM_COLORS.away);
+  const leftColor = colorOf(leftTone);
+  const rightColor = colorOf(rightTone);
+  const clickedColor = isLeftTeam ? leftColor : rightColor;
 
   let title = '';
   if (mode === 'score') title = `${safeTeamName} +1점  원인 선택`;
@@ -242,7 +252,7 @@ export default function PlayerActionModal({
   };
 
   const netGuide = (
-    <View style={[styles.netGuide, isLeftTeam ? styles.netGuideA : styles.netGuideB]}>
+    <View style={[styles.netGuide, { backgroundColor: clickedColor }]}>
       <Text style={styles.netGuideText}>N{'\n'}E{'\n'}T</Text>
     </View>
   );
@@ -298,15 +308,16 @@ export default function PlayerActionModal({
               ]).map((pane, idx, list) => {
                 const isKill = pane.kind === 'kill';
                 const isLeft = pane.side === 'left';
+                const paneColor = isLeft ? leftColor : rightColor;
                 return (
                   <React.Fragment key={pane.side}>
                     <View style={styles.courtPane}>
                       <TouchableOpacity
-                        style={[styles.kindCard, isLeft ? styles.leftTeamCard : styles.rightTeamCard]}
+                        style={[styles.kindCard, { borderWidth: 1.5, borderColor: paneColor }]}
                         onPress={() => confirmKind(null, pane.kind)}
                       >
                         <View style={[styles.kindCardRow, !isLeft && styles.kindCardRowReverse]}>
-                          <View style={[styles.teamChip, isLeft ? styles.teamChipA : styles.teamChipB]}>
+                          <View style={[styles.teamChip, { backgroundColor: paneColor }]}>
                             <Text style={styles.teamChipText} numberOfLines={1}>{getSafeTeamName(pane.name)}</Text>
                           </View>
                           <View style={styles.actionCol}>
@@ -330,7 +341,7 @@ export default function PlayerActionModal({
                           layout="columns"
                           courtSide={pane.side}
                           positionEmphasis
-                          accent={isLeft ? '#0284C7' : '#E11D48'}
+                          accent={paneColor}
                           frontCount={pane.layout?.frontCount}
                           middleCount={pane.layout?.middleCount}
                           backCount={pane.layout?.backCount}
@@ -358,7 +369,7 @@ export default function PlayerActionModal({
                       hideNet
                       layout="columns"
                       courtSide={boardSide}
-                      accent={isLeftTeam ? '#0284C7' : '#E11D48'}
+                      accent={clickedColor}
                       frontCount={courtLayout?.frontCount}
                       middleCount={courtLayout?.middleCount}
                       backCount={courtLayout?.backCount}
@@ -454,8 +465,6 @@ const styles = StyleSheet.create({
   subCourtRow: { flex: 1, flexDirection: 'row', alignItems: 'stretch', minHeight: 0 },
   subCourtGrid: { flex: 1, minWidth: 0, minHeight: 0 },
   netGuide: { width: 18, borderRadius: 4, alignItems: 'center', justifyContent: 'center', marginHorizontal: 3, flexShrink: 0 },
-  netGuideA: { backgroundColor: '#0284C7' },
-  netGuideB: { backgroundColor: '#E11D48' },
   netGuideText: { color: '#F8FAFC', fontSize: 9, lineHeight: 11, fontWeight: '800', textAlign: 'center', includeFontPadding: false },
   title: { fontSize: 18, fontWeight: '700', color: '#F8FAFC', marginBottom: 10, textAlign: 'center' },
   titleSub: { fontSize: 18, marginBottom: 0, textAlign: 'left', paddingRight: 8, flex: 1, fontWeight: '700', color: '#F8FAFC' },
@@ -463,13 +472,9 @@ const styles = StyleSheet.create({
   courtPane: { flex: 1, minWidth: 0 },
   verticalNet: { width: 6, alignSelf: 'stretch', backgroundColor: '#3B82F6', borderRadius: 3, marginHorizontal: 6, marginTop: 52 },
   kindCard: { backgroundColor: '#0F172A', borderRadius: 10, paddingVertical: 6, paddingHorizontal: 8, marginBottom: 4 },
-  leftTeamCard: { borderWidth: 1.5, borderColor: '#0284C7' },
-  rightTeamCard: { borderWidth: 1.5, borderColor: '#E11D48' },
   kindCardRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 },
   kindCardRowReverse: { flexDirection: 'row-reverse' },
   teamChip: { borderRadius: 999, paddingHorizontal: 10, paddingVertical: 5, maxWidth: '52%' },
-  teamChipA: { backgroundColor: '#0284C7' },
-  teamChipB: { backgroundColor: '#E11D48' },
   teamChipText: { color: '#FFFFFF', fontSize: 12, fontWeight: '800' },
   actionCol: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   actionLabel: { color: '#F8FAFC', fontSize: 12, fontWeight: '800', textAlign: 'center' },

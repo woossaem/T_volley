@@ -142,6 +142,38 @@ async function toggleDocumentFullscreen(): Promise<boolean> {
   return false;
 }
 
+type WakeLockSentinelLike = {
+  released?: boolean;
+  release: () => Promise<void>;
+};
+
+type WakeLockNavigator = Navigator & {
+  wakeLock?: {
+    request: (type: 'screen') => Promise<WakeLockSentinelLike>;
+  };
+};
+
+async function requestScreenWakeLock(): Promise<WakeLockSentinelLike | null> {
+  try {
+    if (!isWebDomAvailable()) return null;
+    const nav = window.navigator as WakeLockNavigator;
+    if (!nav.wakeLock || typeof nav.wakeLock.request !== 'function') return null;
+    return await nav.wakeLock.request('screen');
+  } catch {
+    // iOS Safari / WebKit 는 Screen Wake Lock 미지원
+    return null;
+  }
+}
+
+async function releaseScreenWakeLock(sentinel: WakeLockSentinelLike | null | undefined): Promise<void> {
+  try {
+    if (!sentinel || sentinel.released) return;
+    await sentinel.release();
+  } catch {
+    // 미지원·이미 해제된 경우
+  }
+}
+
 function PlgPromoBanner() {
   const router = useRouter();
   const { width } = useWindowDimensions();
@@ -332,6 +364,42 @@ export default function LiveScoreboardScreen() {
       }
     };
   }, []);
+
+  useEffect(() => {
+    if (!isWebDomAvailable()) return;
+    let cancelled = false;
+    let sentinel: WakeLockSentinelLike | null = null;
+
+    const release = async () => {
+      const current = sentinel;
+      sentinel = null;
+      await releaseScreenWakeLock(current);
+    };
+
+    const request = async () => {
+      try {
+        const next = await requestScreenWakeLock();
+        if (cancelled) {
+          await releaseScreenWakeLock(next);
+          return;
+        }
+        sentinel = next;
+      } catch {
+        // iOS WebKit 미지원 환경 예외 흡수
+      }
+    };
+
+    if (isFullscreen) {
+      void request();
+    } else {
+      void release();
+    }
+
+    return () => {
+      cancelled = true;
+      void release();
+    };
+  }, [isFullscreen]);
 
   if (loading) {
     return (
