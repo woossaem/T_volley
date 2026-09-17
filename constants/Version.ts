@@ -1,8 +1,7 @@
 import { getCurrentSeasonInfo } from '../lib/season';
 
 /**
- * 패치노트 최신 버전. app.json(스토어 빌드)과 분리되어 있어
- * Expo 소프트 업데이트만으로 스플래시·홈·로그인 표기가 함께 바뀝니다.
+ * 패치노트·스플래시 표기. 스토어 빌드의 사용자 노출 버전은 app.json `expo.version`과 맞춥니다.
  */
 export const RELEASE_VERSION = '2.2.0';
 
