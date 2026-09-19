@@ -1,0 +1,2 @@
+Get-Content app.json | Select-String "version"
+git status
