@@ -1,5 +1,7 @@
 {
+  "buildCommand": "npx expo export -p web",
   "outputDirectory": "dist",
+  "framework": "expo",
   "rewrites": [
     {
       "source": "/live/:id",

@@ -38,6 +38,7 @@ import { isGuestBindPending, isSoloGuestMatch } from '../lib/guestMatch';
 import { asArray, safeInset, safeLockPortrait, safeStyleNumber } from '../lib/nativeSafe';
 import { MatchEvent } from '../components/ScoreTimeline';
 import ScoreTimeline from '../components/ScoreTimeline';
+import { overlayActionCodes, readActionCode } from '../lib/timelineBadge';
 import PlayerActionModal, { Member, ScoreKind, type LineupApplyPayload } from '../components/PlayerActionModal';
 import MatchPostgameReportModal from '../components/MatchPostgameReportModal';
 import FormationModal from '../components/FormationModal';
@@ -126,6 +127,8 @@ function mapScoreLogToEvent(log: any, matchId: string, fallbackId: string): Matc
     host_score: Number(log?.host_score) || 0,
     away_score: Number(log?.away_score) || 0,
     is_canceled: !!log?.is_canceled,
+    created_at: log?.created_at ?? null,
+    action_code: readActionCode(log) || null,
   };
 }
 
@@ -148,6 +151,7 @@ function normalizeMatchEvent(row: any, fallbackId = ''): MatchEvent | null {
     away_score: Number(row.away_score) || 0,
     is_canceled: !!row.is_canceled,
     created_at: row.created_at ?? null,
+    action_code: readActionCode(row) || null,
     ...(row.set_number != null ? { set_number: Number(row.set_number) } : {}),
   } as MatchEvent;
 }
@@ -160,24 +164,23 @@ function rowsToMatchEvents(rows: any[], matchId: string): MatchEvent[] {
 
 /** 경기 리포트와 동일: match_events 원본 → 없으면 matches.score_logs */
 async function fetchMatchTimelineEvents(matchId: string): Promise<MatchEvent[]> {
-  const ordered = await supabase
-    .from('match_events')
-    .select('*')
-    .eq('match_id', matchId)
-    .order('created_at', { ascending: true });
+  const [ordered, matchRow] = await Promise.all([
+    supabase
+      .from('match_events')
+      .select('*')
+      .eq('match_id', matchId)
+      .order('created_at', { ascending: true }),
+    supabase.from('matches').select('score_logs').eq('id', matchId).maybeSingle(),
+  ]);
+  const logs = asArray<any>((matchRow.data as any)?.score_logs);
   let rows = !ordered.error ? asArray<any>(ordered.data) : [];
   if (ordered.error) {
     const unordered = await supabase.from('match_events').select('*').eq('match_id', matchId);
     if (!unordered.error) rows = asArray<any>(unordered.data);
   }
-  const fromTable = rowsToMatchEvents(rows, matchId);
+  const fromTable = overlayActionCodes(rowsToMatchEvents(rows, matchId), logs);
   if (fromTable.length > 0) return fromTable;
-  const { data: matchRow } = await supabase
-    .from('matches')
-    .select('score_logs')
-    .eq('id', matchId)
-    .maybeSingle();
-  return mergeEventsWithScoreLogs([], asArray((matchRow as any)?.score_logs), matchId, false);
+  return mergeEventsWithScoreLogs([], logs, matchId, false);
 }
 
 function mergeEventsWithScoreLogs(tableEvents: MatchEvent[], scoreLogs: any[], matchId: string, tableOk = false): MatchEvent[] {
@@ -454,6 +457,8 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
         .maybeSingle();
       if (!error) {
         const persisted = normalizeMatchEvent(data, tempEvent.id) || tempEvent;
+        if (!persisted.action_code && tempEvent.action_code) persisted.action_code = tempEvent.action_code;
+        if (!persisted.created_at && tempEvent.created_at) persisted.created_at = tempEvent.created_at;
         setEvents((prev) => {
           const next = prev.map((event) => event.id === tempEvent.id ? persisted : event);
           eventsRef.current = next;
@@ -982,12 +987,14 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
     kind: ScoreKind,
     player: Member | null,
     positionSlot: number | null,
+    actionCode?: string | null,
   ) => {
     const savedSlot = positionSlot ?? null;
     const scores = scoresRef.current;
     const newHostScore = scoringTeam === 'host' ? scores.host + 1 : scores.host;
     const newAwayScore = scoringTeam === 'away' ? scores.away + 1 : scores.away;
     const eventType = kind === 'fault' ? 'fault' : 'score';
+    const savedAction = actionCode || (kind === 'fault' ? 'FAULT' : 'SCORE');
     const keepId = player?.user_id && (isRegisteredUserId(player.user_id) || isTempSlotId(player.user_id)) ? player.user_id : null;
     const savedPlayerId = keepId;
     const savedPlayerName = isRegisteredUserId(keepId) ? getSafeDisplayName(player) : displaySlotPlayerName(keepId, getSafeDisplayName(player));
@@ -1005,7 +1012,9 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
       position_slot: savedSlot,
       host_score: newHostScore,
       away_score: newAwayScore,
-      is_canceled: false
+      is_canceled: false,
+      action_code: savedAction,
+      created_at: new Date().toISOString(),
     };
     setEvents(prev => {
       const next = [...prev, tempEvent];
@@ -1025,6 +1034,7 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
       host_score: newHostScore,
       away_score: newAwayScore,
       is_canceled: false,
+      action_code: savedAction,
     };
     const persistedEvent = await persistOptimisticEvent(tempEvent, scoreLog);
     if (matchId) await appendMatchScoreLog(matchId, {
@@ -2333,6 +2343,8 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
         host_score: scores.host,
         away_score: scores.away,
         is_canceled: false,
+        action_code: parsed.actionCode,
+        created_at: new Date().toISOString(),
       };
       setEvents((prev) => {
         const next = [...prev, tempEvent];
@@ -2351,6 +2363,7 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
         host_score: scores.host,
         away_score: scores.away,
         is_canceled: false,
+        ...(parsed.actionCode ? { action_code: parsed.actionCode } : {}),
       };
       const persisted = await persistOptimisticEvent(tempEvent, statLog);
       if (matchId) await appendMatchScoreLog(matchId, { ...statLog, id: persisted.id });
@@ -2364,7 +2377,7 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
         ? (slotTeam === 'host' ? 'away' : 'host')
         : slotTeam;
       if (!canSide(scoringTeam)) return null;
-      const persisted = await persistRallyRef.current(scoringTeam, scoreKind, player, parsed.positionSlot);
+      const persisted = await persistRallyRef.current(scoringTeam, scoreKind, player, parsed.positionSlot, parsed.actionCode);
       if (persisted?.id) pushUndo({ kind: 'event', eventId: persisted.id });
       return formatVoiceConfirm(parsed);
     }
@@ -2801,6 +2814,9 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
                 </TouchableOpacity>
               ) : null}
             </ScrollView>
+            {Platform.OS === 'web' && myRole === 'spectator' ? (
+              <Text style={styles.webHeaderScore}>[ {currentScores.host} : {currentScores.away} ]</Text>
+            ) : null}
           </View>
 
           <View style={styles.headerSlimRight}>
@@ -3241,6 +3257,7 @@ const styles = StyleSheet.create({
   setNavPillHit: { paddingVertical: 2, paddingRight: 2 },
   setNavPillText: { fontSize: 10.5, lineHeight: 14, fontWeight: '700', color: '#94A3B8' },
   setNavPillTextActive: { color: '#FFFFFF', fontWeight: '900' },
+  webHeaderScore: { color: '#FFFFFF', fontSize: 13, lineHeight: 16, fontWeight: '900', marginLeft: 8, flexShrink: 0 },
   setNavClose: { width: 16, height: 16, borderRadius: 8, alignItems: 'center', justifyContent: 'center', marginLeft: 2 },
   setNavCloseText: { color: '#FCA5A5', fontSize: 13, fontWeight: '900', lineHeight: 14 },
   recorderLine: { fontSize: 11, color: '#E2E8F0', fontWeight: '800', textAlign: 'left', marginRight: 2, flexShrink: 1, maxWidth: 140 },
@@ -3328,10 +3345,10 @@ const styles = StyleSheet.create({
   },
   editHintText: { fontSize: 11, color: '#FFFFFF', fontWeight: '800', marginTop: 4, opacity: 0.8 },
   spectatorHintText: { fontSize: 11, color: '#FFFFFF', fontWeight: '700', marginTop: 4, opacity: 0.8 },
-  footerStack: { flexShrink: 0, minHeight: 102, backgroundColor: '#0F172A' },
+  footerStack: { flexShrink: 0, minHeight: 116, backgroundColor: '#0F172A', overflow: 'visible', zIndex: 30 },
   momentumRow: { height: 16, minHeight: 16, flexShrink: 0, backgroundColor: '#0F172A', justifyContent: 'center' },
-  bottomControlBar: { height: 88, flexShrink: 0, flexDirection: 'row', paddingVertical: 0, backgroundColor: '#0F172A', borderTopWidth: 1, borderTopColor: '#1E293B', alignItems: 'center' },
-  timelineChipRow: { flex: 1, height: 88, minWidth: 0, overflow: 'hidden' },
+  bottomControlBar: { height: 100, flexShrink: 0, flexDirection: 'row', paddingVertical: 0, backgroundColor: '#0F172A', borderTopWidth: 1, borderTopColor: '#1E293B', alignItems: 'center', overflow: 'visible', zIndex: 5 },
+  timelineChipRow: { flex: 1, height: 100, minWidth: 0, overflow: 'visible', zIndex: 6 },
   actionButtonsArea: { flexDirection: 'row', gap: 4, flexShrink: 0, flexGrow: 0, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 6, paddingLeft: 8, borderLeftWidth: 1, borderLeftColor: '#1E293B', backgroundColor: '#0F172A', zIndex: 4 },
   undoBtn: { backgroundColor: '#334155', paddingHorizontal: 8, paddingVertical: 6, borderRadius: 6, alignItems: 'center', borderWidth: 1, borderColor: '#475569', flexShrink: 0 },
   undoBtnText: { color: '#F8FAFC', fontSize: 11, fontWeight: '800' },

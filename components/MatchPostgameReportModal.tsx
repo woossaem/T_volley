@@ -21,6 +21,7 @@ import {
 } from '../lib/roster';
 import { isPersonalFault, isPersonalKill } from '../lib/playerStats';
 import { voiceStatTypeOf } from '../lib/voiceParser';
+import { overlayActionCodes, readActionCode } from '../lib/timelineBadge';
 import { getSafeTeamName } from '../lib/utils';
 import { formatPlayerDisplayName, isAwardEligiblePlayer } from '../lib/tempPlayer';
 import {
@@ -320,15 +321,19 @@ export default function MatchPostgameReportModal({
         .select('*')
         .eq('match_id', match?.id)
         .order('created_at', { ascending: true });
+      const logs = Array.isArray(match?.score_logs) ? match.score_logs : [];
       if (data && data.length > 0) {
-        setEvents(data);
+        setEvents(overlayActionCodes(data.map((row: any) => ({
+          ...row,
+          action_code: readActionCode(row) || row?.action_code || null,
+        })), logs));
       } else {
-        const logs = Array.isArray(match?.score_logs) ? match.score_logs : [];
         setEvents(logs.map((log: any, idx: number) => ({
           id: String(log?.id || `log-${idx}`),
           match_id: match?.id,
           set_index: Number(log?.set_index ?? ((Number(log?.set_number) || 1) - 1)),
           event_type: log?.event_type,
+          action_code: readActionCode(log) || null,
           team_type: log?.team_type,
           player_id: log?.player_id,
           player_name: formatPlayerDisplayName(log?.player_id, log?.player_name),
@@ -336,6 +341,7 @@ export default function MatchPostgameReportModal({
           host_score: Number(log?.host_score) || 0,
           away_score: Number(log?.away_score) || 0,
           is_canceled: !!log?.is_canceled,
+          created_at: log?.created_at ?? null,
         })));
       }
     } catch (e) {
