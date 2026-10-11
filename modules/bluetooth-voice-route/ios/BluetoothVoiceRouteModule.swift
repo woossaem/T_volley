@@ -1,3 +1,4 @@
+import AudioToolbox
 import AVFoundation
 import ExpoModulesCore
 
@@ -23,7 +24,9 @@ public class BluetoothVoiceRouteModule: Module {
     }
 
     Function("playStartCue") {
+      AudioServicesPlaySystemSound(1113)
     }
+    .runOnQueue(.main)
 
     Function("playFailureCue") {
     }

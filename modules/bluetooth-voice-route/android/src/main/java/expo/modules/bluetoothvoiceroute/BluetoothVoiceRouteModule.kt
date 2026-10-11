@@ -83,7 +83,7 @@ class BluetoothVoiceRouteModule : Module(), TextToSpeech.OnInitListener {
     }
 
     Function("playStartCue") {
-      playTone(android.media.ToneGenerator.TONE_PROP_BEEP, 120)
+      playTone(android.media.ToneGenerator.TONE_PROP_BEEP, 100)
       null
     }
 

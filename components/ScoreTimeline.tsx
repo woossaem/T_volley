@@ -7,7 +7,7 @@ export interface MatchEvent {
   id: string;
   match_id?: string;
   set_index: number;
-  event_type: 'score' | 'sub' | 'manual' | 'fault' | 'dig' | 'block' | 'ace' | 'receive' | 'assist';
+  event_type: 'score' | 'sub' | 'manual' | 'fault' | 'dig' | 'block' | 'ace' | 'receive' | 'assist' | 'effective_block' | 'attack' | 'feint' | 'quick_attack' | 'back_attack' | 'cover' | 'process';
   team_type: 'host' | 'away';
   player_id?: string | null;
   player_name?: string | null;

@@ -1,4 +1,5 @@
 import { PermissionsAndroid, Platform, ToastAndroid } from 'react-native';
+import { VOLLEYBALL_SPEECH_HINTS } from './voiceParser';
 
 export const HEADSET_BUTTON_HINT = '🎧 이어폰 버튼 신호 수신! 음성 인식 시작...';
 
@@ -165,8 +166,6 @@ export async function triggerVoiceRecognition(handlers: VoiceTriggerHandlers): P
   if (Platform.OS === 'android') {
     ToastAndroid.show(HEADSET_BUTTON_HINT, ToastAndroid.SHORT);
   }
-  await new Promise((resolve) => setTimeout(resolve, 80));
-  playVoiceStartCue();
   const access = await ensureAndroidVoicePermissions();
   if (!access.microphone) {
     handlers.onStatus?.(null);
@@ -179,7 +178,7 @@ export async function triggerVoiceRecognition(handlers: VoiceTriggerHandlers): P
     () => {
       handlers.onStatus?.(null);
     },
-    { listenMs: 6000 },
+    { listenMs: 6000, speechHints: VOLLEYBALL_SPEECH_HINTS },
   );
 }
 

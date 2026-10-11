@@ -1,6 +1,7 @@
 import { Platform } from 'react-native';
-import { ensureAndroidVoicePermissions, prepareBluetoothVoiceRoute, releaseBluetoothVoiceRoute, speakInVoiceChannel } from './bluetoothVoiceRoute';
+import { ensureAndroidVoicePermissions, playVoiceStartCue, prepareBluetoothVoiceRoute, releaseBluetoothVoiceRoute, speakInVoiceChannel } from './bluetoothVoiceRoute';
 import { resumeHeadsetSession } from './headsetRemote';
+import { parseVoiceCommand, VOLLEYBALL_SPEECH_HINTS } from './voiceParser';
 import { speakExpoKorean } from './voiceSpeak';
 
 const IOS_VOICE_CATEGORY = {
@@ -172,7 +173,7 @@ export async function releaseVoiceEngine(): Promise<void> {
 export async function startListening(
   onFinal: (transcript: string) => void | Promise<void | string | null>,
   onError?: (message: string) => void,
-  options?: { listenMs?: number },
+  options?: { listenMs?: number; speechHints?: readonly string[] },
 ): Promise<() => void> {
   if (Platform.OS === 'web') {
     onError?.('웹에서는 이어폰 음성 기록을 지원하지 않습니다.');
@@ -254,15 +255,30 @@ export async function startListening(
 
   const succeed = async (values: string[]) => {
     if (!alive() || settled || audioState !== 'LISTENING') return;
-    const text = String(values[0] || '').trim();
+    const candidates = values.map((value) => String(value || '').trim()).filter(Boolean);
+    let text = '';
+    for (const candidate of candidates) {
+      try {
+        const parsed = parseVoiceCommand(candidate);
+        if (parsed.ok) {
+          text = candidate;
+          break;
+        }
+      } catch (e) {
+        console.warn('[Voice] parse candidate', e);
+      }
+    }
     if (!text) {
+      try {
+        console.log('[VoiceLog] ⚠️ candidates rejected:', candidates);
+      } catch {}
       await fail();
       return;
     }
     if (!enterState('PROCESSING')) return;
     settled = true;
     try {
-      console.log('[VoiceLog] ✅ Recognized text:', values);
+      console.log('[VoiceLog] ✅ Recognized text:', candidates, '→', text);
     } catch {}
     try {
       await stopRecording();
@@ -287,6 +303,7 @@ export async function startListening(
       }),
       ExpoSpeechRecognitionModule.addListener('audiostart', () => {
         console.log('[VoiceLog] 🎙️ [AUDIO_START] 마이크 캡처 시작');
+        playVoiceStartCue();
       }),
       ExpoSpeechRecognitionModule.addListener('speechstart', () => {
         console.log('[VoiceLog] 🗣️ [SPEECH_START] 사용자 음성 감지됨');
@@ -297,9 +314,14 @@ export async function startListening(
       ExpoSpeechRecognitionModule.addListener('result', (event: any) => {
         try {
           if (!alive() || settled) return;
-          const values = (Array.isArray(event?.results) ? event.results : [])
-            .map((row: any) => String(row?.transcript || '').trim())
-            .filter(Boolean);
+          const seen = new Set<string>();
+          const values: string[] = [];
+          for (const row of Array.isArray(event?.results) ? event.results : []) {
+            const text = String(row?.transcript || '').trim();
+            if (!text || seen.has(text)) continue;
+            seen.add(text);
+            values.push(text);
+          }
           if (event?.isFinal === false) return;
           if (values.length === 0) return;
           void succeed(values);
@@ -360,6 +382,9 @@ export async function startListening(
 
   try {
     const listenMs = options?.listenMs ?? LISTEN_TIMEOUT_MS;
+    const speechHints = options?.speechHints?.length
+      ? [...options.speechHints]
+      : [...VOLLEYBALL_SPEECH_HINTS];
     console.log('[Voice] Voice.start ko-KR (listenMs:', listenMs, ')');
     const started = ExpoSpeechRecognitionModule.start({
       lang: 'ko-KR',
@@ -369,13 +394,10 @@ export async function startListening(
       maxAlternatives: 3,
       volumeChangeEventOptions: { enabled: true }, // ★ 음량 이벤트 활성화
       iosCategory: IOS_VOICE_CATEGORY,
-      contextualStrings: [
-        'A팀', 'B팀', '에이팀', '비팀',
-        '득점', '범실', '디그', '블록', '서브에이스', '리시브', '토스', '어시스트',
-        '앞차', '백차', '세터', '레프트', '라이트', '센터',
-        '레프트백', '레백', '센터백', '센백', '라이트백', '라백',
-        '선수교체', '코트 반전', '세트 마감', '경기 종료', '취소',
-      ],
+      // Expo가 Android EXTRA_BIASING_STRINGS / iOS contextualStrings 로 넘긴다.
+      contextualStrings: speechHints,
+      phrases: speechHints,
+      speechContexts: [{ phrases: speechHints, boost: 20 }],
     });
     if (started && typeof (started as Promise<void>).then === 'function') await started;
     if (!alive()) return () => {};
