@@ -1,7 +1,6 @@
 {
   "buildCommand": "npx expo export -p web",
   "outputDirectory": "dist",
-  "framework": "expo",
   "rewrites": [
     {
       "source": "/live/:id",
@@ -9,17 +8,14 @@
         {
           "type": "header",
           "key": "user-agent",
-          "value": "(?i).*(kakaotalk-scrap|facebookexternalhit|twitterbot|slackbot|discordbot|whatsapp|telegrambot|kakaostory|linkedinbot|embedly).*"
+          "value": "(?i).*kakaotalk.*|.*facebookexternalhit.*|.*twitterbot.*|.*slackbot.*"
         }
       ],
-      "missing": [
-        {
-          "type": "query",
-          "key": "noscrape"
-        }
-      ],
-      "destination": "/api/og-live?id=:id"
+      "destination": "/api/og?id=:id"
     },
-    { "source": "/(.*)", "destination": "/index.html" }
+    {
+      "source": "/(.*)",
+      "destination": "/index.html"
+    }
   ]
 }
