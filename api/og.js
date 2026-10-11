@@ -10,10 +10,37 @@ function escapeHtml(value) {
     .replace(/"/g, '&quot;');
 }
 
+function teamLabel(value, fallback) {
+  if (value == null || value === '') return fallback;
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed || trimmed === 'null' || trimmed === 'undefined') return fallback;
+    if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+      try {
+        return teamLabel(JSON.parse(trimmed), fallback);
+      } catch {
+        return trimmed;
+      }
+    }
+    return trimmed;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const label = teamLabel(item, '');
+      if (label) return label;
+    }
+    return fallback;
+  }
+  if (typeof value === 'object') {
+    return teamLabel(value.name || value.team_name || value.formatted || value.title || value.label, fallback);
+  }
+  return fallback;
+}
+
 function intramuralNames(description) {
   const matched = String(description || '').match(/^\[(.*?)\ VS (.*?)\]/);
   if (!matched) return null;
-  return { host: matched[1] || 'A팀', away: matched[2] || 'B팀' };
+  return { host: teamLabel(matched[1], 'A팀'), away: teamLabel(matched[2], 'B팀') };
 }
 
 function formatMatchDate(match) {
@@ -36,9 +63,9 @@ async function fetchMatch(id) {
   };
   const load = async (query) => {
     const response = await fetch(`${SUPABASE_URL}/rest/v1/matches?${query}&select=*&limit=1`, { headers });
-    if (!response.ok) return null;
-    const rows = await response.json();
-    return Array.isArray(rows) ? rows[0] || null : null;
+    const rows = await response.json().catch(() => null);
+    if (!response.ok || !Array.isArray(rows)) return null;
+    return rows[0] || null;
   };
 
   const byId = await load(`id=eq.${encodeURIComponent(id)}`);
@@ -50,7 +77,8 @@ async function fetchMatch(id) {
 }
 
 module.exports = async (req, res) => {
-  const id = String(req.query.id || '').trim();
+  const rawId = req.query?.id;
+  const id = String(Array.isArray(rawId) ? rawId[0] : rawId || '').trim();
   let teamA = 'A팀';
   let teamB = 'B팀';
   let matchDate = '';
@@ -60,8 +88,8 @@ module.exports = async (req, res) => {
       const match = await fetchMatch(id);
       if (match) {
         const intra = match.status === 'intramural' ? intramuralNames(match.description) : null;
-        teamA = intra?.host || match.host_team_name || teamA;
-        teamB = intra?.away || match.away_team_name || teamB;
+        teamA = teamLabel(intra?.host || match.host_team_name, teamA);
+        teamB = teamLabel(intra?.away || match.away_team_name, teamB);
         matchDate = formatMatchDate(match);
       }
     } catch {

@@ -2783,6 +2783,9 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
               {visibleSets.map((setRow, mapIdx) => {
                 const idx = mapIdx;
                 const isCurrent = idx === currentSetIndex;
+                const setHost = isCurrent ? currentScores.host : Number(setRow.hostScore) || 0;
+                const setAway = isCurrent ? currentScores.away : Number(setRow.awayScore) || 0;
+                const setLabel = Platform.OS === 'web' ? `${idx + 1}세트 (${setHost}:${setAway})` : `${idx + 1}세트`;
                 return (
                   <View key={`set-tab-${idx}`} style={[styles.setNavPill, isCurrent && styles.setNavPillActive]}>
                     <TouchableOpacity
@@ -2793,7 +2796,7 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
                       hitSlop={8}
                     >
                       <Text style={[styles.setNavPillText, isCurrent && styles.setNavPillTextActive]}>
-                        {idx + 1}세트
+                        {setLabel}
                       </Text>
                     </TouchableOpacity>
                     {myRole !== 'spectator' ? (
@@ -2814,9 +2817,6 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
                 </TouchableOpacity>
               ) : null}
             </ScrollView>
-            {Platform.OS === 'web' && myRole === 'spectator' ? (
-              <Text style={styles.webHeaderScore}>[ {currentScores.host} : {currentScores.away} ]</Text>
-            ) : null}
           </View>
 
           <View style={styles.headerSlimRight}>
@@ -3257,7 +3257,6 @@ const styles = StyleSheet.create({
   setNavPillHit: { paddingVertical: 2, paddingRight: 2 },
   setNavPillText: { fontSize: 10.5, lineHeight: 14, fontWeight: '700', color: '#94A3B8' },
   setNavPillTextActive: { color: '#FFFFFF', fontWeight: '900' },
-  webHeaderScore: { color: '#FFFFFF', fontSize: 13, lineHeight: 16, fontWeight: '900', marginLeft: 8, flexShrink: 0 },
   setNavClose: { width: 16, height: 16, borderRadius: 8, alignItems: 'center', justifyContent: 'center', marginLeft: 2 },
   setNavCloseText: { color: '#FCA5A5', fontSize: 13, fontWeight: '900', lineHeight: 14 },
   recorderLine: { fontSize: 11, color: '#E2E8F0', fontWeight: '800', textAlign: 'left', marginRight: 2, flexShrink: 1, maxWidth: 140 },

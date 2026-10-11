@@ -8,7 +8,7 @@
         {
           "type": "header",
           "key": "user-agent",
-          "value": "(?i).*kakaotalk.*|.*facebookexternalhit.*|.*twitterbot.*|.*slackbot.*"
+          "value": ".*(kakaotalk|Kakaotalk|KAKAOTALK|facebookexternalhit|twitterbot|slackbot).*"
         }
       ],
       "destination": "/api/og?id=:id"
