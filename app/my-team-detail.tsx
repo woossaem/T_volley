@@ -11,17 +11,21 @@ import {
   Modal,
   TextInput,
   Linking,
+  Switch,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
 import { Colors } from '../constants/Colors';
-import { parseRosterUserIds, safeIncludes } from '../lib/roster';
+import { isRankingEligiblePlayer, parseRosterUserIds, safeIncludes } from '../lib/roster';
 import { getSafeDisplayName, getSafeTeamName } from '../lib/utils';
+import { internalProfileName } from '../lib/profilePrivacy';
+import MiniAvatar from '../components/MiniAvatar';
 import { isOfficialMatch } from '../lib/officialMatch';
 import { addMatchPlayerStats, emptyPlayerCareerStats } from '../lib/playerStats';
 import { hydrateMatchesWithSetScores } from '../lib/matchSets';
+import { claimVacantTeamLeadership } from '../lib/schoolTeam';
 
 interface MyTeam {
   id: string;
@@ -32,6 +36,7 @@ interface MyTeam {
   youtube_channel_url?: string | null;
   is_primary?: boolean;
   leader_id?: string | null;
+  is_public?: boolean;
   status?: string;
   deleted_at?: string | null;
 }
@@ -55,6 +60,8 @@ interface TeamStats {
 interface MemberIntraStat {
   userId: string;
   fullName: string;
+  avatarUrl?: string | null;
+  avatarIcon?: string | null;
   schoolName: string | null;
   total: number;
   wins: number;
@@ -198,6 +205,7 @@ export default function MyTeamDetailScreen() {
             youtube_channel_url: t.youtube_channel_url || null,
             is_primary: tm?.is_primary || false,
             leader_id: t.leader_id || null,
+            is_public: t.is_public !== false,
             status: t.status || 'active',
             deleted_at: t.deleted_at || null,
           };
@@ -237,8 +245,8 @@ export default function MyTeamDetailScreen() {
 
       const memList: TeamMember[] = (memData || []).map((item: any) => {
         const p = item.profiles;
-        if (!p || !p.id) return null;
-        return { ...p, full_name: getSafeDisplayName(p) };
+        if (!p || !isRankingEligiblePlayer(p.id, { isGuest: p.is_guest, name: p.full_name })) return null;
+        return { ...p, full_name: p.full_name || getSafeDisplayName(p) };
       }).filter((m: any) => m && m.id);
 
       const currentLeaderId = selectedTeam?.leader_id;
@@ -259,13 +267,24 @@ export default function MyTeamDetailScreen() {
 
       const rankMap: { [key: string]: MemberIntraStat } = {};
       memList.forEach(m => {
-        rankMap[m.id] = { userId: m.id, fullName: getSafeDisplayName(m), schoolName: m.school_name, total: 0, wins: 0, draws: 0, losses: 0, winRate: 0 };
+        rankMap[m.id] = {
+          userId: m.id,
+          fullName: internalProfileName(m),
+          avatarUrl: (m as any).avatar_url || null,
+          avatarIcon: (m as any).avatar_icon || '🏐',
+          schoolName: m.school_name,
+          total: 0,
+          wins: 0,
+          draws: 0,
+          losses: 0,
+          winRate: 0,
+        };
       });
 
       memList.forEach(mUser => {
         const career = emptyPlayerCareerStats();
         intraMatches.forEach((m: any) => {
-          addMatchPlayerStats(career, mUser.id, m, m.match_events || m.score_logs || [], getSafeDisplayName(mUser));
+          addMatchPlayerStats(career, mUser.id, m, m.match_events || m.score_logs || [], mUser.full_name);
         });
         rankMap[mUser.id].total = career.setsPlayed;
         rankMap[mUser.id].wins = career.setWins;
@@ -427,14 +446,32 @@ export default function MyTeamDetailScreen() {
     setLeaderModalVisible(true);
   };
 
+  const askClaimLeadership = () => {
+    if (!selectedTeam || !userId) return;
+    if (selectedTeam.leader_id) {
+      Alert.alert('등록 불가', '이미 팀 대표가 있습니다. 대표만 팀 정보를 바꿀 수 있습니다.');
+      return;
+    }
+    Alert.alert(
+      '팀 대표 등록',
+      `'${getSafeTeamName(selectedTeam)}' 팀 대표(운영자)로 등록하시겠습니까?\n확인한 뒤에만 대표 권한이 부여됩니다.`,
+      [
+        { text: '취소', style: 'cancel' },
+        { text: '등록하기', onPress: () => { void confirmClaimLeadership(); } },
+      ],
+    );
+  };
+
   const confirmClaimLeadership = async () => {
     if (!selectedTeam || !userId) return;
+    if (selectedTeam.leader_id) {
+      Alert.alert('등록 불가', '이미 팀 대표가 있습니다.');
+      return;
+    }
 
     setActionLoading(true);
     try {
-      await supabase.from('teams').update({
-        leader_id: userId,
-      }).eq('id', selectedTeam.id);
+      await claimVacantTeamLeadership(selectedTeam.id);
 
       const { data: teamMems } = await supabase.from('team_members').select('user_id').eq('team_id', selectedTeam.id).eq('is_active', true);
       if (teamMems && teamMems.length > 0) {
@@ -739,9 +776,11 @@ export default function MyTeamDetailScreen() {
                   <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
                     <Text style={styles.regionBadge}>{getTeamIcon(selectedTeam.team_type)} {selectedTeam.team_type === 'club' ? '동호회 팀' : '학교 팀'} • {selectedTeam.region}</Text>
                     
-                    <TouchableOpacity style={styles.editRegionBtn} onPress={() => setRegionModalVisible(true)}>
-                      <Text style={styles.editRegionBtnText}>📍 지역 변경</Text>
-                    </TouchableOpacity>
+                    {isCurrentLeader ? (
+                      <TouchableOpacity style={styles.editRegionBtn} onPress={() => setRegionModalVisible(true)}>
+                        <Text style={styles.editRegionBtnText}>📍 지역 변경</Text>
+                      </TouchableOpacity>
+                    ) : null}
 
                     {!selectedTeam.is_primary && !isDormant && (
                       <TouchableOpacity style={styles.setPrimaryBtn} onPress={() => handleSetPrimaryTeam(selectedTeam.id)}>
@@ -770,10 +809,19 @@ export default function MyTeamDetailScreen() {
                         })()} 선생님`
                       : '대표 공석'}
                   </Text>
+                  {!selectedTeam.leader_id ? (
+                    <Text style={styles.leaderBarHint}>대표가 없으면 팀 정보 변경과 기록 공개 설정은 잠겨 있습니다.</Text>
+                  ) : null}
                 </View>
-                <TouchableOpacity style={styles.claimLeaderBtn} onPress={openLeaderManagementModal}>
-                  <Text style={styles.claimLeaderBtnText}>🚩 팀 대표/회장 변경·등록 ▾</Text>
-                </TouchableOpacity>
+                {!selectedTeam.leader_id ? (
+                  <TouchableOpacity style={styles.claimLeaderBtn} onPress={askClaimLeadership} disabled={actionLoading}>
+                    <Text style={styles.claimLeaderBtnText}>내가 팀 대표(운영자)로 등록하기</Text>
+                  </TouchableOpacity>
+                ) : isCurrentLeader ? (
+                  <TouchableOpacity style={styles.claimLeaderBtn} onPress={openLeaderManagementModal}>
+                    <Text style={styles.claimLeaderBtnText}>🚩 팀 대표/회장 변경 ▾</Text>
+                  </TouchableOpacity>
+                ) : null}
               </View>
 
               {selectedTeam.youtube_channel_url ? (
@@ -802,24 +850,26 @@ export default function MyTeamDetailScreen() {
                       </Text>
                     </View>
 
-                    <TouchableOpacity 
-                      style={[styles.changePinBtn, !selectedTeam.pin_code && { backgroundColor: Colors.primary }]} 
-                      onPress={() => {
-                        if (selectedTeam.pin_code) {
-                          Alert.alert('보호 해제 🔓', '비밀번호를 없애고 누구나 가입 가능한 공개 팀으로 전환하시겠습니까?', [
-                            { text: '취소', style: 'cancel' },
-                            { text: '공개로 전환', onPress: () => disablePinCode() }
-                          ]);
-                        } else {
-                          setNewPinCode('');
-                          setPinModalVisible(true);
-                        }
-                      }}
-                    >
-                      <Text style={[styles.changePinBtnText, !selectedTeam.pin_code && { color: '#FFFFFF' }]}>
-                        {selectedTeam.pin_code ? '끄기/변경' : '켜기'}
-                      </Text>
-                    </TouchableOpacity>
+                    {isCurrentLeader ? (
+                      <TouchableOpacity 
+                        style={[styles.changePinBtn, !selectedTeam.pin_code && { backgroundColor: Colors.primary }]} 
+                        onPress={() => {
+                          if (selectedTeam.pin_code) {
+                            Alert.alert('보호 해제 🔓', '비밀번호를 없애고 누구나 가입 가능한 공개 팀으로 전환하시겠습니까?', [
+                              { text: '취소', style: 'cancel' },
+                              { text: '공개로 전환', onPress: () => disablePinCode() }
+                            ]);
+                          } else {
+                            setNewPinCode('');
+                            setPinModalVisible(true);
+                          }
+                        }}
+                      >
+                        <Text style={[styles.changePinBtnText, !selectedTeam.pin_code && { color: '#FFFFFF' }]}>
+                          {selectedTeam.pin_code ? '끄기/변경' : '켜기'}
+                        </Text>
+                      </TouchableOpacity>
+                    ) : null}
                   </View>
 
                   {selectedTeam.pin_code ? (
@@ -827,14 +877,43 @@ export default function MyTeamDetailScreen() {
                   ) : null}
                 </View>
 
-                <TouchableOpacity
-                  style={styles.editYoutubeBarBtn}
-                  onPress={() => { setNewYoutubeUrl(selectedTeam.youtube_channel_url || ''); setYoutubeModalVisible(true); }}
-                >
-                  <Text style={styles.editYoutubeBarBtnText}>
-                    📺 {selectedTeam.youtube_channel_url ? '팀 유튜브 채널 링크 수정' : '+ 우리 팀 유튜브 채널 링크 등록'}
-                  </Text>
-                </TouchableOpacity>
+                {isCurrentLeader ? (
+                  <View style={[styles.pinBox, { marginTop: 8 }]}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.pinBoxLabel}>팀 기록 공개</Text>
+                        <Text style={{ fontSize: 11, color: Colors.textMuted, marginTop: 4 }}>
+                          {selectedTeam.is_public === false
+                            ? '팀원이 아닌 사람은 팀 리포트와 통계를 볼 수 없습니다.'
+                            : '외부에서도 팀 리포트와 통계를 볼 수 있습니다.'}
+                        </Text>
+                      </View>
+                      <Switch
+                        value={selectedTeam.is_public !== false}
+                        onValueChange={async (next) => {
+                          const { error } = await supabase.from('teams').update({ is_public: next }).eq('id', selectedTeam.id);
+                          if (error) {
+                            Alert.alert('저장 실패', '팀 공개 설정을 바꾸지 못했습니다. v2.2.1 마이그레이션 적용 여부를 확인해 주세요.');
+                            return;
+                          }
+                          setSelectedTeam({ ...selectedTeam, is_public: next });
+                          setMyTeams((prev) => prev.map((team) => team.id === selectedTeam.id ? { ...team, is_public: next } : team));
+                        }}
+                      />
+                    </View>
+                  </View>
+                ) : null}
+
+                {isCurrentLeader ? (
+                  <TouchableOpacity
+                    style={styles.editYoutubeBarBtn}
+                    onPress={() => { setNewYoutubeUrl(selectedTeam.youtube_channel_url || ''); setYoutubeModalVisible(true); }}
+                  >
+                    <Text style={styles.editYoutubeBarBtnText}>
+                      📺 {selectedTeam.youtube_channel_url ? '팀 유튜브 채널 링크 수정' : '+ 우리 팀 유튜브 채널 링크 등록'}
+                    </Text>
+                  </TouchableOpacity>
+                ) : null}
               </View>
             </View>
 
@@ -851,6 +930,7 @@ export default function MyTeamDetailScreen() {
                       <Text style={[styles.rankNumber, idx === 0 && { color: '#B45309', fontWeight: '900' }]}>
                         {idx === 0 ? '🥇 1위' : idx === 1 ? '🥈 2위' : idx === 2 ? '🥉 3위' : `${idx + 1}위`}
                       </Text>
+                      <MiniAvatar uri={rank.avatarUrl} emoji={rank.avatarIcon} size={36} />
                       <View style={{ flex: 1 }}>
                         <Text style={styles.rankName}>{rank.fullName} 선생님 {rank.userId === userId && '(나)'}</Text>
                         <Text style={styles.rankDetail}>{rank.wins}승 {rank.draws}무 {rank.losses}패 (총 {rank.total}전)</Text>
@@ -965,12 +1045,14 @@ export default function MyTeamDetailScreen() {
             <Text style={styles.modalSub}>원하시는 팀 회장 관리 메뉴를 선택해 주세요.</Text>
 
             <View style={styles.actionTabRow}>
-              <TouchableOpacity
-                style={[styles.actionTabBtn, leaderActionTab === 'claim' && styles.actionTabBtnActive]}
-                onPress={() => { setLeaderActionTab('claim'); setSelectedTargetMember(null); }}
-              >
-                <Text style={[styles.actionTabText, leaderActionTab === 'claim' && styles.actionTabTextActive]}>🚩 내가 직접 등록</Text>
-              </TouchableOpacity>
+              {!selectedTeam?.leader_id ? (
+                <TouchableOpacity
+                  style={[styles.actionTabBtn, leaderActionTab === 'claim' && styles.actionTabBtnActive]}
+                  onPress={() => { setLeaderActionTab('claim'); setSelectedTargetMember(null); }}
+                >
+                  <Text style={[styles.actionTabText, leaderActionTab === 'claim' && styles.actionTabTextActive]}>🚩 내가 직접 등록</Text>
+                </TouchableOpacity>
+              ) : null}
 
               {isCurrentLeader && (
                 <TouchableOpacity
@@ -989,7 +1071,7 @@ export default function MyTeamDetailScreen() {
               </TouchableOpacity>
             </View>
 
-            {leaderActionTab === 'claim' && (
+            {leaderActionTab === 'claim' && !selectedTeam?.leader_id && (
               <View style={styles.policyNoticeBox}>
                 <Text style={styles.policyNoticeTitle}>📜 회장 등록 시 정책 안내</Text>
                 <Text style={styles.policyNoticeText}>
@@ -1191,9 +1273,10 @@ const styles = StyleSheet.create({
   pendingBadge: { backgroundColor: '#FEF3C7', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 8 },
   pendingBadgeText: { fontSize: 11, fontWeight: '700', color: '#D97706' },
 
-  leaderBarContainer: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#FAF5FF', borderWidth: 1, borderColor: '#E9D5FF', borderRadius: 12, padding: 10, marginTop: 10 },
+  leaderBarContainer: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: 'center', gap: 8, backgroundColor: '#FAF5FF', borderWidth: 1, borderColor: '#E9D5FF', borderRadius: 12, padding: 10, marginTop: 10 },
   leaderBarInfo: { flex: 1, marginRight: 8 },
   leaderBarTitle: { fontSize: 12.5, fontWeight: '800', color: '#6B21A8' },
+  leaderBarHint: { fontSize: 11, color: '#7E22CE', marginTop: 4, lineHeight: 15 },
   claimLeaderBtn: { backgroundColor: '#6B21A8', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8 },
   claimLeaderBtnText: { color: '#FFFFFF', fontSize: 11.5, fontWeight: '800' },
 

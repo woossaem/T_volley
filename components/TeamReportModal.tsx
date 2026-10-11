@@ -6,6 +6,8 @@ import {
   TouchableOpacity,
   Modal,
   ScrollView,
+  Alert,
+  ActivityIndicator,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Colors } from '../constants/Colors';
@@ -13,6 +15,8 @@ import StickyAdBanner from './StickyAdBanner';
 import ReportScopeTabs, { type ReportScopeTab } from './ReportScopeTabs';
 import { OfficialTeamInsightsPanel, IntramuralTeamInsightsPanel } from './TeamReportInsights';
 import { supabase } from '../lib/supabase';
+import { claimVacantTeamLeadership } from '../lib/schoolTeam';
+import { useAuth } from '../contexts/AuthContext';
 import { buildTeamStatusByName, formatTeamDisplayName } from '../lib/teamStatus';
 import { resolveTeamName, resolveTeamNameOrNull, cleanRegionName, getTeamIcon } from '../lib/nameUtils';
 import { getSafeDisplayName, getSafeTeamName } from '../lib/utils';
@@ -101,10 +105,14 @@ export default function TeamReportModal({
   selectedSeason,
 }: TeamReportModalProps) {
   const insets = useSafeAreaInsets();
+  const { session } = useAuth();
+  const [recordLocked, setRecordLocked] = useState(false);
   const [scope, setScope] = useState<ReportScopeTab>('official');
   const [viewMode, setViewMode] = useState<'career' | string>('career');
   const [statusByName, setStatusByName] = useState<Record<string, string>>({});
   const [nameMap, setNameMap] = useState<Record<string, string>>({});
+  const [claimTeamId, setClaimTeamId] = useState<string | null>(null);
+  const [claimingLeader, setClaimingLeader] = useState(false);
 
   useEffect(() => {
     if (visible) {
@@ -112,6 +120,45 @@ export default function TeamReportModal({
       setViewMode('career');
     }
   }, [visible, analytics?.teamName]);
+
+  useEffect(() => {
+    if (!visible || !analytics) {
+      setRecordLocked(false);
+      setClaimTeamId(null);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      const { data: teams } = await supabase.from('teams').select('id, name, is_public, leader_id');
+      if (cancelled) return;
+      const team = (teams || []).find((row: any) =>
+        (analytics.teamId && row.id === analytics.teamId)
+        || resolveTeamNameOrNull(row) === analytics.teamName
+        || row.name === analytics.teamName,
+      );
+      const uid = session?.user?.id;
+      if (!team || !uid) {
+        if (!cancelled) {
+          setRecordLocked(!!team && team.is_public === false);
+          setClaimTeamId(null);
+        }
+        return;
+      }
+      const { data: member } = await supabase
+        .from('team_members')
+        .select('user_id')
+        .eq('team_id', team.id)
+        .eq('user_id', uid)
+        .eq('is_active', true)
+        .maybeSingle();
+      if (cancelled) return;
+      setRecordLocked(team.is_public === false && !member);
+      setClaimTeamId(!team.leader_id && member ? team.id : null);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [visible, analytics, session?.user?.id]);
 
   useEffect(() => {
     if (!visible) return;
@@ -187,6 +234,34 @@ export default function TeamReportModal({
     };
   }, [visible, officialInsights, intramuralInsights]);
 
+  const askClaimLeadership = () => {
+    if (!claimTeamId || claimingLeader) return;
+    Alert.alert(
+      '팀 대표 등록',
+      '이 팀의 대표(운영자)로 등록하시겠습니까?\n확인한 뒤에만 대표 권한이 부여됩니다.',
+      [
+        { text: '취소', style: 'cancel' },
+        {
+          text: '등록하기',
+          onPress: () => {
+            void (async () => {
+              setClaimingLeader(true);
+              try {
+                await claimVacantTeamLeadership(claimTeamId);
+                setClaimTeamId(null);
+                Alert.alert('등록 완료', '팀 대표로 등록되었습니다. 팀 정보 변경은 내 소속 팀에서 할 수 있습니다.');
+              } catch (err: any) {
+                Alert.alert('등록 실패', err?.message || '다시 시도해 주세요.');
+              } finally {
+                setClaimingLeader(false);
+              }
+            })();
+          },
+        },
+      ],
+    );
+  };
+
   if (!analytics) return null;
 
   const showIntramural = !!(intramuralAnalytics && (
@@ -196,12 +271,6 @@ export default function TeamReportModal({
   ));
   const intramuralView = scope === 'intramural' && showIntramural && intramuralAnalytics;
   const activeAnalytics = intramuralView ? intramuralAnalytics : analytics;
-
-  const formatNamedTeam = (rawInput: any) => {
-    const raw = resolveTeamNameOrNull(rawInput) || (typeof rawInput === 'string' ? rawInput : '');
-    if (!raw || raw === '없음') return raw || '없음';
-    return formatTeamDisplayName(raw, statusByName[raw]);
-  };
 
   const teamIcon = getTeamIcon(activeAnalytics.teamType || analytics.teamType);
   const rawTeamName = getSafeTeamName(activeAnalytics.teamName || analytics);
@@ -301,10 +370,25 @@ export default function TeamReportModal({
               </Text>
             )}
             <ReportScopeTabs value={scope} onChange={setScope} showIntramural={showIntramural} />
+            {claimTeamId ? (
+              <TouchableOpacity style={styles.claimLeaderBtn} onPress={askClaimLeadership} disabled={claimingLeader}>
+                {claimingLeader ? (
+                  <ActivityIndicator color="#FFFFFF" />
+                ) : (
+                  <Text style={styles.claimLeaderBtnText}>내가 팀 대표(운영자)로 등록하기</Text>
+                )}
+              </TouchableOpacity>
+            ) : null}
           </View>
 
           <ScrollView style={styles.scrollArea} showsVerticalScrollIndicator={false}>
-            {intramuralView ? (
+            {recordLocked ? (
+              <View style={styles.reportBox}>
+                <Text style={styles.reportLabel}>비공개 팀 기록</Text>
+                <Text style={styles.statMainValue}>이 팀은 기록을 비공개로 설정했습니다.</Text>
+                <Text style={styles.reportSubText}>팀원만 상세 리포트와 팀 통계를 볼 수 있습니다.</Text>
+              </View>
+            ) : intramuralView ? (
               <>
                 <View style={styles.scopeBanner}>
                   <Text style={styles.scopeBannerText}>
@@ -315,91 +399,39 @@ export default function TeamReportModal({
               </>
             ) : (
               <>
-                <View style={styles.reportBox}>
-                  <Text style={styles.reportLabel}>
-                    📊 {viewMode === 'career' ? '통산 전체' : `${viewMode} 시즌`} 경기 & 세트 전적
-                  </Text>
-
-                  <View style={styles.statGrid}>
-                    <View style={styles.statItem}>
-                      <Text style={styles.statSubLabel}>경기 전적</Text>
-                      <Text style={styles.statMainValue}>
-                        {`${displayStat.totalWins}승 ${displayStat.totalDraws > 0 ? `${displayStat.totalDraws}무 ` : ''}${displayStat.totalLosses}패`}
-                      </Text>
-                      <Text style={styles.statSubValue}>승률 {displayStat.winRate}%</Text>
-                    </View>
-
-                    <View style={styles.verticalDivider} />
-
-                    <View style={styles.statItem}>
-                      <Text style={styles.statSubLabel}>세트 득실</Text>
-                      <Text style={styles.statMainValue}>
-                        {displayStat.setsWon}득 / {displayStat.setsLost}실
-                      </Text>
-                      <Text style={[styles.statSubValue, { color: displayStat.setDiff >= 0 ? '#2563EB' : '#EF4444' }]}>
-                        마진 {displayStat.setDiff >= 0 ? `+${displayStat.setDiff}` : displayStat.setDiff}
-                      </Text>
-                    </View>
+                <View style={styles.headlineRow}>
+                  <View style={styles.headlineCell}>
+                    <Text style={styles.headlineLabel}>팀 통산 승률</Text>
+                    <Text style={styles.headlineValue}>{displayStat.winRate}%</Text>
+                    <Text style={styles.headlineMeta}>
+                      {displayStat.totalWins}승 {displayStat.totalDraws}무 {displayStat.totalLosses}패
+                    </Text>
+                  </View>
+                  <View style={styles.headlineCell}>
+                    <Text style={styles.headlineLabel}>경기당 평균 득실 마진</Text>
+                    <Text style={styles.headlineValue}>
+                      {(() => {
+                        const games = displayStat.totalMatches || 0;
+                        const scored = (officialInsights?.scoring.pointsFor || 0) - (officialInsights?.scoring.pointsAgainst || 0);
+                        const margin = scored !== 0 ? scored : displayStat.setDiff;
+                        const avg = games > 0 ? Math.round((margin / games) * 10) / 10 : 0;
+                        return `${avg > 0 ? '+' : ''}${avg}`;
+                      })()}
+                    </Text>
+                    <Text style={styles.headlineMeta}>{displayStat.totalMatches}경기 기준</Text>
                   </View>
                 </View>
-
-                <OfficialTeamInsightsPanel insights={officialInsights} nameMap={nameMap} />
-
-                <View style={styles.reportBox}>
-                  <Text style={styles.reportLabel}>⚡ 승리 패턴 분석</Text>
-                  <View style={styles.winTypeRow}>
-                    <View style={{ alignItems: 'center', flexShrink: 0 }}>
-                      <Text style={{ fontSize: 16, lineHeight: 20, fontWeight: '900', color: Colors.primary, includeFontPadding: false }}>
-                        {displayStat.shutoutWins}회
-                      </Text>
-                      <Text style={styles.winTypeSub}>무실점 완승 (2:0 등)</Text>
-                    </View>
-                    <View style={styles.divider} />
-                    <View style={{ alignItems: 'center', flexShrink: 0 }}>
-                      <Text style={{ fontSize: 16, lineHeight: 20, fontWeight: '900', color: '#7E22CE', includeFontPadding: false }}>
-                        {displayStat.fullsetWins}회
-                      </Text>
-                      <Text style={styles.winTypeSub}>접전승 (1세트 차)</Text>
-                    </View>
+                {(displayStat.totalMatches || 0) >= 3
+                  && ((officialInsights?.formations.length || 0) > 0 || (officialInsights?.rotations.length || 0) > 0) ? (
+                  <OfficialTeamInsightsPanel insights={officialInsights} nameMap={nameMap} />
+                ) : (
+                  <View style={styles.accumulateCard}>
+                    <Text style={styles.accumulateTitle}>경기 기록 축적 중</Text>
+                    <Text style={styles.accumulateBody}>
+                      경기 기록 축적 중 (최소 3경기 이상 진행 시 포메이션 및 로테이션 득점 효율 분석이 제공됩니다)
+                    </Text>
                   </View>
-                </View>
-
-                <View style={{ flexDirection: 'row', gap: 6, marginBottom: 6, flexShrink: 0 }}>
-                  <View style={[styles.reportBox, styles.nemesisBox]}>
-                    <Text style={styles.nemesisLabel}>😈 까다로운 천적 팀</Text>
-                    <Text style={styles.nemesisName}>{formatNamedTeam(displayStat.nemesis)}</Text>
-                    <Text style={styles.nemesisStat}>{displayStat.nemesisStat || '기록 없음'}</Text>
-                  </View>
-
-                  <View style={[styles.reportBox, styles.victimBox]}>
-                    <Text style={styles.victimLabel}>🎯 상대적 우위 팀</Text>
-                    <Text style={styles.victimName}>{formatNamedTeam(displayStat.victim)}</Text>
-                    <Text style={styles.victimStat}>{displayStat.victimStat || '기록 없음'}</Text>
-                  </View>
-                </View>
-
-                <View style={styles.reportBox}>
-                  <Text style={styles.reportLabel}>🔥 최근 5경기 흐름</Text>
-                  {displayStat.teamRecent5.length === 0 ? (
-                    <Text style={styles.reportSubText}>기록된 경기 결과가 없습니다.</Text>
-                  ) : (
-                    <View style={styles.formRow}>
-                      {displayStat.teamRecent5.map((res, idx) => (
-                        <View
-                          key={idx}
-                          style={[
-                            styles.formBadge,
-                            res === 'WIN' ? styles.formWin : res === 'DRAW' ? styles.formDraw : styles.formLoss,
-                          ]}
-                        >
-                          <Text style={styles.formBadgeText}>
-                            {res === 'WIN' ? '승' : res === 'DRAW' ? '무' : '패'}
-                          </Text>
-                        </View>
-                      ))}
-                    </View>
-                  )}
-                </View>
+                )}
               </>
             )}
           </ScrollView>
@@ -441,6 +473,16 @@ const styles = StyleSheet.create({
   seasonSegmentTextActive: { color: '#1D4ED8', fontWeight: '800' },
 
   seasonTag: { fontSize: 11, lineHeight: 15, fontWeight: '700', color: Colors.primary, marginTop: 4, includeFontPadding: false, flexShrink: 0 },
+  headlineRow: { flexDirection: 'row', gap: 8, marginBottom: 8 },
+  headlineCell: { flex: 1, backgroundColor: '#FFFFFF', borderRadius: 12, borderWidth: 1, borderColor: '#DBEAFE', paddingVertical: 12, paddingHorizontal: 10, alignItems: 'center' },
+  headlineLabel: { fontSize: 11, lineHeight: 15, fontWeight: '800', color: '#1D4ED8', textAlign: 'center' },
+  headlineValue: { fontSize: 26, lineHeight: 32, fontWeight: '900', color: '#0F172A', marginTop: 4 },
+  headlineMeta: { fontSize: 11, lineHeight: 15, fontWeight: '700', color: '#64748B', marginTop: 2 },
+  accumulateCard: { backgroundColor: '#F8FAFC', borderRadius: 12, borderWidth: 1, borderColor: '#E2E8F0', padding: 14 },
+  accumulateTitle: { fontSize: 13, lineHeight: 18, fontWeight: '900', color: '#0F172A', marginBottom: 6 },
+  accumulateBody: { fontSize: 12, lineHeight: 18, fontWeight: '700', color: '#475569' },
+  claimLeaderBtn: { marginTop: 8, backgroundColor: '#6B21A8', borderRadius: 8, paddingVertical: 8, paddingHorizontal: 10, alignItems: 'center' },
+  claimLeaderBtnText: { color: '#FFFFFF', fontSize: 12, lineHeight: 16, fontWeight: '800', textAlign: 'center' },
   scopeBanner: { backgroundColor: '#FAF5FF', borderRadius: 10, padding: 8, borderWidth: 1, borderColor: '#E9D5FF', marginBottom: 6, flexShrink: 0 },
   scopeBannerText: { fontSize: 11, lineHeight: 15, fontWeight: '700', color: '#6B21A8', includeFontPadding: false, flexShrink: 0 },
 

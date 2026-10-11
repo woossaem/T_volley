@@ -1,6 +1,7 @@
 import { isSameName, resolveTeamNameOrNull } from './nameUtils';
 import { readMatchSets } from './playerStats';
 import {
+  isMemberUserId,
   listHasUser,
   parseRosterUserIds,
   parseSetFormation,
@@ -113,7 +114,7 @@ export function collectTeammateIds(
   const ids = new Set<string>();
   const roster = side === 'host' ? match.host_roster : match.away_roster;
   parseRosterUserIds(roster).forEach((id) => {
-    if (id && id !== userId) ids.add(id);
+    if (id && id !== userId && isMemberUserId(id)) ids.add(id);
   });
 
   const logs = parseMatchScoreLogs(match, extraLogs);
@@ -123,7 +124,7 @@ export function collectTeammateIds(
     const lineups = resolveSetLineups(match, set.set_number);
     const mates = (play.side || side) === 'away' ? lineups.away : lineups.host;
     mates.forEach((id) => {
-      if (id && id !== userId) ids.add(id);
+      if (id && id !== userId && isMemberUserId(id)) ids.add(id);
     });
   });
 
@@ -132,7 +133,7 @@ export function collectTeammateIds(
     if (scoreLogSide(log) !== side) return;
     if (scoreLogMatchesPlayer(log, userId, playerName)) return;
     const id = String(log.player_id ?? log.playerId ?? '').trim();
-    if (id && id !== userId) ids.add(id);
+    if (id && id !== userId && isMemberUserId(id)) ids.add(id);
   });
 
   return Array.from(ids);

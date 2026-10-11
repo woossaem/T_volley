@@ -34,11 +34,15 @@ import {
   isSameName,
 } from '../lib/nameUtils';
 import { getSafeDisplayName, getSafeTeamName } from '../lib/utils';
+import { teamListMemberName } from '../lib/profilePrivacy';
+import { readJoinedProfile, TEAM_MEMBERS_WITH_PROFILES_SELECT } from '../lib/teams';
 
 interface TeamMemberObj {
   userId: string;
-  realName: string;
-  maskedName: string;
+  fullName: string;
+  nickname: string;
+  isNamePublic: boolean;
+  sortName: string;
 }
 
 interface PendingMemberReq {
@@ -67,16 +71,6 @@ const getMatchSeasonYear = (dateStr: string) => {
   if (!dateStr) return String(new Date().getFullYear());
   const match = dateStr.match(/\d+/g);
   return match && match.length > 0 ? match[0] : String(new Date().getFullYear());
-};
-
-const maskName = (name: string) => {
-  if (!name || name === '선생님') return '팀*';
-  if (name.length === 1) return name;
-  if (name.length === 2) return name.charAt(0) + '*';
-  const first = name.charAt(0);
-  const last = name.charAt(name.length - 1);
-  const middle = '*'.repeat(name.length - 2);
-  return first + middle + last;
 };
 
 export default function AllTeamsListScreen() {
@@ -171,7 +165,7 @@ export default function AllTeamsListScreen() {
       if (activeMyTeams.length > 0) {
         const { data: pendData } = await supabase
           .from('team_members')
-          .select(`id, team_id, user_id, teams(*), profiles(*)`)
+          .select(TEAM_MEMBERS_WITH_PROFILES_SELECT)
           .in('team_id', activeMyTeams)
           .eq('is_active', false);
 
@@ -198,11 +192,7 @@ export default function AllTeamsListScreen() {
 
       const { data, error } = await supabase
         .from('team_members')
-        .select(`
-          team_id, user_id, is_active,
-          teams(*),
-          profiles(*)
-        `);
+        .select(TEAM_MEMBERS_WITH_PROFILES_SELECT);
 
       if (error) console.error('team_members 조인 에러:', error);
 
@@ -232,12 +222,14 @@ export default function AllTeamsListScreen() {
           memberObjs: [] as TeamMemberObj[],
         };
 
-        const realName: string = getSafeDisplayName(profileObj);
+        const profile = readJoinedProfile(profileObj);
         if (!existing.memberObjs.some(m => m.userId === uId)) {
           existing.memberObjs.push({
             userId: uId,
-            realName,
-            maskedName: maskName(realName),
+            fullName: profile.full_name,
+            nickname: profile.nickname,
+            isNamePublic: profile.is_name_public,
+            sortName: teamListMemberName(profile, { mine: true, userId: uId }),
           });
         }
         teamMap.set(teamObj.id, existing);
@@ -274,7 +266,7 @@ export default function AllTeamsListScreen() {
         const sortedMembers = [...info.memberObjs].sort((a, b) => {
           if (a.userId === info.leader_id) return -1;
           if (b.userId === info.leader_id) return 1;
-          return a.realName.localeCompare(b.realName, 'ko-KR');
+          return a.sortName.localeCompare(b.sortName, 'ko-KR');
         });
 
         return {
@@ -397,21 +389,37 @@ export default function AllTeamsListScreen() {
     
     setActionLoading(true);
     try {
+      const schoolTeam = newTeamType === 'school';
       const { data: newTeam, error } = await supabase.from('teams').insert({
         name: trimmedName,
         region: cleanRegionName(newTeamRegion),
         team_type: newTeamType,
         password: newTeamPassword || null,
         youtube_channel_url: newTeamYoutube.trim() || null,
-        leader_id: currentUserId,
+        leader_id: schoolTeam ? null : currentUserId,
         status: 'active',
       }).select().single();
       
       if (error) throw error;
 
-      await supabase.from('team_members').insert({
-        user_id: currentUserId, team_id: newTeam.id, is_active: true, is_primary: myTeamIds.length === 0,
+      const memberInsert = await supabase.from('team_members').insert({
+        user_id: currentUserId,
+        team_id: newTeam.id,
+        is_active: true,
+        is_primary: myTeamIds.length === 0,
+        role: schoolTeam ? 'member' : 'leader',
       });
+      if (memberInsert.error && /role/i.test(memberInsert.error.message || '')) {
+        const retry = await supabase.from('team_members').insert({
+          user_id: currentUserId,
+          team_id: newTeam.id,
+          is_active: true,
+          is_primary: myTeamIds.length === 0,
+        });
+        if (retry.error) throw retry.error;
+      } else if (memberInsert.error) {
+        throw memberInsert.error;
+      }
 
       Alert.alert('팀 창단 완료! 🎉', `'${trimmedName}' 팀이 새로 등록되었습니다.`);
       setCreateModalVisible(false);
@@ -738,7 +746,7 @@ export default function AllTeamsListScreen() {
                   <View style={styles.membersArea}>
                     <View style={styles.membersAreaHeader}>
                       <Text style={styles.membersLabel}>
-                        소속 팀원 {isMyTeam ? '(실명)' : '(익명)'}
+                        소속 팀원
                       </Text>
                       {!team.isOfficial && (
                         <Text style={styles.needMoreText}>🌱 공식팀까지 {Math.max(1, 3 - team.memberCount)}명</Text>
@@ -751,16 +759,24 @@ export default function AllTeamsListScreen() {
                       <View style={styles.membersList}>
                         {displayMemberObjs.map((mObj) => {
                           const isLeader = team.leader_id === mObj.userId;
-                          const nameToShow = isMyTeam ? mObj.realName : mObj.maskedName;
+                          const nameToShow = teamListMemberName(
+                            {
+                              full_name: mObj.fullName,
+                              nickname: mObj.nickname,
+                              is_name_public: mObj.isNamePublic,
+                            },
+                            { mine: isMyTeam, userId: mObj.userId },
+                          );
 
                           return (
                             <TouchableOpacity
-                              key={mObj.userId}
+                              key={mObj.userId || nameToShow}
                               style={[styles.memberTag, isLeader && styles.memberTagLeader]}
                               onPress={() => openUserProfile(mObj.userId)}
                             >
+                              {isLeader ? <Text style={styles.memberFlag}>🚩</Text> : null}
                               <Text style={[styles.memberTagText, isLeader && styles.memberTagTextLeader]}>
-                                {isLeader ? `🚩 ${nameToShow}` : nameToShow}
+                                {nameToShow}
                               </Text>
                             </TouchableOpacity>
                           );
@@ -1085,9 +1101,10 @@ const styles = StyleSheet.create({
   membersLabel: { fontSize: 11, fontWeight: '700', color: '#64748B' },
   needMoreText: { fontSize: 10.5, color: '#10B981', fontWeight: '700' },
   membersList: { flexDirection: 'row', flexWrap: 'wrap', gap: 5 },
-  memberTag: { backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#E2E8F0', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6 },
+  memberTag: { flexDirection: 'row', alignItems: 'center', gap: 4, minHeight: 24, backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#E2E8F0', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6 },
   memberTagLeader: { backgroundColor: '#FAF5FF', borderColor: '#D8B4FE' },
-  memberTagText: { fontSize: 11, fontWeight: '600', color: '#334155' },
+  memberFlag: { fontSize: 12, lineHeight: 16 },
+  memberTagText: { flexShrink: 0, fontSize: 11, lineHeight: 16, fontWeight: '600', color: '#334155' },
   memberTagTextLeader: { color: '#6B21A8', fontWeight: '800' },
   moreChip: { backgroundColor: '#EFF6FF', borderWidth: 1, borderColor: '#BFDBFE', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6 },
   moreChipText: { fontSize: 10.5, fontWeight: '800', color: '#1D4ED8' },

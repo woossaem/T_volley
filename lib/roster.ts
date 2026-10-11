@@ -173,6 +173,35 @@ export function isRegisteredUserId(id?: string | null): boolean {
   return !isAnonymousSlotId(id);
 }
 
+const MEMBER_USER_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** 가입한 회원 계정. 빈 값, temp_guest, #A1 같은 임시 슬롯은 아니다. */
+export function isMemberUserId(id?: string | null): boolean {
+  const value = String(id || '').trim();
+  if (!isRegisteredUserId(value)) return false;
+  return MEMBER_USER_ID.test(value);
+}
+
+/** 게스트 1, #A1처럼 번호만 있는 임시 선수 표기. */
+export function isGuestDisplayName(name?: string | null): boolean {
+  const value = String(name || '').trim();
+  if (!value) return false;
+  if (/^게스트(\s*\d+)?$/.test(value)) return true;
+  if (/^#?[ABab]\d+$/.test(value)) return true;
+  return false;
+}
+
+/** 시즌·팀 랭킹에 올릴 수 있는 가입 회원인지. 게스트 플래그·임시 번호는 제외한다. */
+export function isRankingEligiblePlayer(
+  id?: string | null,
+  extra?: { isGuest?: boolean | null; name?: string | null },
+): boolean {
+  if (extra?.isGuest === true) return false;
+  if (!isMemberUserId(id)) return false;
+  if (isGuestDisplayName(extra?.name)) return false;
+  return true;
+}
+
 /** 코트 슬롯 배정 ID. 빈값/레거시 anon 만 비우고, temp_ 는 소급 연동용으로 유지한다. */
 export function assignedUserId(id?: string | null): string | null {
   if (!id) return null;
@@ -229,7 +258,7 @@ export function ensureTempIdsInCourt(
   const middle = clampLineCount(ctx.middleCount, DEFAULT_LINE_COUNT);
   const back = clampLineCount(ctx.backCount, DEFAULT_LINE_COUNT);
   const total = front + middle + back;
-  const fillGuests = ctx.forceFillGuests === true || (ctx.setIndex ?? 0) === 0;
+  const fillGuests = ctx.forceFillGuests === true;
   if (!fillGuests) {
     const next: Array<string | null> = [];
     for (let i = 0; i < Math.max(total, (court || []).length); i += 1) {

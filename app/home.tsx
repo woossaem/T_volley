@@ -19,9 +19,10 @@ import { supabase } from '../lib/supabase';
 import { Colors } from '../constants/Colors';
 import StickyAdBanner from '../components/StickyAdBanner';
 import BadgeCollectionModal from '../components/BadgeCollectionModal';
+import UserProfileModal from '../components/UserProfileModal';
 import { getAllBadgesWithStatus } from '../lib/badgeUtils';
 import { resolveTeamName, extractRow } from '../lib/nameUtils';
-import { getSafeDisplayName, getSafeTeamName } from '../lib/utils';
+import { getSafeTeamName } from '../lib/utils';
 import { isActiveMembership, isActiveTeamStatus } from '../lib/teamStatus';
 import { APP_VERSION } from '../constants/Version'; // 💡 공통 버전 변수 Import
 import { safeIncludes, teamsInclude } from '../lib/roster';
@@ -72,6 +73,7 @@ export default function HomeScreen() {
   const [showNotiModal, setShowNotiModal] = useState(false);
   const [showTeamsModal, setShowTeamsModal] = useState(false);
   const [badgeModalVisible, setBadgeModalVisible] = useState(false);
+  const [selfReportVisible, setSelfReportVisible] = useState(false);
   const [equippedBadgeIds, setEquippedBadgeIds] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -123,13 +125,21 @@ export default function HomeScreen() {
         }
       });
 
-      if (!profData && teamList.length === 0) {
+      if (!profData?.full_name) {
         router.replace('/profile-setup');
         return;
       }
 
+      const hasSchoolRegionColumn = Object.prototype.hasOwnProperty.call(profData, 'school_region');
+      const missingSchool = !String(profData.school_name || '').trim();
+      const missingSchoolRegion = hasSchoolRegionColumn && !String(profData.school_region || '').trim();
+      if (missingSchool || missingSchoolRegion) {
+        router.replace('/onboarding');
+        return;
+      }
+
       setProfile({
-        fullName: getSafeDisplayName(profData || session?.user?.user_metadata),
+        fullName: String(profData?.full_name || '').trim() || '선생님',
         schoolName: profData?.school_name || '학교 미설정',
         gender: profData?.gender || '남성',
         position: profData?.position || '포지션 미설정',
@@ -453,7 +463,7 @@ export default function HomeScreen() {
               
               <TouchableOpacity
                 style={styles.profileHeaderRow}
-                onPress={() => router.push('/profile-setup')}
+                onPress={() => setSelfReportVisible(true)}
                 activeOpacity={0.7}
               >
                 <View style={[styles.avatarCircle, auraInfo.style]}>
@@ -466,7 +476,7 @@ export default function HomeScreen() {
 
                 <View style={styles.profileInfo}>
                   <View style={styles.nameRow}>
-                    <Text style={styles.profileName}>{getSafeDisplayName(profile)} 선생님</Text>
+                    <Text style={styles.profileName}>{profile?.fullName || '선생님'} 선생님</Text>
                     <View style={[styles.genderTag, profile?.gender === '여성' ? styles.femaleTag : styles.maleTag]}>
                       <Text style={[styles.genderTagText, profile?.gender === '여성' ? styles.femaleText : styles.maleText]}>
                         {profile?.gender || '남성'}
@@ -499,7 +509,13 @@ export default function HomeScreen() {
                   </View>
                 </View>
 
-                <Text style={styles.profileHeaderArrow}>›</Text>
+                <TouchableOpacity
+                  style={styles.reportTile}
+                  onPress={() => setSelfReportVisible(true)}
+                  activeOpacity={0.8}
+                >
+                  <Text style={styles.reportTileText}>⚡ 내 선수 분석 리포트 보기 &gt;</Text>
+                </TouchableOpacity>
               </TouchableOpacity>
 
               <View style={styles.teamSectionRow}>
@@ -625,15 +641,18 @@ export default function HomeScreen() {
         {/* 서브 정보 바 */}
         <View style={styles.subInfoBar}>
           <TouchableOpacity style={styles.subInfoBtn} onPress={() => router.push('/release-notes')}>
-            <Text style={styles.subInfoBtnText}>🛠️ 패치노트</Text>
+            <Text style={styles.bareEmoji}>🛠️</Text>
+            <Text style={styles.subInfoBtnText}>패치노트</Text>
           </TouchableOpacity>
           <View style={styles.subDivider} />
           <TouchableOpacity style={styles.subInfoBtn} onPress={() => router.push('/polls')}>
-            <Text style={styles.subInfoBtnText}>🗳️ 투표·설문</Text>
+            <Text style={styles.bareEmoji}>🗳️</Text>
+            <Text style={styles.subInfoBtnText}>투표·설문</Text>
           </TouchableOpacity>
           <View style={styles.subDivider} />
           <TouchableOpacity style={styles.subInfoBtn} onPress={() => router.push('/feedback')}>
-            <Text style={styles.subInfoBtnText}>🚨 오류/건의</Text>
+            <Text style={styles.bareEmoji}>🚨</Text>
+            <Text style={styles.subInfoBtnText}>오류/건의</Text>
           </TouchableOpacity>
         </View>
 
@@ -645,6 +664,12 @@ export default function HomeScreen() {
 
       <StickyAdBanner />
 
+      <UserProfileModal
+        visible={selfReportVisible}
+        userId={userId || null}
+        isMyTeamMember
+        onClose={() => setSelfReportVisible(false)}
+      />
       <BadgeCollectionModal
         visible={badgeModalVisible}
         onClose={() => setBadgeModalVisible(false)}
@@ -844,6 +869,8 @@ const styles = StyleSheet.create({
   onboardingBtnText: { color: '#FFFFFF', fontSize: 13, fontWeight: '800' },
 
   profileCard: { backgroundColor: Colors.surface, borderRadius: 16, padding: 12, borderWidth: 1, borderColor: Colors.border, marginBottom: 10, elevation: 2 },
+  reportTile: { marginLeft: 8, maxWidth: 118, backgroundColor: '#EFF6FF', borderRadius: 10, borderWidth: 1, borderColor: '#BFDBFE', paddingHorizontal: 8, paddingVertical: 8, justifyContent: 'center' },
+  reportTileText: { color: '#1D4ED8', fontSize: 11, lineHeight: 15, fontWeight: '800', textAlign: 'center' },
   profileHeaderRow: { flexDirection: 'row', alignItems: 'center', gap: 10, borderBottomWidth: 1, borderBottomColor: '#F1F5F9', paddingBottom: 8 },
   avatarCircle: { width: 46, height: 48, borderRadius: 23, backgroundColor: '#EFF6FF', alignItems: 'center', justifyContent: 'center', borderWidth: 2, overflow: 'hidden' },
   avatarImage: { width: 42, height: 44, borderRadius: 21 },
@@ -899,11 +926,12 @@ const styles = StyleSheet.create({
   menuGrid: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', rowGap: 8, marginBottom: 10 },
   menuCard: { width: '48.8%', height: 88, backgroundColor: Colors.surface, borderRadius: 14, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, borderWidth: 1, borderColor: Colors.border, elevation: 1 },
   menuLabel: { fontSize: 13, fontWeight: '800', color: Colors.text },
-  menuEmoji: { fontSize: 26 },
-  pressed: { opacity: 0.75, transform: [{ scale: 0.98 }] },
+  menuEmoji: { fontSize: 28, opacity: 1 },
+  pressed: { transform: [{ scale: 0.98 }] },
 
   subInfoBar: { height: 40, backgroundColor: '#F1F5F9', borderRadius: 10, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-evenly', borderWidth: 1, borderColor: '#E2E8F0', marginBottom: 4 },
-  subInfoBtn: { paddingHorizontal: 8 },
+  subInfoBtn: { paddingHorizontal: 8, flexDirection: 'row', alignItems: 'center', gap: 4 },
+  bareEmoji: { fontSize: 14, opacity: 1 },
   subInfoBtnText: { fontSize: 11, fontWeight: '700', color: '#475569' },
   subDivider: { width: 1, height: 12, backgroundColor: '#CBD5E1' },
 

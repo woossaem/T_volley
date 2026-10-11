@@ -21,8 +21,10 @@ import StickyAdBanner from '../components/StickyAdBanner';
 import MatchCommentModal from '../components/MatchCommentModal';
 import UserProfileModal from '../components/UserProfileModal';
 import MatchPostgameReportModal from '../components/MatchPostgameReportModal'; // 💡 신규 임포트
-import { parseSetRosterMap, safeIncludes, safeNameText, teamsInclude } from '../lib/roster';
+import { isRankingEligiblePlayer, parseSetRosterMap, safeIncludes, safeNameText, teamsInclude } from '../lib/roster';
 import { getSafeDisplayName, getSafeTeamName } from '../lib/utils';
+import { internalProfileName } from '../lib/profilePrivacy';
+import MiniAvatar from '../components/MiniAvatar';
 import { insertMatchIgnoringUnknownColumns } from '../lib/matchWrite';
 import { evaluateSetOutcome } from '../lib/playerStats';
 import {
@@ -64,6 +66,9 @@ interface MatchData {
 interface MemberInfo {
   user_id: string;
   full_name: string;
+  public_name?: string;
+  avatar_url?: string | null;
+  avatar_icon?: string | null;
   playedSetCount?: number;
 }
 
@@ -75,6 +80,8 @@ interface DynamicSetScore {
 interface IntraRankingData {
   userId: string;
   fullName: string;
+  avatarUrl?: string | null;
+  avatarIcon?: string | null;
   totalMatches: number;
   wins: number;
   draws: number;
@@ -267,7 +274,17 @@ export default function IntramuralScreen() {
       const { data: teamData } = await supabase.from('teams').select('id').eq('name', tName).maybeSingle();
       if (!teamData) return;
       const { data: members } = await supabase.from('team_members').select('user_id, profiles(*)').eq('team_id', teamData.id).eq('is_active', true);
-      setIntraMembers((members || []).map((m: any) => ({ user_id: m.user_id, full_name: getSafeDisplayName(m.profiles || m) })));
+      setIntraMembers((members || []).flatMap((m: any) => {
+        const profile = m.profiles || m;
+        if (!isRankingEligiblePlayer(m.user_id, { isGuest: profile?.is_guest, name: profile?.full_name })) return [];
+        return [{
+          user_id: m.user_id,
+          full_name: profile.full_name || getSafeDisplayName(profile),
+          public_name: internalProfileName(profile),
+          avatar_url: profile.avatar_url || null,
+          avatar_icon: profile.avatar_icon || '🏐',
+        }];
+      }));
     } catch (err) {}
   };
 
@@ -606,14 +623,16 @@ export default function IntramuralScreen() {
     });
 
     const list: IntraRankingData[] = Object.entries(userStats)
-      .filter(([_, stat]) => stat.total > 0)
+      .filter(([uId, stat]) => stat.total > 0 && isRankingEligiblePlayer(uId, { name: nameById[uId] }))
       .map(([uId, stat]) => {
         const memberObj = intraMembers.find(m => m.user_id === uId);
         const fullName = memberObj ? getSafeDisplayName(memberObj) : (uId === currentUserId ? '나' : '팀원');
         const winRate = stat.total > 0 ? Math.round((stat.wins / stat.total) * 100) : 0;
         return {
           userId: uId,
-          fullName,
+          fullName: memberObj?.public_name || fullName,
+          avatarUrl: memberObj?.avatar_url,
+          avatarIcon: memberObj?.avatar_icon || '🏐',
           totalMatches: stat.total,
           wins: stat.wins,
           draws: stat.draws,
@@ -819,8 +838,9 @@ export default function IntramuralScreen() {
                 ]}
               >
                 <Text style={styles.rankBadgeText}>{getRankBadge(index)}</Text>
+                <MiniAvatar uri={item.avatarUrl} emoji={item.avatarIcon} size={40} />
                 <View style={{ flex: 1, marginHorizontal: 10 }}>
-                  <Text style={styles.rankUserName}>👤 {item.fullName} 선생님</Text>
+                  <Text style={styles.rankUserName}>{item.fullName} 선생님</Text>
                   <Text style={styles.rankRecordText}>
                     {item.totalMatches}세트 출전 ({item.wins}승 {item.draws > 0 ? `${item.draws}무 ` : ''}{item.losses}패)
                   </Text>

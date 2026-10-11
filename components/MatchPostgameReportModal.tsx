@@ -20,6 +20,7 @@ import {
   resolveFormationForSet,
 } from '../lib/roster';
 import { isPersonalFault, isPersonalKill } from '../lib/playerStats';
+import { voiceStatTypeOf } from '../lib/voiceParser';
 import { getSafeTeamName } from '../lib/utils';
 import { formatPlayerDisplayName, isAwardEligiblePlayer } from '../lib/tempPlayer';
 import {
@@ -46,6 +47,22 @@ interface PlayerStat {
   team: 'host' | 'away';
   points: number;
   faults: number;
+  digs?: number;
+  blocks?: number;
+  aces?: number;
+  receives?: number;
+  assists?: number;
+}
+
+function detailStatLine(player: PlayerStat): string {
+  const parts = [
+    player.digs ? `디그 ${player.digs}` : '',
+    player.blocks ? `블록 ${player.blocks}` : '',
+    player.aces ? `에이스 ${player.aces}` : '',
+    player.receives ? `리시브 ${player.receives}` : '',
+    player.assists ? `토스 ${player.assists}` : '',
+  ].filter(Boolean);
+  return parts.join(' · ');
 }
 
 interface StreakSpan {
@@ -377,18 +394,24 @@ export default function MatchPostgameReportModal({
     );
 
     const playerMap = new Map<string, PlayerStat>();
-    const bump = (team: 'host' | 'away', e: MatchEvent, field: 'points' | 'faults') => {
+    const bump = (team: 'host' | 'away', e: MatchEvent, field: 'points' | 'faults' | 'digs' | 'blocks' | 'aces' | 'receives' | 'assists') => {
       const displayName = formatPlayerDisplayName(e.player_id, e.player_name);
       const key = `${team}:${e.player_id || displayName}`;
       const prev = playerMap.get(key);
-      if (prev) prev[field] += 1;
-      else {
+      if (prev) {
+        prev[field] = (prev[field] || 0) + 1;
+      } else {
         playerMap.set(key, {
           name: displayName,
           playerId: e.player_id || null,
           team,
           points: field === 'points' ? 1 : 0,
           faults: field === 'faults' ? 1 : 0,
+          digs: field === 'digs' ? 1 : 0,
+          blocks: field === 'blocks' ? 1 : 0,
+          aces: field === 'aces' ? 1 : 0,
+          receives: field === 'receives' ? 1 : 0,
+          assists: field === 'assists' ? 1 : 0,
         });
       }
     };
@@ -402,6 +425,20 @@ export default function MatchPostgameReportModal({
       if (isPersonalFault(e.event_type)) {
         const faultTeam = concedingTeamOf(e);
         if (faultTeam) bump(faultTeam, e, 'faults');
+      }
+      const detailStat = voiceStatTypeOf(e.event_type);
+      if (detailStat) {
+        const owner = slotOwnerTeam(e) || (e.team_type === 'away' ? 'away' : 'host');
+        const field = detailStat === 'dig'
+          ? 'digs'
+          : detailStat === 'block'
+            ? 'blocks'
+            : detailStat === 'ace'
+              ? 'aces'
+              : detailStat === 'receive'
+                ? 'receives'
+                : 'assists';
+        bump(owner, e, field);
       }
     });
 
@@ -618,6 +655,7 @@ export default function MatchPostgameReportModal({
                     <Text style={styles.faultBadgeText}>범실 {p.faults}</Text>
                   </View>
                 </View>
+                {detailStatLine(p) ? <Text style={styles.playerDetail}>{detailStatLine(p)}</Text> : null}
               </View>
             );
           })}
@@ -899,6 +937,7 @@ const styles = StyleSheet.create({
   },
   playerPosition: { color: '#94A3B8', fontWeight: '700', fontSize: 11, marginBottom: 2 },
   playerName: { color: '#F8FAFC', fontWeight: '800', fontSize: 14, letterSpacing: -0.3 },
+  playerDetail: { color: '#CBD5E1', fontSize: 11, fontWeight: '700', marginTop: 4, lineHeight: 15 },
   playerBadgeRow: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 8, gap: 6 },
   scoreBadge: { flex: 1, backgroundColor: '#1E3A8A', borderRadius: 8, paddingVertical: 4, alignItems: 'center' },
   scoreBadgeText: { color: '#93C5FD', fontWeight: '700', fontSize: 12, fontVariant: ['tabular-nums'] },

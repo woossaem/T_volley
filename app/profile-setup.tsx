@@ -9,6 +9,7 @@ import {
   ScrollView,
   ActivityIndicator,
   Image,
+  Switch,
   KeyboardAvoidingView,
   Platform,
   BackHandler,
@@ -19,6 +20,9 @@ import * as ImagePicker from 'expo-image-picker';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
 import { Colors } from '../constants/Colors';
+import SchoolSearchField from '../components/SchoolSearchField';
+import { canonicalizeAdminRegion, isCanonicalAdminRegion } from '../constants/adminRegions';
+import { ensureSchoolTeamMembership, formatSchoolShortName } from '../lib/schoolTeam';
 
 // 🇰🇷 대한민국 표준 지역 프리셋 (충남 15개 시/군 전역 + 전국 광역시/도)
 const KOREA_REGIONS_PRESET = [
@@ -47,8 +51,6 @@ const VOLLEYBALL_POSITIONS = [
 const DOMINANT_HANDS = ['오른손', '왼손', '양손'];
 const AVATAR_ICONS = ['🏐', '🦊', '🐻', '🦅', '🦁', '⚡', '👑', '🎯'];
 
-interface OfficialSchool { id: string; region: string; name: string; formatted: string; }
-
 // 🧹 지역명 표준화 정규화 함수 (충남 공주시 / 공주시 / 공주 -> 모두 '공주'로 통일)
 const normalizeRegionName = (rawInput: string): string => {
   let clean = rawInput.trim();
@@ -74,17 +76,20 @@ export default function ProfileSetupScreen() {
   const [submitting, setActionSubmitting] = useState(false);
   const [uploadingImage, setUploadingImage] = useState(false);
 
-  const [dbSchools, setDbSchools] = useState<OfficialSchool[]>([]);
   const [allSelectableRegions, setAllSelectableRegions] = useState<string[]>(KOREA_REGIONS_PRESET);
 
   const [fullName, setFullName] = useState('');
+  const [nickname, setNickname] = useState('');
+  const [namePublic, setNamePublic] = useState(false);
+  const [statsPublic, setStatsPublic] = useState(true);
+  const [privacySupported, setPrivacySupported] = useState(false);
   const [gender, setGender] = useState<'남성' | '여성'>('남성');
   const [avatarIcon, setAvatarIcon] = useState('🏐');
   const [avatarUrl, setAvatarUrl] = useState('');
   
   const [schoolName, setSchoolName] = useState('');
-  const [filteredSchools, setFilteredSchools] = useState<OfficialSchool[]>([]);
-  const [showSchoolDropdown, setShowSchoolDropdown] = useState(false);
+  const [schoolRegion, setSchoolRegion] = useState('');
+  const [schoolRegionSupported, setSchoolRegionSupported] = useState(false);
 
   const [selectedRegions, setSelectedRegions] = useState<string[]>(['천안']);
   
@@ -124,12 +129,6 @@ export default function ProfileSetupScreen() {
       const { data: sData } = await supabase.from('official_schools').select('*').eq('is_active', true);
       let fetchedRegions: string[] = [];
       if (sData) {
-        const formattedSchools = sData.map(s => ({
-          ...s,
-          formatted: s.name.replace(/초등학교$/, '초')
-        }));
-        setDbSchools(formattedSchools);
-
         fetchedRegions = Array.from(new Set(sData.map(s => normalizeRegionName(s.region)).filter(Boolean)));
       }
 
@@ -142,7 +141,14 @@ export default function ProfileSetupScreen() {
           setIsInitialSetup(true);
         }
 
+        setSchoolRegionSupported(Object.prototype.hasOwnProperty.call(prof, 'school_region'));
+        setPrivacySupported(Object.prototype.hasOwnProperty.call(prof, 'nickname') || Object.prototype.hasOwnProperty.call(prof, 'is_name_public'));
+        setNickname(String(prof.nickname || '').slice(0, 8));
+        setNamePublic(prof.is_name_public === true);
+        setStatsPublic(prof.is_stats_public !== false);
         setSchoolName(prof.school_name || '');
+        const savedSchoolRegion = canonicalizeAdminRegion(prof.school_region);
+        if (savedSchoolRegion) setSchoolRegion(savedSchoolRegion);
         setGender(prof.gender === '여성' ? '여성' : '남성');
         setAvatarIcon(prof.avatar_icon || '🏐');
         setAvatarUrl(prof.avatar_url || '');
@@ -229,22 +235,6 @@ export default function ProfileSetupScreen() {
     }
   };
 
-  const onProfileSchoolChange = (text: string) => {
-    setSchoolName(text);
-    if (text.trim().length >= 1) {
-      const matches = dbSchools.filter(s => s.formatted.includes(text.trim()) || s.name.includes(text.trim()));
-      setFilteredSchools(matches);
-      setShowSchoolDropdown(matches.length > 0);
-    } else {
-      setShowSchoolDropdown(false);
-    }
-  };
-
-  const selectProfileSchool = (school: OfficialSchool) => {
-    setSchoolName(school.formatted);
-    setShowSchoolDropdown(false);
-  };
-
   // 🔍 지역 실시간 자동완성 검색 핸들러 (표준화 반영)
   const onRegionInputChange = (text: string) => {
     setCustomRegionText(text);
@@ -310,6 +300,17 @@ export default function ProfileSetupScreen() {
     }
     if (selectedRegions.length === 0) return Alert.alert('입력 확인 ⚠️', '주 활동 지역을 최소 1개 선택해 주세요.');
 
+    const finalSchoolName = formatSchoolShortName(schoolName);
+    const finalSchoolRegion = canonicalizeAdminRegion(schoolRegion);
+    if (!isInitialSetup && finalSchoolName) {
+      if (!schoolRegionSupported && schoolRegion) {
+        return Alert.alert('DB 업데이트 필요', '학교 행정구역을 저장하려면 v2.2.1 마이그레이션을 먼저 적용해 주세요.');
+      }
+      if (schoolRegionSupported && (!finalSchoolRegion || !isCanonicalAdminRegion(finalSchoolRegion))) {
+        return Alert.alert('입력 확인', '소속 학교의 행정구역을 선택해 주세요.\n예: 충남 아산시, 서울 강남구');
+      }
+    }
+
     let finalInvitedBy = null;
     if (isInitialSetup && !hasInviter) {
       const cleanCode = inviteCodeInput.trim().toUpperCase();
@@ -368,7 +369,6 @@ export default function ProfileSetupScreen() {
       const updateData: any = {
         id: userId,
         full_name: finalName,
-        school_name: schoolName.trim(), 
         gender,
         avatar_icon: avatarIcon,
         avatar_url: avatarUrl.trim() || null,
@@ -377,14 +377,34 @@ export default function ProfileSetupScreen() {
         updated_at: new Date().toISOString(),
       };
       if (finalInvitedBy) updateData.invited_by = finalInvitedBy;
+      if (!isInitialSetup) {
+        updateData.school_name = finalSchoolName;
+        if (schoolRegionSupported) updateData.school_region = finalSchoolRegion;
+      }
+      if (privacySupported) {
+        updateData.nickname = nickname.trim().slice(0, 8) || null;
+        updateData.is_name_public = namePublic;
+        updateData.is_stats_public = statsPublic;
+      }
 
       const { error } = await supabase.from('profiles').upsert(updateData);
       if (error) throw error;
 
+      let placedSchoolTeam = false;
+      if (!isInitialSetup && finalSchoolName && finalSchoolRegion) {
+        await ensureSchoolTeamMembership(finalSchoolName, finalSchoolRegion);
+        placedSchoolTeam = true;
+      }
+
       if (isInitialSetup) {
-        Alert.alert('🎉 가입 승인 완료!', `'${finalName}' 선생님, 티볼리에 오신 것을 환영합니다.`, [{ text: '시작하기', onPress: () => router.replace('/home') }]);
+        Alert.alert('🎉 가입 승인 완료!', `'${finalName}' 선생님, 이어서 소속 학교를 선택해 주세요.`, [{ text: '학교 선택', onPress: () => router.replace('/onboarding') }]);
       } else {
-        Alert.alert('저장 완료 ✨', `개인 프로필 정보가 '${finalName}'(으)로 업데이트되었습니다.`);
+        Alert.alert(
+          '저장 완료 ✨',
+          placedSchoolTeam
+            ? `개인 프로필 정보가 '${finalName}'(으)로 업데이트되었습니다.\n학교 팀에는 일반 팀원으로 가입했고, 팀 대표는 공석입니다.`
+            : `개인 프로필 정보가 '${finalName}'(으)로 업데이트되었습니다.`,
+        );
         router.back();
       }
     } catch (err: any) { Alert.alert('저장 오류', err.message); } 
@@ -480,6 +500,39 @@ export default function ProfileSetupScreen() {
                 maxLength={8}
               />
 
+              <Text style={[styles.label, { marginTop: 14 }]}>닉네임 (최대 8자)</Text>
+              <TextInput
+                style={styles.input}
+                value={nickname}
+                onChangeText={(text) => setNickname(text.slice(0, 8))}
+                placeholder="랭킹에 보일 이름"
+                maxLength={8}
+              />
+              <Text style={styles.privacyHint}>
+                실명을 숨기면 랭킹과 팀원 목록에는 닉네임이 먼저 보이고, 실명은 {fullName.trim() ? `${fullName.trim()[0]}**` : '우**'}처럼 가려집니다.
+              </Text>
+              <View style={styles.switchRow}>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.switchTitle}>실명 공개</Text>
+                  <Text style={styles.switchSub}>
+                    {namePublic
+                      ? '풀네임이 그대로 보입니다.'
+                      : '소속팀원을 제외한 타인에게 실명 대신 닉네임과 마스킹(예: 우**)이 표시됩니다.'}
+                  </Text>
+                </View>
+                <Switch value={namePublic} onValueChange={setNamePublic} />
+              </View>
+              <View style={styles.switchRow}>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.switchTitle}>개인 기록 공개</Text>
+                  <Text style={styles.switchSub}>{statsPublic ? '다른 사람이 내 통계를 볼 수 있습니다.' : '통계 카드가 숨겨집니다.'}</Text>
+                </View>
+                <Switch value={statsPublic} onValueChange={setStatsPublic} />
+              </View>
+              {!privacySupported ? (
+                <Text style={styles.privacyHint}>공개 설정을 저장하려면 v2.2.1 데이터베이스 마이그레이션이 필요합니다.</Text>
+              ) : null}
+
               <Text style={[styles.label, { marginTop: 14 }]}>3. 성별</Text>
               <View style={{ flexDirection: 'row', gap: 10 }}>
                 {(['남성', '여성'] as const).map((g) => {
@@ -492,27 +545,24 @@ export default function ProfileSetupScreen() {
                 })}
               </View>
 
-              <Text style={[styles.label, { marginTop: 14 }]}>4. 근무하시는 소속 학교 (검색 또는 직접 입력)</Text>
-              <View style={{ zIndex: 2000 }}>
-                <TextInput
-                  style={styles.input}
-                  value={schoolName}
-                  onChangeText={onProfileSchoolChange}
-                  placeholder="예: 삼은초, 불당초"
-                />
-                {showSchoolDropdown && (
-                  <View style={styles.dropdownContainer}>
-                    <ScrollView style={{ maxHeight: 150 }} nestedScrollEnabled={true} keyboardShouldPersistTaps="handled">
-                      {filteredSchools.map((sch) => (
-                        <TouchableOpacity key={sch.id} style={styles.dropdownItem} onPress={() => selectProfileSchool(sch)}>
-                          <Text style={styles.dropdownItemText} numberOfLines={1}>🏫 {sch.formatted}</Text>
-                          <Text style={styles.dropdownItemSubText}>{sch.region}</Text>
-                        </TouchableOpacity>
-                      ))}
-                    </ScrollView>
-                  </View>
-                )}
-              </View>
+              {isInitialSetup ? (
+                <View style={styles.nameGuideBox}>
+                  <Text style={styles.nameGuideTitle}>4. 소속 학교는 다음 화면에서 고릅니다</Text>
+                  <Text style={styles.nameGuideText}>
+                    성함과 활동 지역을 저장한 뒤, 학교명과 실제 행정구역을 함께 선택하면 학교 팀이 자동으로 만들어집니다.
+                  </Text>
+                </View>
+              ) : (
+                <>
+                  <Text style={[styles.label, { marginTop: 14 }]}>4. 근무하시는 소속 학교와 행정구역</Text>
+                  <SchoolSearchField
+                    schoolName={schoolName}
+                    schoolRegion={schoolRegion}
+                    onChangeSchoolName={setSchoolName}
+                    onChangeSchoolRegion={setSchoolRegion}
+                  />
+                </>
+              )}
 
               {/* 5. 주 활동 배구 지역 (UI 슬림화 + 선택 칩 고정 + 자동완성 검색) */}
               <Text style={[styles.label, { marginTop: 14 }]}>5. 내 주 활동 배구 지역 (최대 3개 선택)</Text>
@@ -660,6 +710,10 @@ const styles = StyleSheet.create({
   sectionTitle: { fontSize: 15, fontWeight: '800', color: Colors.text, marginBottom: 16 },
   
   label: { fontSize: 13, fontWeight: '700', color: '#475569', marginBottom: 6 },
+  privacyHint: { fontSize: 12, color: '#64748B', lineHeight: 18, marginTop: 6, marginBottom: 8 },
+  switchRow: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 8 },
+  switchTitle: { fontSize: 14, fontWeight: '800', color: '#1E293B' },
+  switchSub: { fontSize: 12, color: '#64748B', marginTop: 2 },
   input: { borderWidth: 1, borderColor: '#CBD5E1', borderRadius: 10, padding: 12, fontSize: 14, backgroundColor: '#F8FAFC', color: Colors.text },
 
   nameGuideBox: { backgroundColor: '#EFF6FF', borderRadius: 12, padding: 12, borderWidth: 1, borderColor: '#BFDBFE', marginTop: 12, marginBottom: 4 },

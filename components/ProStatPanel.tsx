@@ -10,12 +10,67 @@ const ACCENT: Record<Accent, { title: string; value: string; bar: string; box: s
   purple: { title: '#6B21A8', value: '#7E22CE', bar: '#A855F7', box: '#FAF5FF', border: '#E9D5FF' },
 };
 
+function winRateColor(winRate: number, setsPlayed: number): string {
+  if (setsPlayed <= 0) return '#94A3B8';
+  if (winRate >= 50) return '#10B981';
+  return '#F59E0B';
+}
+
+function PositionShareList({
+  positions,
+  barColor,
+  titleColor,
+}: {
+  positions: ProStatReport['positions'];
+  barColor: string;
+  titleColor: string;
+}) {
+  return (
+    <View style={styles.posBlock}>
+      <Text style={[styles.posTitle, { color: titleColor }]}>포지션별 출전 비중 & 세트 승률</Text>
+      {positions.map((row) => {
+        const share = Math.max(0, Math.min(100, row.sharePct));
+        const rate = row.setsPlayed > 0 ? Math.max(0, Math.min(100, row.winRate)) : 0;
+        const rateColor = winRateColor(row.winRate, row.setsPlayed);
+        return (
+          <View key={row.position} style={styles.posCard}>
+            <View style={styles.posHead}>
+              <Text style={styles.posName}>{row.position}</Text>
+              <View style={styles.posBadge}>
+                <Text style={styles.posBadgeText}>출전 {row.setsPlayed > 0 ? `${share}%` : '0%'}</Text>
+              </View>
+              <View style={[styles.posBadge, { backgroundColor: `${rateColor}22`, borderColor: rateColor }]}>
+                <Text style={[styles.posBadgeText, { color: rateColor }]}>
+                  승률 {row.setsPlayed > 0 ? `${rate}%` : '0%'}
+                </Text>
+              </View>
+            </View>
+            <View style={styles.barLine}>
+              <Text style={styles.barLabel}>출전</Text>
+              <View style={styles.posBarTrack}>
+                <View style={[styles.posBarFill, { width: `${share}%`, backgroundColor: barColor }]} />
+              </View>
+            </View>
+            <View style={styles.barLine}>
+              <Text style={styles.barLabel}>승률</Text>
+              <View style={styles.posBarTrack}>
+                <View style={[styles.posBarFill, { width: `${rate}%`, backgroundColor: rateColor }]} />
+              </View>
+            </View>
+          </View>
+        );
+      })}
+    </View>
+  );
+}
+
 interface ProStatPanelProps {
   player?: ProStatReport | null;
   accent?: Accent;
+  parts?: 'all' | 'positions';
 }
 
-export default function ProStatPanel({ player, accent = 'blue' }: ProStatPanelProps) {
+export default function ProStatPanel({ player, accent = 'blue', parts = 'all' }: ProStatPanelProps) {
   const theme = ACCENT[accent];
   const title = player?.scoutingTitle || '[코트 루키]';
   const net = player?.netRating ?? 0;
@@ -24,6 +79,10 @@ export default function ProStatPanel({ player, accent = 'blue' }: ProStatPanelPr
   const clutch = player?.clutchPoints ?? 0;
   const breaker = player?.runBreakerPoints ?? 0;
   const positions = player?.positions || [];
+
+  if (parts === 'positions') {
+    return <PositionShareList positions={positions} barColor={theme.bar} titleColor={theme.title} />;
+  }
 
   return (
     <View style={[styles.wrap, { backgroundColor: theme.box, borderColor: theme.border }]}>
@@ -69,27 +128,9 @@ export default function ProStatPanel({ player, accent = 'blue' }: ProStatPanelPr
         </View>
       </View>
 
-      {positions.length > 0 && (
-        <View style={styles.posBlock}>
-          <Text style={[styles.posTitle, { color: theme.title }]}>포지션별 출전 비중 & 세트 승률</Text>
-          {positions.map((row) => (
-            <View key={row.position} style={styles.posRow}>
-              <Text style={styles.posName}>{row.position}</Text>
-              <View style={styles.posBarTrack}>
-                <View
-                  style={[
-                    styles.posBarFill,
-                    { width: `${Math.max(0, Math.min(100, row.sharePct))}%`, backgroundColor: theme.bar },
-                  ]}
-                />
-              </View>
-              <Text style={styles.posMeta}>
-                {row.sharePct}% · {row.winRate}%
-              </Text>
-            </View>
-          ))}
-        </View>
-      )}
+      {positions.length > 0 ? (
+        <PositionShareList positions={positions} barColor={theme.bar} titleColor={theme.title} />
+      ) : null}
     </View>
   );
 }
@@ -109,11 +150,15 @@ const styles = StyleSheet.create({
   clutchLabel: { fontSize: 11, lineHeight: 14, fontWeight: '800', color: '#334155', includeFontPadding: false },
   clutchValue: { fontSize: 15, lineHeight: 20, fontWeight: '900', marginTop: 2, includeFontPadding: false },
   clutchHint: { fontSize: 9, lineHeight: 12, fontWeight: '600', color: '#64748B', marginTop: 2, includeFontPadding: false },
-  posBlock: { marginTop: 10 },
-  posTitle: { fontSize: 12, lineHeight: 16, fontWeight: '800', marginBottom: 6, includeFontPadding: false },
-  posRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 5 },
-  posName: { width: 44, flexShrink: 0, fontSize: 11, lineHeight: 14, fontWeight: '800', color: '#334155', includeFontPadding: false },
-  posBarTrack: { flex: 1, height: 8, backgroundColor: '#E2E8F0', borderRadius: 4, overflow: 'hidden', marginHorizontal: 6 },
+  posBlock: { marginTop: 10, gap: 8 },
+  posTitle: { fontSize: 12, lineHeight: 16, fontWeight: '800', includeFontPadding: false },
+  posCard: { backgroundColor: '#FFFFFF', borderRadius: 10, borderWidth: 1, borderColor: '#E2E8F0', padding: 8 },
+  posHead: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 6, marginBottom: 6 },
+  posName: { fontSize: 13, lineHeight: 18, fontWeight: '900', color: '#0F172A', marginRight: 2, includeFontPadding: false },
+  posBadge: { backgroundColor: '#F8FAFC', borderRadius: 6, borderWidth: 1, borderColor: '#CBD5E1', paddingHorizontal: 6, paddingVertical: 2 },
+  posBadgeText: { fontSize: 10, lineHeight: 14, fontWeight: '800', color: '#334155', includeFontPadding: false },
+  barLine: { flexDirection: 'row', alignItems: 'center', marginTop: 4 },
+  barLabel: { width: 28, flexShrink: 0, fontSize: 10, lineHeight: 13, fontWeight: '700', color: '#64748B', includeFontPadding: false },
+  posBarTrack: { flex: 1, height: 8, backgroundColor: '#E2E8F0', borderRadius: 4, overflow: 'hidden' },
   posBarFill: { height: '100%', borderRadius: 4 },
-  posMeta: { width: 72, flexShrink: 0, textAlign: 'right', fontSize: 10, lineHeight: 13, fontWeight: '700', color: '#475569', includeFontPadding: false },
 });

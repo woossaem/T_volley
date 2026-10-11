@@ -89,14 +89,21 @@ export function PersonalReportSection({
   slice,
   intramural,
   hideAttendance = false,
+  omitSkillPanels = false,
 }: {
   slice: PersonalReportSlice | null | undefined;
   intramural: boolean;
   hideAttendance?: boolean;
+  omitSkillPanels?: boolean;
 }) {
   const setDraws = slice?.setsDrawn ?? 0;
   const setsPlayed = (slice?.setsWon ?? 0) + setDraws + (slice?.setsLost ?? 0);
   const setWinRate = setsPlayed > 0 ? Math.round(((slice?.setsWon ?? 0) / setsPlayed) * 100) : 0;
+  const matchWins = slice?.matchWins ?? 0;
+  const matchDraws = slice?.matchDraws ?? 0;
+  const matchLosses = slice?.matchLosses ?? 0;
+  const matchesPlayed = matchWins + matchDraws + matchLosses;
+  const matchWinRate = slice?.matchWinRate ?? (matchesPlayed > 0 ? Math.round((matchWins / matchesPlayed) * 100) : 0);
   const showAttendance = !hideAttendance && !intramural;
 
   if (!slice || (slice.myGames <= 0 && setsPlayed <= 0)) {
@@ -157,19 +164,26 @@ export function PersonalReportSection({
       </View>
 
       <View style={styles.reportBox}>
-        <Text style={styles.reportLabel}>📈 세트 성적 (승률 {setWinRate}%)</Text>
+        <Text style={styles.reportLabel}>
+          {intramural
+            ? `📈 세트 성적 (승률 ${setWinRate}%)`
+            : `📈 경기 성적 (승률 ${matchWinRate}%)`}
+        </Text>
         <Text style={styles.reportValue}>
-          {slice.setsWon}세트 승 ({setsPlayed}세트 출전)
+          {intramural
+            ? `${slice.setsWon}세트 승 (${setsPlayed}세트 출전)`
+            : `${matchWins}승 ${matchDraws}무 ${matchLosses}패 (${matchesPlayed}경기)`}
         </Text>
         <Text style={styles.reportSubText}>
-          {slice.setsWon}승 {setDraws}무 {slice.setsLost}패
-          {intramural ? ' · 청백전은 출전 세트 기준으로 봅니다' : ' · 출전한 세트 점수만 모았습니다'}
+          {intramural
+            ? `${slice.setsWon}승 ${setDraws}무 ${slice.setsLost}패 · 실제로 코트에 나온 세트만 합산합니다`
+            : '교류전은 경기 최종 승패로 개인 승률을 계산합니다'}
         </Text>
       </View>
 
-      {slice.proStats ? <ProStatPanel player={slice.proStats} accent={intramural ? 'purple' : 'blue'} /> : null}
+      {!omitSkillPanels && slice.proStats ? <ProStatPanel player={slice.proStats} accent={intramural ? 'purple' : 'blue'} /> : null}
 
-      <View style={[styles.reportBox, styles.partnerBox]}>
+      {!omitSkillPanels ? <View style={[styles.reportBox, styles.partnerBox]}>
         <Text style={styles.partnerLabel}>
           {intramural ? '🤝 함께 세트를 가져간 짝꿍' : '🤝 환상의 케미 파트너 (승리 짝꿍)'}
         </Text>
@@ -181,7 +195,7 @@ export function PersonalReportSection({
               : `함께 출전하여 ${slice.maxPartnerWins}승을 합작했습니다! 🎉`)
             : '아직 같이 이긴 팀원 기록이 없습니다.'}
         </Text>
-      </View>
+      </View> : null}
     </>
   );
 }

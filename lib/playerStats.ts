@@ -1,6 +1,7 @@
+import { isSameName } from './nameUtils';
 import { listMatchSetRows } from './matchSets';
-import { parseMatchScoreLogs, resolvePlayerSetPlay, setLineupsAreEmpty, type ScoreLogLike } from './rankingService';
-import { isAnonymousSlotId, listHasUser, parseRosterUserIds, safeIncludes } from './roster';
+import { parseMatchScoreLogs, resolvePlayerSetPlay, type ScoreLogLike } from './rankingService';
+import { isAnonymousSlotId, isMemberUserId, listHasUser, parseRosterUserIds, safeIncludes } from './roster';
 import { attributeTimelineEvents, courtsBySetFromRoster } from './slotAttribution';
 
 export interface PlayerCareerStats {
@@ -101,6 +102,21 @@ export function isPersonalFault(eventType?: string | null) {
   return eventType === 'fault';
 }
 
+function resultAgainstWinner(match: any, side: SetSide): 'win' | 'loss' | 'draw' | null {
+  const winner = String(match?.winner_team || '').trim();
+  if (!winner) return null;
+  if (winner === 'draw' || winner === '무승부') return 'draw';
+  const myTeam = side === 'away' ? match?.away_team_name : match?.host_team_name;
+  const otherTeam = side === 'away' ? match?.host_team_name : match?.away_team_name;
+  const hostLabel = side === 'host' && (winner === 'A팀' || winner === '홈팀');
+  const awayLabel = side === 'away' && (winner === 'B팀' || winner === '어웨이팀');
+  if (hostLabel || awayLabel || isSameName(winner, myTeam)) return 'win';
+  if (isSameName(winner, otherTeam) || winner === 'A팀' || winner === 'B팀' || winner === '홈팀' || winner === '어웨이팀') {
+    return 'loss';
+  }
+  return 'loss';
+}
+
 export function readMatchSets(
   match: any,
   events?: ScoreLogLike[],
@@ -122,7 +138,7 @@ export function addMatchPlayerStats(
   events: ScoreLogLike[],
   playerName?: string | null,
 ): PlayerCareerStats {
-  if (!userId || !match) return acc;
+  if (!isMemberUserId(userId) || !match) return acc;
 
   const inHost = listHasUser(parseRosterUserIds(match.host_roster), userId) || safeIncludes(match.host_roster, userId);
   const inAway = listHasUser(parseRosterUserIds(match.away_roster), userId) || safeIncludes(match.away_roster, userId);
@@ -139,22 +155,17 @@ export function addMatchPlayerStats(
   let playedThisMatch = false;
   let setWinsThisMatch = 0;
   let setLossesThisMatch = 0;
+  let lastSide: SetSide | null = null;
 
   setRows.forEach((set) => {
     const appearance = resolvePlayerSetPlay(match, set.set_number, userId, playerName, events);
-    let playedAs = appearance.side;
-
-    if (!appearance.played) {
-      if (!setLineupsAreEmpty(match, set.set_number)) return;
-      if (inHost || inHostMerc) playedAs = 'host';
-      else if (inAway || inAwayMerc) playedAs = 'away';
-      else return;
-    } else if (!playedAs) {
-      playedAs = inAway || inAwayMerc ? 'away' : 'host';
-    }
+    if (!appearance.played) return;
+    const playedAs: SetSide | null = appearance.side;
 
     playedThisMatch = true;
+    if (playedAs) lastSide = playedAs;
     acc.setsPlayed += 1;
+    if (!playedAs) return;
 
     const myScore = playedAs === 'host' ? set.host_score : set.away_score;
     const oppScore = playedAs === 'host' ? set.away_score : set.host_score;
@@ -169,10 +180,14 @@ export function addMatchPlayerStats(
     }
   });
 
-  if (playedThisMatch || inHost || inAway || inHostMerc || inAwayMerc) {
+  if (playedThisMatch) {
     acc.matchesPlayed += 1;
-    if (setWinsThisMatch > setLossesThisMatch) acc.matchWins += 1;
-    else if (setLossesThisMatch > setWinsThisMatch) acc.matchLosses += 1;
+    const fromWinner = lastSide ? resultAgainstWinner(match, lastSide) : null;
+    const outcome = fromWinner
+      ?? (setWinsThisMatch > setLossesThisMatch ? 'win' : setLossesThisMatch > setWinsThisMatch ? 'loss' : 'draw');
+    if (outcome === 'win') acc.matchWins += 1;
+    else if (outcome === 'loss') acc.matchLosses += 1;
+    else acc.matchDraws += 1;
   }
 
   const attributedEvents = attributeTimelineEvents(

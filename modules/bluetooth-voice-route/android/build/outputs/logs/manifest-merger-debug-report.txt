@@ -1,0 +1,34 @@
+-- Merging decision tree log ---
+manifest
+ADDED from D:\T_volley\modules\bluetooth-voice-route\android\src\main\AndroidManifest.xml:1:1-6:12
+INJECTED from D:\T_volley\modules\bluetooth-voice-route\android\src\main\AndroidManifest.xml:1:1-6:12
+	package
+		INJECTED from D:\T_volley\modules\bluetooth-voice-route\android\src\main\AndroidManifest.xml
+	xmlns:android
+		ADDED from D:\T_volley\modules\bluetooth-voice-route\android\src\main\AndroidManifest.xml:1:11-69
+uses-permission#android.permission.RECORD_AUDIO
+ADDED from D:\T_volley\modules\bluetooth-voice-route\android\src\main\AndroidManifest.xml:2:3-69
+	android:name
+		ADDED from D:\T_volley\modules\bluetooth-voice-route\android\src\main\AndroidManifest.xml:2:20-66
+uses-permission#android.permission.MODIFY_AUDIO_SETTINGS
+ADDED from D:\T_volley\modules\bluetooth-voice-route\android\src\main\AndroidManifest.xml:3:3-78
+	android:name
+		ADDED from D:\T_volley\modules\bluetooth-voice-route\android\src\main\AndroidManifest.xml:3:20-75
+uses-permission#android.permission.BLUETOOTH
+ADDED from D:\T_volley\modules\bluetooth-voice-route\android\src\main\AndroidManifest.xml:4:3-93
+	android:maxSdkVersion
+		ADDED from D:\T_volley\modules\bluetooth-voice-route\android\src\main\AndroidManifest.xml:4:64-90
+	android:name
+		ADDED from D:\T_volley\modules\bluetooth-voice-route\android\src\main\AndroidManifest.xml:4:20-63
+uses-permission#android.permission.BLUETOOTH_CONNECT
+ADDED from D:\T_volley\modules\bluetooth-voice-route\android\src\main\AndroidManifest.xml:5:3-74
+	android:name
+		ADDED from D:\T_volley\modules\bluetooth-voice-route\android\src\main\AndroidManifest.xml:5:20-71
+uses-sdk
+INJECTED from D:\T_volley\modules\bluetooth-voice-route\android\src\main\AndroidManifest.xml reason: use-sdk injection requested
+INJECTED from D:\T_volley\modules\bluetooth-voice-route\android\src\main\AndroidManifest.xml
+INJECTED from D:\T_volley\modules\bluetooth-voice-route\android\src\main\AndroidManifest.xml
+	android:targetSdkVersion
+		INJECTED from D:\T_volley\modules\bluetooth-voice-route\android\src\main\AndroidManifest.xml
+	android:minSdkVersion
+		INJECTED from D:\T_volley\modules\bluetooth-voice-route\android\src\main\AndroidManifest.xml

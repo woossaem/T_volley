@@ -1,0 +1,23 @@
+1<?xml version="1.0" encoding="utf-8"?>
+2<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+3    package="expo.modules.bluetoothvoiceroute" >
+4
+5    <uses-sdk android:minSdkVersion="24" />
+6
+7    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+7-->D:\T_volley\modules\bluetooth-voice-route\android\src\main\AndroidManifest.xml:2:3-69
+7-->D:\T_volley\modules\bluetooth-voice-route\android\src\main\AndroidManifest.xml:2:20-66
+8    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+8-->D:\T_volley\modules\bluetooth-voice-route\android\src\main\AndroidManifest.xml:3:3-78
+8-->D:\T_volley\modules\bluetooth-voice-route\android\src\main\AndroidManifest.xml:3:20-75
+9    <uses-permission
+9-->D:\T_volley\modules\bluetooth-voice-route\android\src\main\AndroidManifest.xml:4:3-93
+10        android:name="android.permission.BLUETOOTH"
+10-->D:\T_volley\modules\bluetooth-voice-route\android\src\main\AndroidManifest.xml:4:20-63
+11        android:maxSdkVersion="30" />
+11-->D:\T_volley\modules\bluetooth-voice-route\android\src\main\AndroidManifest.xml:4:64-90
+12    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+12-->D:\T_volley\modules\bluetooth-voice-route\android\src\main\AndroidManifest.xml:5:3-74
+12-->D:\T_volley\modules\bluetooth-voice-route\android\src\main\AndroidManifest.xml:5:20-71
+13
+14</manifest>

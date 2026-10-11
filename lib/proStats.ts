@@ -1,4 +1,4 @@
-import { positionKeyFromCourtIndex, TEMP_POSITION_LABELS, type TempPositionKey } from './tempPlayer';
+import { parseTempPositionKey, positionKeyFromCourtIndex, TEMP_POSITION_LABELS, type TempPositionKey } from './tempPlayer';
 import { readMatchSets } from './playerStats';
 import { rawSetLineupSlots } from './playerAppearance';
 import {
@@ -129,6 +129,25 @@ function labelFromKey(key: TempPositionKey): CourtPosition {
   return TEMP_POSITION_LABELS[key] as CourtPosition;
 }
 
+function positionToken(raw: string | null | undefined, index: number): CourtPosition | null {
+  const text = String(raw || '').trim();
+  if (text === 'Li' || text.toLowerCase() === 'li' || text.includes('리베로')) return '리베로';
+  const exact: Record<string, CourtPosition> = {
+    L: '레프트', R: '라이트', C: '센터', S: '세터',
+    l: '레프트', r: '라이트', c: '센터', s: '세터',
+    레프트: '레프트', 라이트: '라이트', 센터: '센터', 세터: '세터', 리베로: '리베로',
+  };
+  if (exact[text]) return exact[text];
+  if (text.includes('세터')) return '세터';
+  if (text.includes('레프트')) return '레프트';
+  if (text.includes('라이트')) return '라이트';
+  if (text.includes('센터')) return '센터';
+  const key = parseTempPositionKey(text);
+  if (key) return labelFromKey(key);
+  if (index >= 0) return labelFromKey(positionKeyFromCourtIndex(index));
+  return null;
+}
+
 function positionFromLineup(
   match: any,
   setNumber: number,
@@ -138,7 +157,7 @@ function positionFromLineup(
   const slots = rawSetLineupSlots(match, setNumber, side);
   const idx = slots.findIndex((id) => listHasUser([id], playerId));
   if (idx < 0) return null;
-  return labelFromKey(positionKeyFromCourtIndex(idx));
+  return positionToken(slots[idx], idx);
 }
 
 function emptyPositionMap(): Record<CourtPosition, { played: number; wins: number; draws: number; losses: number }> {
@@ -193,6 +212,67 @@ export function buildScoutingTitle(input: {
   return `[${team}의 코터]`;
 }
 
+/** 가장 두드러진 프로배구 기술로 프로필 리포트 칭호를 고른다. */
+export function playerStyleTitle(input: {
+  setsPlayed: number;
+  points: number;
+  clutchPoints: number;
+  runBreakerPoints: number;
+  mvp: number;
+  dig: number;
+  block: number;
+  ace: number;
+  receive: number;
+  assist: number;
+}): string {
+  const attackParts = {
+    breaker: input.runBreakerPoints * 1.6,
+    clutch: input.clutchPoints * 1.4,
+    bomber: input.points / 4,
+    solver: input.mvp * 2,
+  };
+  const attack = attackParts.breaker + attackParts.clutch + attackParts.bomber + attackParts.solver;
+  const buckets = [
+    { key: 'attack', score: attack },
+    { key: 'block', score: input.block },
+    { key: 'defense', score: input.dig + input.receive },
+    { key: 'serve', score: input.ace },
+    { key: 'set', score: input.assist },
+  ].sort((a, b) => b.score - a.score);
+
+  const active = buckets.filter((row) => row.score > 0);
+  if (active.length === 0) return '[코트 루키]';
+
+  const top = active[0];
+  const second = active[1]?.score ?? 0;
+  if (active.length >= 4 && top.score <= second * 1.6) {
+    return active.length >= 5 ? '[만능 플레이어]' : '[올라운더]';
+  }
+
+  if (top.key === 'attack') {
+    const lead = (Object.entries(attackParts).sort((a, b) => b[1] - a[1])[0]?.[0]) || 'solver';
+    if (lead === 'breaker') return '[코트의 런 브레이커]';
+    if (lead === 'clutch') return '[클러치 히터]';
+    if (lead === 'bomber') return '[코트의 폭격기]';
+    return '[해결사]';
+  }
+  if (top.key === 'block') {
+    if (input.block >= 8) return '[통곡의 벽]';
+    if (input.block >= 4) return '[거미손]';
+    return '[코트의 철벽]';
+  }
+  if (top.key === 'defense') {
+    if (input.receive > input.dig && input.receive >= 4) return '[코트의 빗장]';
+    if (input.dig > 0 && input.receive > 0 && Math.abs(input.dig - input.receive) <= 1) return '[후위의 리베로]';
+    if (input.dig >= input.receive) return '[수비의 수호신]';
+    return '[후위의 리베로]';
+  }
+  if (top.key === 'serve') {
+    return input.ace >= 5 ? '[캐논 서브]' : '[서브 마스터]';
+  }
+  return input.assist >= 8 ? '[코트의 야전사령관]' : '[명품 셋업]';
+}
+
 export function emptyPlayerProStats(): ProStatReport {
   return {
     ...EMPTY_PLAYER,
@@ -223,8 +303,9 @@ export function aggregatePlayerProStats(
     setRows.forEach((set) => {
       const play = resolvePlayerSetPlay(match, set.set_number, userId, playerName, logs);
       if (!play.played) return;
-      const side: SetPlaySide = play.side || 'host';
+      const side: SetPlaySide | null = play.side;
       report.setsPlayed += 1;
+      if (!side) return;
 
       const myScore = side === 'host' ? set.host_score : set.away_score;
       const oppScore = side === 'host' ? set.away_score : set.host_score;

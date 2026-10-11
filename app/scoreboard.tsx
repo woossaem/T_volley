@@ -12,15 +12,24 @@ import {
   StatusBar,
   Platform,
   ScrollView,
+  Animated,
   useWindowDimensions,
 } from 'react-native';
-import { startListening } from '../lib/voiceListen';
+import {
+  abandonScoreboardAudioFocus,
+  HEADSET_BUTTON_HINT,
+  requestScoreboardAudioFocus,
+  stopBluetoothSco,
+  stopForegroundService,
+  triggerVoiceRecognition,
+} from '../lib/bluetoothVoiceRoute';
 import { formatVoiceConfirm, parseVoiceCommand } from '../lib/voiceParser';
 import { setupHeadsetRemote } from '../lib/headsetRemote';
 import { speakKorean } from '../lib/voiceSpeak';
+import { getAudioState, releaseVoiceEngine, subscribeAudioState, type AudioMachineState } from '../lib/voiceListen';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter, useLocalSearchParams, useFocusEffect } from 'expo-router';
-import { useKeepAwake } from 'expo-keep-awake';
+import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import * as ScreenOrientation from 'expo-screen-orientation';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
@@ -258,9 +267,10 @@ function resolveSetRosters(args: {
   const benchIds = formation.bench || [];
   const lateIds = formation.late || [];
 
-  const hasFormation = rawCourt.length > 0 || benchIds.length > 0 || lateIds.length > 0 || !!formation.frontCount || !!formation.middleCount || !!formation.backCount;
+  const hasFormation = rawCourt.some((id) => !!assignedUserId(id)) || benchIds.length > 0 || lateIds.length > 0;
   if (!hasFormation) {
-    return { court: baseMembers, bench: [] as Member[], late: [] as Member[], formation };
+    const emptyCourt = Array.from({ length: slotTotal }, () => ({ user_id: '', full_name: '' }));
+    return { court: emptyCourt, bench: baseMembers, late: [] as Member[], formation };
   }
 
   const slots = [...rawCourt];
@@ -269,7 +279,7 @@ function resolveSetRosters(args: {
     const real = baseMembers.find((m) => m.user_id === id || listHasUser([id], m.user_id) || safeIncludes(id, m.user_id));
     if (real) return real;
     const kept = assignedUserId(id);
-    if (!kept) return { user_id: '', full_name: ANONYMOUS_PLAYER_NAME };
+    if (!kept) return { user_id: '', full_name: '' };
     return { user_id: kept, full_name: displaySlotPlayerName(kept, ANONYMOUS_PLAYER_NAME) };
   });
   const courtIds = court.map((m) => assignedUserId(m.user_id)).filter((id): id is string => !!id);
@@ -290,6 +300,27 @@ function resolveSetRosters(args: {
   return { court, bench, late: baseMembers.filter((m) => listHasUser(lateIds, m.user_id)), formation };
 }
 
+function findSpokenMember(members: Member[], spoken: string): Member | null {
+  const target = spoken.replace(/\s+/g, '').toLowerCase();
+  if (target.length < 2) return null;
+  const unique: Member[] = [];
+  const seen = new Set<string>();
+  members.forEach((member) => {
+    const key = member?.user_id || getSafeDisplayName(member);
+    if (!key || seen.has(key)) return;
+    seen.add(key);
+    unique.push(member);
+  });
+  const nameOf = (member: Member) => (getSafeDisplayName(member) || '').replace(/\s+/g, '').toLowerCase();
+  const exact = unique.filter((member) => nameOf(member) === target);
+  if (exact.length === 1) return exact[0];
+  const partial = unique.filter((member) => {
+    const name = nameOf(member);
+    return name.length >= 2 && (name.includes(target) || target.includes(name));
+  });
+  return partial.length === 1 ? partial[0] : null;
+}
+
 export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
   const router = useRouter();
   const params = useLocalSearchParams<{ matchId: string }>();
@@ -299,7 +330,14 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
   const onOpenLineup = props.onOpenLineup;
   const spectatorCourtFlip = props.spectatorCourtFlip === true;
 
-  useKeepAwake(undefined, { suppressDeactivateWarnings: true });
+  useEffect(() => {
+    activateKeepAwakeAsync().catch(() => {});
+    return () => {
+      try {
+        void Promise.resolve(deactivateKeepAwake()).catch(() => {});
+      } catch {}
+    };
+  }, []);
 
   const { session } = useAuth();
   const { width: windowWidth } = useWindowDimensions();
@@ -360,7 +398,27 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
   const [formationVisible, setFormationVisible] = useState(false);
   const [formationTeam, setFormationTeam] = useState<'host' | 'away'>('host');
   const [serveSetupMap, setServeSetupMap] = useState<ServeSetupMap>({});
-  const [voiceListening, setVoiceListening] = useState(false);
+  const [audioState, setAudioState] = useState<AudioMachineState>('IDLE');
+  const [voiceArmed, setVoiceArmed] = useState(false);
+  const voicePulse = useRef(new Animated.Value(1)).current;
+  const [voiceHint, setVoiceHint] = useState<string | null>(null);
+  const voiceListening = audioState === 'LISTENING';
+  const voiceMicLive = voiceArmed || audioState !== 'IDLE';
+
+  useEffect(() => {
+    if (!voiceListening) {
+      voicePulse.setValue(1);
+      return;
+    }
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(voicePulse, { toValue: 0.35, duration: 420, useNativeDriver: true }),
+        Animated.timing(voicePulse, { toValue: 1, duration: 420, useNativeDriver: true }),
+      ]),
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [voiceListening, voicePulse]);
 
   const isInitialLoadRef = useRef(true);
   const didAutofillSet1Ref = useRef(false);
@@ -981,55 +1039,93 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
         console.error('match_sets 점수 UPDATE 실패:', e);
       }
     }
+    return persistedEvent;
   };
 
   const persistRallyRef = useRef(persistRally);
   persistRallyRef.current = persistRally;
 
-  const applyVoiceText = async (transcript: string) => {
-    const first = parseVoiceCommand(transcript);
-    if (!first.ok) {
-      speakKorean('다시 말씀해 주세요');
-      return;
-    }
-    const slotTeam = first.teamId;
-    const kind: ScoreKind = first.actionType === 'FAULT' ? 'fault' : 'kill';
-    const scoringTeam: 'host' | 'away' = kind === 'fault'
-      ? (slotTeam === 'host' ? 'away' : 'host')
-      : slotTeam;
-    const canScore = scoringTeam === 'host' ? canControlHost : canControlAway;
-    if (!canScore || myRoleRef.current === 'spectator' || !myRoleRef.current) {
-      speakKorean('다시 말씀해 주세요');
-      return;
-    }
-    const rosters = resolveSetRosters({
-      isHost: slotTeam === 'host',
-      isIntramural,
-      match,
-      hostMembers,
-      awayMembers,
-      matchSets,
-      currentSetIndex,
-    });
-    const parsed = parseVoiceCommand(transcript, {
-      frontCount: rosters.formation.frontCount,
-      middleCount: rosters.formation.middleCount,
-      backCount: rosters.formation.backCount,
-    });
-    if (!parsed.ok) {
-      speakKorean('다시 말씀해 주세요');
-      return;
-    }
-    const idx = positionSlotToIndex(parsed.positionSlot);
-    const player = idx != null ? (rosters.court[idx] || null) : null;
-    await persistRallyRef.current(scoringTeam, kind, player, parsed.positionSlot);
-    speakKorean(formatVoiceConfirm(parsed));
+  const voiceUndoRef = useRef<Array<
+    | { kind: 'event'; eventId: string }
+    | { kind: 'court' }
+    | { kind: 'sub'; eventId: string; team: 'host' | 'away'; rosterBefore: string }
+  >>([]);
+  const voiceBridgeRef = useRef<(transcript: string) => Promise<string | null>>(async () => null);
+
+  const processVoiceCommand = async (transcript: string): Promise<string | null> => {
+    const spoken = await voiceBridgeRef.current(transcript);
+    return spoken && spoken.trim() ? spoken.trim() : null;
   };
 
-  const applyVoiceTextRef = useRef(applyVoiceText);
-  applyVoiceTextRef.current = applyVoiceText;
+  const applyVoiceTextRef = useRef(processVoiceCommand);
+  applyVoiceTextRef.current = processVoiceCommand;
   const voiceStopRef = useRef<null | (() => void)>(null);
   const voiceBusyRef = useRef(false);
+  const triggerVoiceRecognitionRef = useRef<() => void>(() => {});
+
+  useEffect(() => {
+    return subscribeAudioState((state) => {
+      setAudioState(state);
+      if (state === 'IDLE') {
+        voiceBusyRef.current = false;
+        setVoiceArmed(false);
+        setVoiceHint(null);
+        return;
+      }
+      voiceBusyRef.current = true;
+      if (state !== 'LISTENING') setVoiceHint(null);
+    });
+  }, []);
+
+  const runVoiceRecognition = () => {
+    if (matchClosedRef.current) return;
+    if (myRoleRef.current === 'spectator' || !myRoleRef.current) return;
+    const phase = getAudioState();
+    if (phase === 'LISTENING' || (voiceBusyRef.current && phase === 'IDLE')) {
+      voiceBusyRef.current = false;
+      setVoiceArmed(false);
+      setVoiceHint(null);
+      try { voiceStopRef.current?.(); } catch {}
+      return;
+    }
+    if (phase !== 'IDLE') return;
+    voiceBusyRef.current = true;
+    setVoiceArmed(true);
+    setVoiceHint(HEADSET_BUTTON_HINT);
+    let cancelPrepare = false;
+    voiceStopRef.current = () => {
+      cancelPrepare = true;
+      voiceBusyRef.current = false;
+    };
+    void triggerVoiceRecognition({
+      onStatus: (message) => {
+        setVoiceHint(message);
+        if (message == null && getAudioState() === 'IDLE') {
+          voiceBusyRef.current = false;
+          setVoiceArmed(false);
+        }
+      },
+      onFinal: (text) => applyVoiceTextRef.current(text),
+      onDenied: (message) => {
+        voiceBusyRef.current = false;
+        setVoiceArmed(false);
+        setVoiceHint(null);
+        speakKorean(message);
+      },
+    }).then((stop) => {
+      if (cancelPrepare || !voiceBusyRef.current) {
+        try { stop(); } catch {}
+        voiceBusyRef.current = false;
+        setVoiceArmed(false);
+        setVoiceHint(null);
+        return;
+      }
+      voiceStopRef.current = () => {
+        try { stop(); } catch {}
+      };
+    });
+  };
+  triggerVoiceRecognitionRef.current = runVoiceRecognition;
 
   useEffect(() => {
     if (Platform.OS === 'web' || isSpectatorForced) return;
@@ -1038,45 +1134,14 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
     let alive = true;
     let unsub = () => {};
 
-    const onPlayPause = () => {
+    requestScoreboardAudioFocus();
+    setupHeadsetRemote(() => {
       if (!alive) return;
-      if (matchClosedRef.current) return;
-      if (myRoleRef.current === 'spectator' || !myRoleRef.current) return;
-      if (voiceBusyRef.current) return;
-      voiceBusyRef.current = true;
-      setVoiceListening(true);
-      try { voiceStopRef.current?.(); } catch {}
-      const timeout = setTimeout(() => {
-        if (!voiceBusyRef.current) return;
-        voiceBusyRef.current = false;
-        setVoiceListening(false);
-        try { voiceStopRef.current?.(); } catch {}
-        speakKorean('다시 말씀해 주세요');
-      }, 8000);
-      void startListening(
-        (text) => {
-          clearTimeout(timeout);
-          voiceBusyRef.current = false;
-          setVoiceListening(false);
-          void applyVoiceTextRef.current(text);
-        },
-        () => {
-          clearTimeout(timeout);
-          voiceBusyRef.current = false;
-          setVoiceListening(false);
-          speakKorean('다시 말씀해 주세요');
-        },
-      ).then((stop) => {
-        voiceStopRef.current = () => {
-          clearTimeout(timeout);
-          stop();
-        };
-      });
-    };
-
-    setupHeadsetRemote(onPlayPause).then((u) => {
+      triggerVoiceRecognitionRef.current();
+    }).then((u) => {
       if (!alive) {
         u();
+        void stopForegroundService();
         return;
       }
       unsub = u;
@@ -1084,11 +1149,33 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
 
     return () => {
       alive = false;
-      unsub();
+      try { unsub(); } catch {}
       try { voiceStopRef.current?.(); } catch {}
+      voiceStopRef.current = null;
       voiceBusyRef.current = false;
+      try { setVoiceHint(null); } catch {}
+      try { void releaseVoiceEngine(); } catch {}
+      try { stopBluetoothSco(); } catch {}
+      try { void stopForegroundService(); } catch {}
     };
   }, [isSpectatorForced, myRole]);
+
+  useEffect(() => {
+    if (Platform.OS !== 'web') {
+      try { requestScoreboardAudioFocus(); } catch {}
+      try { void releaseVoiceEngine(); } catch {}
+    }
+    return () => {
+      try { voiceStopRef.current?.(); } catch {}
+      voiceStopRef.current = null;
+      voiceBusyRef.current = false;
+      try { setVoiceHint(null); } catch {}
+      try { void releaseVoiceEngine(); } catch {}
+      try { stopBluetoothSco(); } catch {}
+      try { abandonScoreboardAudioFocus(); } catch {}
+      try { void stopForegroundService(); } catch {}
+    };
+  }, []);
 
   const persistSubstitutionEvent = async (outMember: Member, inMember: Member, positionSlot: number | null) => {
     const tempEvent: MatchEvent = {
@@ -1999,6 +2086,292 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
     }
   };
 
+  voiceBridgeRef.current = async (transcript: string) => {
+    if (matchClosedRef.current) return null;
+    if (!myRoleRef.current || myRoleRef.current === 'spectator') return null;
+
+    const preview = parseVoiceCommand(transcript);
+    if (!preview.ok) return null;
+    const rosterSide = preview.teamId || 'host';
+    const rosters = resolveSetRosters({
+      isHost: rosterSide === 'host',
+      isIntramural,
+      match,
+      hostMembers,
+      awayMembers,
+      matchSets,
+      currentSetIndex,
+    });
+    const parsed = parseVoiceCommand(transcript, {
+      frontCount: rosters.formation.frontCount,
+      middleCount: rosters.formation.middleCount,
+      backCount: rosters.formation.backCount,
+    });
+    if (!parsed.ok) return null;
+
+    const canSide = (team: 'host' | 'away' | null) => {
+      if (team === 'away') return canControlAway;
+      if (team === 'host') return canControlHost;
+      return canControlHost || canControlAway;
+    };
+    if ((parsed.kind === 'STAT' || parsed.kind === 'SUB') && !canSide(parsed.teamId)) return null;
+    if ((parsed.kind === 'COURT_FLIP' || parsed.kind === 'SET_CLOSE' || parsed.kind === 'MATCH_END' || parsed.kind === 'UNDO') && !(canControlHost || canControlAway)) {
+      return null;
+    }
+
+    const pushUndo = (item: (typeof voiceUndoRef.current)[number]) => {
+      voiceUndoRef.current = [...voiceUndoRef.current, item].slice(-12);
+    };
+
+    const cancelVoiceEvent = async (eventId: string) => {
+      const newEvents = eventsRef.current.map((event) => (
+        event.id === eventId ? { ...event, is_canceled: true } : event
+      ));
+      eventsRef.current = newEvents;
+      setEvents(newEvents);
+      recalcScores(newEvents, currentSetIndex);
+      if (eventId && !String(eventId).startsWith('temp-')) {
+        await supabase.from('match_events').update({ is_canceled: true }).eq('id', eventId);
+      }
+      const nextScore = lastScoreForSetFromEvents(newEvents, currentSetIndex);
+      if (matchId) {
+        try {
+          const saved = await updateMatchSetScoreNow(matchId, currentSetIndex, nextScore.host, nextScore.away);
+          applySetScoreToState(currentSetIndex, saved);
+        } catch (error) {
+          console.error('음성 취소 점수 반영 실패:', error);
+        }
+        await flushScoreLogsSnapshot(newEvents);
+      }
+    };
+
+    if (parsed.kind === 'UNDO') {
+      const last = voiceUndoRef.current.pop();
+      if (!last) return null;
+      if (last.kind === 'court') {
+        await persistCourtSwap();
+      } else if (last.kind === 'sub') {
+        const updatePayload = last.team === 'host'
+          ? { host_roster: last.rosterBefore }
+          : { away_roster: last.rosterBefore };
+        setMatch((prev) => prev ? { ...prev, ...updatePayload } : prev);
+        if (matchId) await supabase.from('matches').update(updatePayload).eq('id', matchId);
+        const restored = parseSetFormation(last.rosterBefore, currentSetIndex);
+        await persistCurrentSetLineupOnly(last.team, restored.court, restored.bench);
+        await cancelVoiceEvent(last.eventId);
+        await reattributeAfterLineupChange(
+          last.team === 'host' ? last.rosterBefore : match?.host_roster,
+          last.team === 'away' ? last.rosterBefore : match?.away_roster,
+        );
+      } else {
+        await cancelVoiceEvent(last.eventId);
+      }
+      return formatVoiceConfirm(parsed);
+    }
+
+    if (parsed.kind === 'COURT_FLIP') {
+      await persistCourtSwap();
+      pushUndo({ kind: 'court' });
+      return formatVoiceConfirm(parsed);
+    }
+
+    if (parsed.kind === 'SET_CLOSE') {
+      await executeFinishSet();
+      return formatVoiceConfirm(parsed);
+    }
+
+    if (parsed.kind === 'MATCH_END') {
+      if (isIntramural) {
+        const live = `${currentScores.host}:${currentScores.away}`;
+        const history = currentSetIndex < setHistoryRef.current.length
+          ? setHistoryRef.current.map((score, index) => (index === currentSetIndex ? live : score))
+          : [...setHistoryRef.current, live];
+        let hostWins = 0;
+        let awayWins = 0;
+        history.forEach((score) => {
+          const [hostScore, awayScore] = String(score).split(':').map(Number);
+          if ((hostScore || 0) > (awayScore || 0)) hostWins += 1;
+          else if ((awayScore || 0) > (hostScore || 0)) awayWins += 1;
+        });
+        const winner = hostWins > awayWins
+          ? (match?.host_team_name || 'draw')
+          : awayWins > hostWins
+            ? (match?.away_team_name || 'draw')
+            : 'draw';
+        await handleConfirmIntramuralFinish(winner);
+      } else {
+        await processOfficialMatchFinish();
+      }
+      return formatVoiceConfirm(parsed);
+    }
+
+    const slotTeam = parsed.teamId === 'away' ? 'away' : 'host';
+    const sideRosters = rosterSide === slotTeam
+      ? rosters
+      : resolveSetRosters({
+        isHost: slotTeam === 'host',
+        isIntramural,
+        match,
+        hostMembers,
+        awayMembers,
+        matchSets,
+        currentSetIndex,
+      });
+    const slotIndex = positionSlotToIndex(parsed.positionSlot);
+
+    if (parsed.kind === 'SUB') {
+      const pool = slotTeam === 'host' || isIntramural ? hostMembers : awayMembers;
+      const incoming = findSpokenMember(
+        [...(pool || []), ...sideRosters.court, ...sideRosters.bench, ...sideRosters.late],
+        parsed.playerName || '',
+      );
+      if (!incoming?.user_id || slotIndex == null) return null;
+      const rosterStr = slotTeam === 'host' ? match?.host_roster : match?.away_roster;
+      const rosterBefore = String(rosterStr || '');
+      const formMap = parseSetFormationMap(rosterStr);
+      const currentForm = formMap[currentSetIndex] || parseSetFormation(rosterStr, currentSetIndex);
+      const courtIds = [...(currentForm.court.length > 0 ? currentForm.court : [])];
+      while (courtIds.length <= slotIndex) courtIds.push(null);
+      const incomingId = incoming.user_id;
+      if (assignedUserId(courtIds[slotIndex]) === incomingId) {
+        return `${parsed.spokenPosition}에는 이미 ${getSafeDisplayName(incoming)} 선수가 있습니다`;
+      }
+      const cleared = courtIds.map((id) => (assignedUserId(id) === incomingId ? null : id));
+      const outId = assignedUserId(cleared[slotIndex]);
+      cleared[slotIndex] = incomingId;
+      const outMember = outId
+        ? ([...(pool || []), ...sideRosters.court].find((member) => member.user_id === outId)
+          || { user_id: outId, full_name: displaySlotPlayerName(outId, '교체') })
+        : null;
+      const updatedBench = [...(currentForm.bench || [])]
+        .filter((id) => assignedUserId(id) !== incomingId)
+        .concat(outId ? [outId] : []);
+      formMap[currentSetIndex] = {
+        court: cleared,
+        bench: updatedBench,
+        late: (currentForm.late || []).filter((id) => {
+          const real = assignedUserId(id);
+          return real !== incomingId && real !== outId;
+        }),
+        frontCount: currentForm.frontCount,
+        middleCount: currentForm.middleCount,
+        backCount: currentForm.backCount,
+      };
+      const carried = seedNextSetFormation(formMap, currentSetIndex, true);
+      const updatedRosterJson = JSON.stringify(carried);
+      const updatePayload = slotTeam === 'host'
+        ? { host_roster: updatedRosterJson }
+        : { away_roster: updatedRosterJson };
+      setMatch((prev) => prev ? { ...prev, ...updatePayload } : prev);
+      const scores = scoresRef.current;
+      const tempEvent: MatchEvent = {
+        id: `temp-${Date.now()}`,
+        match_id: matchId,
+        set_index: currentSetIndex,
+        event_type: 'sub',
+        team_type: slotTeam,
+        player_id: incoming.user_id,
+        player_name: getSafeDisplayName(incoming),
+        sub_out_id: outMember?.user_id || null,
+        sub_out_name: outMember ? getSafeDisplayName(outMember) : null,
+        position_slot: parsed.positionSlot,
+        host_score: scores.host,
+        away_score: scores.away,
+        is_canceled: false,
+      };
+      setEvents((prev) => {
+        const next = [...prev, tempEvent];
+        eventsRef.current = next;
+        return next;
+      });
+      const subLog = {
+        match_id: matchId,
+        set_index: currentSetIndex,
+        set_number: currentSetIndex + 1,
+        event_type: 'sub',
+        team_type: slotTeam,
+        player_id: incoming.user_id,
+        player_name: getSafeDisplayName(incoming),
+        sub_out_id: outMember?.user_id || null,
+        sub_out_name: outMember ? getSafeDisplayName(outMember) : null,
+        position_slot: parsed.positionSlot,
+        host_score: scores.host,
+        away_score: scores.away,
+        is_canceled: false,
+      };
+      const persisted = await persistOptimisticEvent(tempEvent, subLog);
+      if (matchId) await appendMatchScoreLog(matchId, { ...subLog, id: persisted.id });
+      if (matchId) await supabase.from('matches').update(updatePayload).eq('id', matchId);
+      await persistCurrentSetLineupOnly(slotTeam, cleared, updatedBench);
+      await reattributeAfterLineupChange(
+        slotTeam === 'host' ? updatedRosterJson : match?.host_roster,
+        slotTeam === 'away' ? updatedRosterJson : match?.away_roster,
+      );
+      pushUndo({ kind: 'sub', eventId: persisted.id, team: slotTeam, rosterBefore });
+      return formatVoiceConfirm(parsed);
+    }
+
+    const player = slotIndex != null ? (sideRosters.court[slotIndex] || null) : null;
+    if (parsed.kind === 'STAT' && parsed.statType) {
+      const keepId = player?.user_id && (isRegisteredUserId(player.user_id) || isTempSlotId(player.user_id))
+        ? player.user_id
+        : null;
+      const savedPlayerName = keepId
+        ? (isRegisteredUserId(keepId) ? getSafeDisplayName(player) : displaySlotPlayerName(keepId, getSafeDisplayName(player)))
+        : (parsed.positionCode || '');
+      const scores = scoresRef.current;
+      const eventType = parsed.statType;
+      const tempEvent: MatchEvent = {
+        id: `temp-${Date.now()}`,
+        match_id: matchId,
+        set_index: currentSetIndex,
+        event_type: eventType,
+        team_type: slotTeam,
+        player_id: keepId,
+        player_name: savedPlayerName,
+        position_slot: parsed.positionSlot,
+        host_score: scores.host,
+        away_score: scores.away,
+        is_canceled: false,
+      };
+      setEvents((prev) => {
+        const next = [...prev, tempEvent];
+        eventsRef.current = next;
+        return next;
+      });
+      const statLog = {
+        match_id: matchId,
+        set_index: currentSetIndex,
+        set_number: currentSetIndex + 1,
+        event_type: eventType,
+        team_type: slotTeam,
+        player_id: keepId,
+        player_name: savedPlayerName,
+        position_slot: parsed.positionSlot,
+        host_score: scores.host,
+        away_score: scores.away,
+        is_canceled: false,
+      };
+      const persisted = await persistOptimisticEvent(tempEvent, statLog);
+      if (matchId) await appendMatchScoreLog(matchId, { ...statLog, id: persisted.id });
+      pushUndo({ kind: 'event', eventId: persisted.id });
+      return formatVoiceConfirm(parsed);
+    }
+
+    if (parsed.kind === 'SCORE' || parsed.kind === 'FAULT') {
+      const scoreKind: ScoreKind = parsed.kind === 'FAULT' ? 'fault' : 'kill';
+      const scoringTeam: 'host' | 'away' = scoreKind === 'fault'
+        ? (slotTeam === 'host' ? 'away' : 'host')
+        : slotTeam;
+      if (!canSide(scoringTeam)) return null;
+      const persisted = await persistRallyRef.current(scoringTeam, scoreKind, player, parsed.positionSlot);
+      if (persisted?.id) pushUndo({ kind: 'event', eventId: persisted.id });
+      return formatVoiceConfirm(parsed);
+    }
+
+    return null;
+  };
+
   const handleOpenEditModal = () => {
     if (myRole === 'spectator') return;
     setTempHostScore(currentScores.host);
@@ -2109,7 +2482,7 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
         frontCount: formation.frontCount,
         middleCount: formation.middleCount,
         backCount: formation.backCount,
-        forceFillGuests: true,
+        forceFillGuests: false,
         usedIds: [
           ...(formation.bench || []),
           ...(formation.late || []),
@@ -2168,7 +2541,7 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
         frontCount: hostFormation.frontCount,
         middleCount: hostFormation.middleCount,
         backCount: hostFormation.backCount,
-        forceFillGuests: true,
+        forceFillGuests: false,
         usedIds: [
           ...(hostFormation.bench || []),
           ...(hostFormation.late || []),
@@ -2187,7 +2560,7 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
         frontCount: awayFormation.frontCount,
         middleCount: awayFormation.middleCount,
         backCount: awayFormation.backCount,
-        forceFillGuests: true,
+        forceFillGuests: false,
         usedIds: [
           ...(filledHost.court || []),
           ...(hostFormation.bench || []),
@@ -2377,9 +2750,9 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
       </Modal>
 
       <View style={[styles.headerBlock, { paddingLeft: Math.max(safeInset(insets.left), 8), paddingRight: Math.max(safeInset(insets.right), 8) }]}>
-        {voiceListening ? (
+        {voiceHint || voiceListening ? (
           <View style={styles.voiceListenBanner} pointerEvents="none">
-            <Text style={styles.voiceListenText}>🎧 음성 대기 중 · A팀 앞차 득점</Text>
+            <Text style={styles.voiceListenText}>{voiceHint || HEADSET_BUTTON_HINT}</Text>
           </View>
         ) : null}
         <View style={styles.headerSlim}>
@@ -2432,6 +2805,17 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
 
           <View style={styles.headerSlimRight}>
             <Text style={styles.recorderLine} numberOfLines={1}>{recorderLine}</Text>
+            {!!myRole && myRole !== 'spectator' && (
+              <Animated.View style={{ opacity: voicePulse }}>
+                <TouchableOpacity
+                  style={[styles.voiceBtnSlim, voiceMicLive && styles.voiceBtnSlimActive]}
+                  onPress={() => triggerVoiceRecognitionRef.current()}
+                  hitSlop={8}
+                >
+                  <Text style={styles.voiceBtnTextSlim}>{voiceMicLive ? '🎤' : '🎧'} 음성</Text>
+                </TouchableOpacity>
+              </Animated.View>
+            )}
             {myRole !== 'spectator' && (
               <TouchableOpacity style={styles.leaveRoleBtnSlim} onPress={handleLeaveRole} hitSlop={8}>
                 <Text style={styles.leaveRoleBtnTextSlim}>반납</Text>
@@ -2789,6 +3173,12 @@ export default function ScoreboardScreen(props: ScoreboardScreenProps = {}) {
         </View>
       </Modal>
 
+      {voiceHint ? (
+        <View style={styles.voiceBottomBanner} pointerEvents="none">
+          <Text style={styles.voiceBottomBannerText}>{voiceHint}</Text>
+        </View>
+      ) : null}
+
       {reportModalVisible && match && (
         <MatchPostgameReportModal
           visible={reportModalVisible}
@@ -2822,6 +3212,22 @@ const styles = StyleSheet.create({
     marginTop: 4,
   },
   voiceListenText: { color: '#F8FAFC', fontSize: 12, fontWeight: '800' },
+  voiceBtnSlim: { backgroundColor: '#1D4ED8', borderRadius: 6, paddingHorizontal: 8, paddingVertical: 4 },
+  voiceBtnSlimActive: { backgroundColor: '#DC2626' },
+  voiceBtnTextSlim: { color: '#FFFFFF', fontSize: 11, fontWeight: '800' },
+  voiceBottomBanner: {
+    position: 'absolute',
+    left: 16,
+    right: 16,
+    bottom: 16,
+    zIndex: 30,
+    backgroundColor: '#1E3A8A',
+    borderRadius: 12,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    alignItems: 'center',
+  },
+  voiceBottomBannerText: { color: '#FFFFFF', fontSize: 13, fontWeight: '800', textAlign: 'center' },
   headerSlim: { minHeight: 38, flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 6, paddingHorizontal: 10, paddingTop: 4, paddingBottom: 4 },
   headerSlimLeft: { flexDirection: 'row', alignItems: 'center', gap: 6, flexGrow: 1, flexShrink: 1, minWidth: 120 },
   backBtnSlim: { width: 24, height: 24, justifyContent: 'center', alignItems: 'center' },

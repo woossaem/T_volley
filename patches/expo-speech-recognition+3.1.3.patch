@@ -1,0 +1,38 @@
+diff --git a/node_modules/expo-speech-recognition/ios/ExpoSpeechRecognizer.swift b/node_modules/expo-speech-recognition/ios/ExpoSpeechRecognizer.swift
+index c474f80..b406713 100644
+--- a/node_modules/expo-speech-recognition/ios/ExpoSpeechRecognizer.swift
++++ b/node_modules/expo-speech-recognition/ios/ExpoSpeechRecognizer.swift
+@@ -612,15 +612,30 @@ actor ExpoSpeechRecognizer: ObservableObject {
+         options: categoryOptions
+       )
+     } else {
+-      // Default to playAndRecord with defaultToSpeaker and allowBluetooth
++      // PlayAndRecord. 블루투스 HFP 마이크와 A2DP 출력, 스피커 기본값을 함께 연다.
+       try audioSession.setCategory(
+         .playAndRecord,
+-        mode: .measurement,
+-        options: [.defaultToSpeaker, .allowBluetooth]
++        mode: .default,
++        options: [.defaultToSpeaker, .allowBluetooth, .allowBluetoothA2DP]
+       )
+     }
+ 
+     try audioSession.setActive(true, options: .notifyOthersOnDeactivation)
++    Self.preferBluetoothMicrophone(audioSession)
++  }
++
++  /// setCategory 가 우선 입력을 지운 뒤, 연결된 헤드셋 마이크를 다시 고정한다.
++  private static func preferBluetoothMicrophone(_ session: AVAudioSession) {
++    let inputs = session.availableInputs ?? []
++    let headset = inputs.first { port in
++      port.portType == .bluetoothHFP || port.portType == .bluetoothLE
++    }
++    guard let headset else { return }
++    do {
++      try session.setPreferredInput(headset)
++    } catch {
++      print("expo-speech-recognition: bluetooth input \(error)")
++    }
+   }
+ 
+   private static func audioInputIsBusy(_ recordingFormat: AVAudioFormat) -> Bool {

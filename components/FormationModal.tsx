@@ -18,7 +18,6 @@ import {
   clampLineCount,
   DEFAULT_LINE_COUNT,
   displaySlotPlayerName,
-  fillEmptySlotsWithGuests,
   isAnonymousSlotId,
   isTempSlotId,
   LINE_MAX,
@@ -133,17 +132,12 @@ function syncDuties(st: SideState, members: FormationMember[]): SideState {
 function hydrateSide(
   members: FormationMember[],
   initial: SetFormation,
-  usedIds: Array<string | null | undefined> = [],
+  _usedIds: Array<string | null | undefined> = [],
 ): SideState {
   const nextFront = clampLineCount(initial?.frontCount, DEFAULT_LINE_COUNT);
   const nextMiddle = clampLineCount(initial?.middleCount, DEFAULT_LINE_COUNT);
   const nextBack = clampLineCount(initial?.backCount, DEFAULT_LINE_COUNT);
-  const padded = padCourtSlots(initial?.court || [], nextFront + nextMiddle + nextBack);
-  const court = fillEmptySlotsWithGuests(
-    padded,
-    [...usedIds, ...(initial?.bench || []), ...(initial?.late || [])],
-    nextFront + nextMiddle + nextBack,
-  );
+  const court = padCourtSlots(initial?.court || [], nextFront + nextMiddle + nextBack);
   return syncDuties(
     {
       frontCount: nextFront,
@@ -850,10 +844,10 @@ export default function FormationModal({
     );
   };
 
-  const toFormation = (st: SideState, extraUsed: Array<string | null | undefined> = []): SetFormation => {
+  const toFormation = (st: SideState, _extraUsed: Array<string | null | undefined> = []): SetFormation => {
     const total = st.frontCount + st.middleCount + st.backCount;
     return {
-      court: fillEmptySlotsWithGuests(padCourtSlots(st.court, total), extraUsed, total),
+      court: padCourtSlots(st.court, total),
       bench: st.bench,
       late: st.late,
       frontCount: st.frontCount,

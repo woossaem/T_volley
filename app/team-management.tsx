@@ -247,19 +247,37 @@ export default function TeamManagementScreen() {
 
       const finalPinCode = newTeamPin.trim() ? newTeamPin.trim() : null;
 
+      const schoolTeam = newTeamType === 'school';
       const { data: createdTeam, error: createErr } = await supabase.from('teams').insert({
         name: finalTeamName,
         region: finalTeamRegion, 
         team_type: newTeamType,
         pin_code: finalPinCode,
         youtube_channel_url: newTeamYoutube.trim() || null,
-        leader_id: userId,
+        leader_id: schoolTeam ? null : userId,
         status: 'active',
       }).select().single();
 
       if (createErr) throw createErr;
 
-      await supabase.from('team_members').insert({ user_id: userId, team_id: createdTeam.id, is_active: true, is_primary: myJoinedTeams.length === 0 });
+      const memberInsert = await supabase.from('team_members').insert({
+        user_id: userId,
+        team_id: createdTeam.id,
+        is_active: true,
+        is_primary: myJoinedTeams.length === 0,
+        role: schoolTeam ? 'member' : 'leader',
+      });
+      if (memberInsert.error && /role/i.test(memberInsert.error.message || '')) {
+        const retry = await supabase.from('team_members').insert({
+          user_id: userId,
+          team_id: createdTeam.id,
+          is_active: true,
+          is_primary: myJoinedTeams.length === 0,
+        });
+        if (retry.error) throw retry.error;
+      } else if (memberInsert.error) {
+        throw memberInsert.error;
+      }
       Alert.alert('팀 개설 완료! ✨', `'${finalTeamName}' [${finalTeamRegion}] 팀이 정식 창단되었습니다.`);
       setNewTeamName(''); setNewTeamPin(''); setNewTeamYoutube(''); setCustomCreateTeamRegionText('');
       fetchInitialData();

@@ -4,6 +4,74 @@ export const HEADSET_PLAY_PAUSE_EVENT = 'TVolleyHeadsetPlayPause';
 
 type Unsub = () => void;
 
+let playerRef: { play?: () => Promise<void>; reset?: () => Promise<void> } | null = null;
+let headsetGeneration = 0;
+let headsetOwner = -1;
+let isSubscribed = false;
+let headsetSub: { remove: () => void } | null = null;
+
+/** TrackPlayer 직접 수신은 playback service 에 맡기고, 여기서는 그 신호만 받는다. */
+function subscribeHeadsetButton(onPlayPause: () => void): Unsub {
+  if (isSubscribed) return () => {};
+
+  headsetSub = DeviceEventEmitter.addListener(HEADSET_PLAY_PAUSE_EVENT, async () => {
+    console.log('[HeadsetRemote] 🎧 버튼 클릭 이벤트 수신 (DeviceEventEmitter)');
+    try {
+      onPlayPause();
+    } catch (e) {
+      console.error('[HeadsetRemote] 음성 인식 실행 실패:', e);
+    }
+  });
+
+  isSubscribed = true;
+  console.log('[HeadsetRemote] 미디어 버튼 이벤트 리스너 단일화 완료');
+
+  return () => {
+    try { headsetSub?.remove(); } catch {}
+    headsetSub = null;
+    isSubscribed = false;
+  };
+}
+
+/** 스코어보드를 떠나면 상단 미디어 알림과 재생 세션을 끈다. */
+export async function stopHeadsetSession(): Promise<void> {
+  headsetGeneration += 1;
+  headsetOwner = -1;
+  const mod = await loadTrackPlayer();
+  const TrackPlayer = mod?.default ?? mod;
+  playerRef = null;
+  if (!TrackPlayer) return;
+  const { AppKilledPlaybackBehavior } = mod || {};
+  try {
+    await TrackPlayer.updateOptions?.({
+      capabilities: [],
+      notificationCapabilities: [],
+      compactCapabilities: [],
+      android: {
+        appKilledPlaybackBehavior: AppKilledPlaybackBehavior?.StopPlaybackAndRemoveNotification,
+      },
+    });
+  } catch {}
+  try { await TrackPlayer.pause(); } catch {}
+  try { await TrackPlayer.stop(); } catch {}
+  try {
+    if (typeof TrackPlayer.setActive === 'function') {
+      await TrackPlayer.setActive(false);
+    }
+  } catch {}
+  try { await TrackPlayer.reset(); } catch {}
+}
+
+/** 인식이 끝난 뒤 무음 트랙을 다시 틀어 이어폰 버튼이 계속 들어오게 한다. */
+export function resumeHeadsetSession(): void {
+  try {
+    const pending = playerRef?.play?.();
+    void Promise.resolve(pending).catch(() => {});
+  } catch (e) {
+    console.warn('[Headset] resume', e);
+  }
+}
+
 async function loadTrackPlayer(): Promise<any | null> {
   if (Platform.OS === 'web') return null;
   try {
@@ -15,13 +83,16 @@ async function loadTrackPlayer(): Promise<any | null> {
 }
 
 export async function setupHeadsetRemote(onPlayPause: () => void): Promise<Unsub> {
+  const generation = headsetGeneration;
   const mod = await loadTrackPlayer();
+  if (generation !== headsetGeneration) return () => {};
+  headsetOwner = generation;
   const TrackPlayer = mod?.default ?? mod;
+  playerRef = TrackPlayer ?? null;
   if (!TrackPlayer?.setupPlayer) {
-    const fallback = DeviceEventEmitter.addListener(HEADSET_PLAY_PAUSE_EVENT, onPlayPause);
-    return () => fallback.remove();
+    return subscribeHeadsetButton(onPlayPause);
   }
-  const { Capability, RepeatMode, Event, AppKilledPlaybackBehavior } = mod;
+  const { Capability, RepeatMode, AppKilledPlaybackBehavior } = mod;
 
   try {
     await TrackPlayer.setupPlayer({ autoHandleInterruptions: true });
@@ -38,8 +109,7 @@ export async function setupHeadsetRemote(onPlayPause: () => void): Promise<Unsub
       compactCapabilities: [Capability.Play, Capability.Pause],
       notificationCapabilities: [Capability.Play, Capability.Pause],
       android: {
-        appKilledPlaybackBehavior: AppKilledPlaybackBehavior?.ContinuePlayback
-          ?? AppKilledPlaybackBehavior?.StopPlaybackAndRemoveNotification,
+        appKilledPlaybackBehavior: AppKilledPlaybackBehavior?.StopPlaybackAndRemoveNotification,
       },
     });
     await TrackPlayer.reset();
@@ -51,27 +121,20 @@ export async function setupHeadsetRemote(onPlayPause: () => void): Promise<Unsub
     });
     if (RepeatMode?.Track != null) await TrackPlayer.setRepeatMode(RepeatMode.Track);
     await TrackPlayer.play();
+    if (generation !== headsetGeneration && headsetOwner !== generation) {
+      return () => {};
+    }
+    if (generation !== headsetGeneration) {
+      headsetOwner = -1;
+      try { await TrackPlayer.reset(); } catch {}
+      return () => {};
+    }
   } catch (e) {
     console.warn('[Headset] session', e);
   }
 
-  const handle = () => {
-    try { onPlayPause(); } catch (err) {
-      console.warn('[Headset] play/pause handler', err);
-    }
-    TrackPlayer.play().catch(() => {});
-  };
+  if (generation !== headsetGeneration) return () => {};
 
-  const subs = [
-    TrackPlayer.addEventListener(Event.RemotePlay, handle),
-    TrackPlayer.addEventListener(Event.RemotePause, handle),
-    ...(Event.RemotePlayPause ? [TrackPlayer.addEventListener(Event.RemotePlayPause, handle)] : []),
-    DeviceEventEmitter.addListener(HEADSET_PLAY_PAUSE_EVENT, handle),
-  ];
-
-  return () => {
-    subs.forEach((sub) => {
-      try { sub.remove(); } catch {}
-    });
-  };
+  // TrackPlayer 직접 이벤트 등록은 제거하고, DeviceEventEmitter 하나만 수신
+  return subscribeHeadsetButton(onPlayPause);
 }

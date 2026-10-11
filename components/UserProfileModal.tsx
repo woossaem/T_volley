@@ -17,10 +17,14 @@ import BadgeCollectionModal from './BadgeCollectionModal';
 import { getAllBadgesWithStatus } from '../lib/badgeUtils';
 import { formatTeamDisplayName } from '../lib/teamStatus';
 import { hydrateMatchesWithSetScores } from '../lib/matchSets';
-import { buildPersonalReportAnalytics, type PersonalReportAnalytics } from '../lib/personalReportAnalytics';
+import { buildPersonalReportAnalytics, emptySkillStatCounts, tallyScopedSkillStats, type PersonalReportAnalytics, type SkillStatCounts } from '../lib/personalReportAnalytics';
 import ReportScopeTabs, { type ReportScopeTab } from './ReportScopeTabs';
 import { PersonalReportSection } from './PersonalReportModal';
+import ProStatPanel from './ProStatPanel';
 import { getSafeDisplayName } from '../lib/utils';
+import { publicProfileName } from '../lib/profilePrivacy';
+import { emptyPlayerProStats, playerStyleTitle } from '../lib/proStats';
+import { useAuth } from '../contexts/AuthContext';
 
 interface UserProfileModalProps {
   visible: boolean;
@@ -33,23 +37,155 @@ interface UserProfileModalProps {
 interface UserProfileData {
   full_name: string;
   school_name?: string;
+  school_region?: string | null;
   position?: string;
   gender?: string;
   region?: string;
   avatar_icon?: string;
   avatar_url?: string;
+  nickname?: string | null;
+  is_name_public?: boolean | null;
+  is_stats_public?: boolean | null;
   grape_count?: number;
   manner_temp?: number;
 }
 
 // 💡 기존 이름 마스킹 규칙 적용 (홍길동 -> 홍*동 / 김철 -> 김* / 남궁민수 -> 남**수)
-const maskName = (name?: string): string => {
-  if (!name) return '선생님';
-  const trimmed = name.trim();
-  if (trimmed.length <= 1) return trimmed;
-  if (trimmed.length === 2) return `${trimmed[0]}*`;
-  return `${trimmed[0]}${'*'.repeat(trimmed.length - 2)}${trimmed[trimmed.length - 1]}`;
-};
+export async function loadPersonalDetailStats(userId: string) {
+  const empty = { official: emptySkillStatCounts(), intramural: emptySkillStatCounts() };
+  const { data: mine, error } = await supabase
+    .from('match_events')
+    .select('match_id, event_type')
+    .eq('player_id', userId)
+    .eq('is_canceled', false);
+  if (error || !mine) return empty;
+  const matchIds = new Set<string>();
+  mine.forEach((row: any) => {
+    if (row.match_id) matchIds.add(String(row.match_id));
+  });
+  const ids = Array.from(matchIds);
+  const rows: Array<{ match_id?: string | null; player_id?: string | null; event_type?: string | null }> = [];
+  mine.forEach((row: any) => {
+    if (String(row.event_type || '') === 'score') return;
+    rows.push({
+      match_id: row.match_id,
+      player_id: userId,
+      event_type: row.event_type,
+    });
+  });
+  const matchMeta: Array<{ id?: string | null; status?: string | null; is_official?: boolean | null; is_guest_match?: boolean | null }> = [];
+  for (let i = 0; i < ids.length; i += 40) {
+    const chunk = ids.slice(i, i + 40);
+    const [{ data: scores }, { data: matches }] = await Promise.all([
+      supabase
+        .from('match_events')
+        .select('match_id, player_id, event_type')
+        .in('match_id', chunk)
+        .eq('is_canceled', false)
+        .eq('event_type', 'score'),
+      supabase
+        .from('matches')
+        .select('id, status, is_official, is_guest_match')
+        .in('id', chunk),
+    ]);
+    (scores || []).forEach((row: any) => rows.push(row));
+    matchMeta.push(...(matches || []));
+  }
+  return tallyScopedSkillStats(userId, rows, matchMeta);
+}
+
+function SkillGroup({ title, cells }: { title: string; cells: { label: string; value: string }[] }) {
+  return (
+    <View style={styles.skillGroup}>
+      <Text style={styles.skillGroupTitle}>{title}</Text>
+      <View style={styles.skillGrid}>
+        {cells.map((cell) => (
+          <View key={cell.label} style={styles.skillCell}>
+            <Text style={styles.skillLabel} numberOfLines={1}>{cell.label}</Text>
+            <Text style={styles.skillValue}>{cell.value}</Text>
+          </View>
+        ))}
+      </View>
+    </View>
+  );
+}
+
+export function PlayerAnalysisReport({
+  pro,
+  detail,
+  intramural,
+}: {
+  pro?: ReturnType<typeof emptyPlayerProStats> | null;
+  detail: { mvp: number; dig: number; block: number; ace: number; receive: number; assist: number; fault: number };
+  intramural: boolean;
+}) {
+  const sheet = pro || emptyPlayerProStats();
+  const faults = detail.fault || 0;
+  const points = sheet.points || 0;
+  const net = points - faults;
+  const title = playerStyleTitle({
+    setsPlayed: sheet.setsPlayed,
+    points: sheet.points,
+    clutchPoints: sheet.clutchPoints,
+    runBreakerPoints: sheet.runBreakerPoints,
+    mvp: detail.mvp,
+    dig: detail.dig,
+    block: detail.block,
+    ace: detail.ace,
+    receive: detail.receive,
+    assist: detail.assist,
+  });
+
+  return (
+    <View style={styles.analysisWrap}>
+      <View style={styles.titleTile}>
+        <Text style={styles.titleTileText}>{title}</Text>
+      </View>
+      <View style={styles.metricRow}>
+        <View style={styles.metricCell}>
+          <Text style={styles.metricLabel}>득실 마진</Text>
+          <Text style={styles.metricValue}>{net >= 0 ? `+${net}` : String(net)}</Text>
+        </View>
+        <View style={styles.metricDivider} />
+        <View style={styles.metricCell}>
+          <Text style={styles.metricLabel}>세트당 득점</Text>
+          <Text style={styles.metricValue}>{(sheet.pps || 0).toFixed(1)}점</Text>
+        </View>
+        <View style={styles.metricDivider} />
+        <View style={styles.metricCell}>
+          <Text style={styles.metricLabel}>공격 점유율</Text>
+          <Text style={styles.metricValue}>{sheet.teamSharePct || 0}%</Text>
+        </View>
+      </View>
+      <SkillGroup
+        title="공격 & 서브"
+        cells={[
+          { label: 'MVP 수여', value: `${detail.mvp}회` },
+          { label: '통산 득점', value: `${points}점` },
+          { label: '서브 에이스', value: `${detail.ace}개` },
+          { label: '승부처 득점', value: `${sheet.clutchPoints || 0}점` },
+        ]}
+      />
+      <SkillGroup
+        title="수비 & 차단"
+        cells={[
+          { label: '블로킹', value: `${detail.block}개` },
+          { label: '디그', value: `${detail.dig}개` },
+          { label: '리시브', value: `${detail.receive}개` },
+          { label: '흐름 차단', value: `${sheet.runBreakerPoints || 0}회` },
+        ]}
+      />
+      <SkillGroup
+        title="세트 & 범실"
+        cells={[
+          { label: '세트 / 어시스트', value: `${detail.assist}개` },
+          { label: '통산 범실', value: `${faults}개` },
+        ]}
+      />
+      <ProStatPanel player={sheet} accent={intramural ? 'purple' : 'blue'} parts="positions" />
+    </View>
+  );
+}
 
 export default function UserProfileModal({ 
   visible, 
@@ -59,7 +195,12 @@ export default function UserProfileModal({
   onClose 
 }: UserProfileModalProps) {
   const insets = useSafeAreaInsets();
+  const { session } = useAuth();
   const [loading, setLoading] = useState(true);
+  const [detailStats, setDetailStats] = useState<{ official: SkillStatCounts; intramural: SkillStatCounts }>({
+    official: emptySkillStatCounts(),
+    intramural: emptySkillStatCounts(),
+  });
   const [profile, setProfile] = useState<UserProfileData | null>(null);
   const [invitedCount, setInvitedCount] = useState<number>(0);
   const [grapeBoardModalVisible, setGrapeBoardModalVisible] = useState(false);
@@ -124,7 +265,7 @@ export default function UserProfileModal({
       const { data: allProfs } = await supabase.from('profiles').select('*');
       const pMap: Record<string, string> = {};
       (allProfs || []).forEach((p: any) => {
-        if (p?.id) pMap[p.id] = getSafeDisplayName(p);
+        if (p?.id) pMap[p.id] = publicProfileName(p, { self: p.id === session?.user?.id });
       });
       setProfilesMap(pMap);
 
@@ -134,6 +275,7 @@ export default function UserProfileModal({
         .in('status', ['completed', 'friendly', 'intramural']);
       const hydrated = await hydrateMatchesWithSetScores(allMatchesRaw || []);
       setAllMatches(hydrated);
+      setDetailStats(await loadPersonalDetailStats(userId));
     } catch (err) {
       console.error('상대 프로필 조회 오류:', err);
     } finally {
@@ -149,9 +291,9 @@ export default function UserProfileModal({
     return { title: null, style: null };
   }, [invitedCount]);
 
-  // 💡 내 팀원이면 실명, 타 팀원이면 홍*동 처리
-  const rawName = getSafeDisplayName(profile);
-  const displayName = isMyTeamMember ? rawName : maskName(rawName);
+  const isSelf = !!userId && session?.user?.id === userId;
+  const statsVisible = isSelf || profile?.is_stats_public !== false;
+  const displayName = publicProfileName(profile, { self: isSelf });
 
   const avatarIco = profile?.avatar_icon || '🏐';
   const avatarUrl = profile?.avatar_url;
@@ -175,11 +317,7 @@ export default function UserProfileModal({
       profilesMap,
       teamName: selectedTeamName,
     });
-    const maskPartner = (name: string) => {
-      if (isMyTeamMember) return name;
-      if (!name || name === '데이터 없음' || name === '팀원') return name;
-      return maskName(name);
-    };
+    const maskPartner = (name: string) => name;
     return {
       ...built,
       official: { ...built.official, bestPartnerName: maskPartner(built.official.bestPartnerName) },
@@ -256,7 +394,7 @@ export default function UserProfileModal({
                   </View>
 
                   <Text style={styles.subText}>
-                    🏫 {profile?.school_name || '학교 미설정'} · 🏐 {profile?.position || '포지션 미설정'}
+                    🏫 {profile?.school_name || '학교 미설정'}{profile?.school_region ? ` · ${profile.school_region}` : ''} · 🏐 {profile?.position || '포지션 미설정'}
                   </Text>
                   {userTeams.length > 0 ? (
                     <Text style={styles.subText}>
@@ -310,8 +448,9 @@ export default function UserProfileModal({
                   </Text>
                 </View>
 
+                {statsVisible ? (
                 <View style={styles.statsCard}>
-                  <Text style={styles.statsCardTitle}>📊 개인 출전 성적</Text>
+                  <Text style={styles.reportHeading}>선수 분석 리포트</Text>
                   <Text style={styles.statsSubText}>
                     {selectedTeamName
                       ? `[${formatTeamDisplayName(selectedTeamName)}] 교류전·청백전을 나눠 봅니다`
@@ -351,9 +490,34 @@ export default function UserProfileModal({
                       slice={activeSlice}
                       intramural={!!intramuralView}
                       hideAttendance={!selectedTeamName}
+                      omitSkillPanels
                     />
                   </View>
+                  <PlayerAnalysisReport
+                    pro={activeSlice?.proStats}
+                    detail={intramuralView ? detailStats.intramural : detailStats.official}
+                    intramural={!!intramuralView}
+                  />
+                  <View style={[styles.partnerBox, { marginTop: 8 }]}>
+                    <Text style={styles.partnerLabel}>
+                      {intramuralView ? '함께 세트판 가져간 짝꿍' : '함께 경기를 가져간 짝꿍'}
+                    </Text>
+                    <Text style={styles.partnerValue}>{activeSlice?.bestPartnerName || '데이터 없음'}</Text>
+                    <Text style={styles.partnerSub}>
+                      {(activeSlice?.maxPartnerWins || 0) > 0
+                        ? (intramuralView
+                          ? `같이 나와 ${activeSlice?.maxPartnerWins}세트를 가져왔습니다.`
+                          : `함께 출전하여 ${activeSlice?.maxPartnerWins}승을 합작했습니다.`)
+                        : '아직 같이 이긴 팀원 기록이 없습니다.'}
+                    </Text>
+                  </View>
                 </View>
+                ) : (
+                <View style={styles.statsCard}>
+                  <Text style={styles.statsCardTitle}>비공개로 설정된 사용자입니다</Text>
+                  <Text style={styles.statsSubText}>이 선생님은 개인 기록을 다른 사람에게 보이지 않도록 설정했습니다.</Text>
+                </View>
+                )}
               </ScrollView>
 
               <View style={styles.adWrapper}>
@@ -485,6 +649,25 @@ const styles = StyleSheet.create({
   protectionNoticeText: { fontSize: 10, color: '#64748B', lineHeight: 14, fontWeight: '600' },
 
   statsCard: { backgroundColor: '#FFFFFF', borderRadius: 14, padding: 12, borderWidth: 1, borderColor: '#E2E8F0', marginBottom: 6 },
+  reportHeading: { fontSize: 15, lineHeight: 20, fontWeight: '900', color: '#0F172A', marginBottom: 2 },
+  analysisWrap: { marginTop: 4 },
+  titleTile: { alignSelf: 'flex-start', backgroundColor: '#0F172A', borderRadius: 8, paddingHorizontal: 10, paddingVertical: 6, marginBottom: 10 },
+  titleTileText: { color: '#F8FAFC', fontSize: 13, fontWeight: '900' },
+  metricRow: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#F8FAFC', borderRadius: 12, borderWidth: 1, borderColor: '#E2E8F0', paddingVertical: 10, marginBottom: 8 },
+  metricCell: { flex: 1, alignItems: 'center', minWidth: 0 },
+  metricDivider: { width: 1, height: 28, backgroundColor: '#CBD5E1' },
+  metricLabel: { fontSize: 10, fontWeight: '700', color: '#64748B' },
+  metricValue: { fontSize: 16, fontWeight: '900', color: '#1D4ED8', marginTop: 2 },
+  skillGroup: { marginBottom: 8 },
+  skillGroupTitle: { fontSize: 12, fontWeight: '800', color: '#334155', marginBottom: 6 },
+  skillGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
+  skillCell: { width: '48%', flexGrow: 1, flexShrink: 1, backgroundColor: '#F8FAFC', borderRadius: 10, borderWidth: 1, borderColor: '#E2E8F0', paddingVertical: 8, paddingHorizontal: 10, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', minWidth: 0 },
+  skillLabel: { flexShrink: 1, fontSize: 11, fontWeight: '700', color: '#64748B', marginRight: 6 },
+  skillValue: { flexShrink: 0, fontSize: 13, fontWeight: '900', color: '#0F172A' },
+  partnerBox: { backgroundColor: '#FEFCE8', borderRadius: 10, padding: 10, borderWidth: 1, borderColor: '#FDE68A' },
+  partnerLabel: { fontSize: 12, fontWeight: '800', color: '#92400E' },
+  partnerValue: { fontSize: 15, fontWeight: '900', color: '#0F172A', marginTop: 2 },
+  partnerSub: { fontSize: 11, fontWeight: '600', color: '#78716C', marginTop: 2 },
   statsCardTitle: { fontSize: 12, lineHeight: 16, fontWeight: '800', color: '#1D4ED8', marginBottom: 2, includeFontPadding: false },
   statsSubText: { fontSize: 11, lineHeight: 15, color: '#64748B', fontWeight: '600', includeFontPadding: false, marginBottom: 8 },
   teamChipRow: { gap: 6, paddingBottom: 4 },

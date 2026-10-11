@@ -38,7 +38,7 @@ function EfficiencyBlock({
   title,
   hint,
   rows,
-  emptyText,
+  emptyText: _emptyText,
   nameMap,
   color,
 }: {
@@ -49,13 +49,12 @@ function EfficiencyBlock({
   nameMap?: Record<string, string>;
   color: string;
 }) {
+  if (rows.length === 0) return null;
   return (
     <View style={styles.box}>
       <Text style={styles.boxLabel}>{title}</Text>
       <Text style={styles.hint}>{hint}</Text>
-      {rows.length === 0 ? (
-        <Text style={styles.empty}>{emptyText}</Text>
-      ) : (
+      {rows.length === 0 ? null : (
         rows.map((row) => (
           <BarRow
             key={row.key}
@@ -112,13 +111,11 @@ export function OfficialTeamInsightsPanel({
         color="#1D4ED8"
       />
 
+      {insights.setWinRates.length === 0 ? null : (
       <View style={styles.box}>
         <Text style={styles.boxLabel}>📊 세트별 승률 · 기복</Text>
         <Text style={styles.hint}>1세트 승률과 2~3세트 승률을 비교해 기복을 봅니다.</Text>
-        {insights.setWinRates.length === 0 ? (
-          <Text style={styles.empty}>세트 승패 기록이 없습니다.</Text>
-        ) : (
-          insights.setWinRates.map((row) => (
+        {insights.setWinRates.map((row) => (
             <BarRow
               key={row.setNumber}
               label={row.label}
@@ -126,8 +123,7 @@ export function OfficialTeamInsightsPanel({
               meta={`${row.winRate}% · ${row.played}세트`}
               color={row.setNumber === 1 ? '#2563EB' : '#7C3AED'}
             />
-          ))
-        )}
+          ))}
         <View style={styles.compareRow}>
           <View style={styles.compareCell}>
             <Text style={styles.compareLabel}>1세트 승률</Text>
@@ -144,28 +140,25 @@ export function OfficialTeamInsightsPanel({
         </View>
         <Text style={styles.volatility}>{insights.volatilityLabel}</Text>
       </View>
+      )}
 
+      {scored <= 0 ? null : (
       <View style={styles.box}>
         <Text style={styles.boxLabel}>🎯 팀 득점 성공 / 범실</Text>
         <Text style={styles.hint}>우리 팀 득점 성공(킬)과 범실만 모았습니다. 개인 승부처 기록은 출전 성적에서 봅니다.</Text>
-        {scored <= 0 ? (
-          <Text style={styles.empty}>득점·범실 상세 기록이 아직 없습니다.</Text>
-        ) : (
-          <>
-            <View style={styles.stackTrack}>
-              <View style={[styles.stackKill, { flex: Math.max(scoring.kills, 0.01) }]} />
-              <View style={[styles.stackFault, { flex: Math.max(scoring.faults, 0.01) }]} />
-            </View>
-            <View style={styles.ratioRow}>
-              <Text style={styles.ratioKill}>성공 {scoring.kills} · {killShare}%</Text>
-              <Text style={styles.ratioFault}>범실 {scoring.faults} · {faultShare}%</Text>
-            </View>
-          </>
-        )}
+        <View style={styles.stackTrack}>
+          <View style={[styles.stackKill, { flex: Math.max(scoring.kills, 0.01) }]} />
+          <View style={[styles.stackFault, { flex: Math.max(scoring.faults, 0.01) }]} />
+        </View>
+        <View style={styles.ratioRow}>
+          <Text style={styles.ratioKill}>성공 {scoring.kills} · {killShare}%</Text>
+          <Text style={styles.ratioFault}>범실 {scoring.faults} · {faultShare}%</Text>
+        </View>
         <Text style={styles.pointLine}>
           세트 점수 합계 {scoring.pointsFor}득 / {scoring.pointsAgainst}실
         </Text>
       </View>
+      )}
     </View>
   );
 }
@@ -205,9 +198,7 @@ export function IntramuralTeamInsightsPanel({
       <View style={styles.box}>
         <Text style={styles.intraLabel}>🙋 팀원 청백전 출석 (참여 세트)</Text>
         <Text style={styles.hint}>전체 소화 세트 대비, 각 선생님이 코트에 선 세트 수입니다.</Text>
-        {topAttendance.length === 0 ? (
-          <Text style={styles.empty}>라인업이 남은 청백전 출석 기록이 아직 없습니다.</Text>
-        ) : (
+        {topAttendance.length === 0 ? null : (
           topAttendance.map((row) => (
             <BarRow
               key={row.userId}

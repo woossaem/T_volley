@@ -8,7 +8,6 @@ import {
   ScrollView,
   RefreshControl,
   Modal,
-  Image,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
@@ -16,7 +15,9 @@ import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
 import { Colors } from '../constants/Colors';
 import { formatTeamDisplayName, isActiveMembership } from '../lib/teamStatus';
-import { addMatchPlayerStats, emptyPlayerCareerStats, formatSetRecordLabel, formatSetWinAppearance } from '../lib/playerStats';
+import { addMatchPlayerStats, emptyPlayerCareerStats, formatSetRecordLabel } from '../lib/playerStats';
+import { publicProfileName } from '../lib/profilePrivacy';
+import MiniAvatar from '../components/MiniAvatar';
 import { hydrateMatchesWithSetScores } from '../lib/matchSets';
 import { resolveTeamName, resolveTeamNameOrNull, cleanRegionName, getTeamIcon, isSameName, UNSET_REGION } from '../lib/nameUtils';
 import UserProfileModal from '../components/UserProfileModal';
@@ -27,6 +28,7 @@ import { getCurrentSeasonInfo, getSeasonOptions } from '../lib/season';
 import { getAllBadgesWithStatus } from '../lib/badgeUtils';
 import { isOfficialMatch } from '../lib/officialMatch';
 import { getSafeDisplayName, getSafeTeamName } from '../lib/utils';
+import { isRankingEligiblePlayer } from '../lib/roster';
 import { buildTeamReportAnalytics, listIntramuralTeamMatches, listOfficialTeamMatches } from '../lib/teamReportAnalytics';
 
 interface TeamRankingData {
@@ -208,6 +210,7 @@ export default function RankingScreen() {
 
       activeTmData.forEach((item: any) => {
         const uId = item.user_id;
+        if (!isRankingEligiblePlayer(uId)) return;
         const tId = item.team_id;
         
         if (tId) {
@@ -342,10 +345,12 @@ export default function RankingScreen() {
         });
       }
 
-      const pRanks: PersonalRankingData[] = (allProfiles || []).map((p: any) => {
+      const pRanks: PersonalRankingData[] = (allProfiles || []).filter((p: any) => (
+        isRankingEligiblePlayer(p.id, { isGuest: p.is_guest, name: p.full_name })
+      )).map((p: any) => {
         const career = emptyPlayerCareerStats();
         personalTargetMatches.forEach((m: any) => {
-          addMatchPlayerStats(career, p.id, m, eventsByMatch.get(m.id) || [], getSafeDisplayName(p));
+          addMatchPlayerStats(career, p.id, m, eventsByMatch.get(m.id) || [], p.full_name || getSafeDisplayName(p));
         });
 
         let userRegion = userSchoolRegionMap.get(p.id);
@@ -357,18 +362,18 @@ export default function RankingScreen() {
 
         return {
           userId: p.id,
-          fullName: getSafeDisplayName(p),
+          fullName: publicProfileName(p),
           isPublic: true,
           schoolName: p.school_name || '소속 학교 미설정',
           region: userRegion,
           gender: p.gender || '남성',
           avatarIcon: p.avatar_icon || '🏐',
           avatarUrl: p.avatar_url,
-          totalMatches: career.setsPlayed,
-          wins: career.setWins,
-          losses: career.setLosses,
-          draws: career.setDraws,
-          winRate: career.setWinRate,
+          totalMatches: career.matchesPlayed,
+          wins: career.matchWins,
+          losses: career.matchLosses,
+          draws: career.matchDraws,
+          winRate: career.matchWinRate,
           mannerTemp: p.manner_temp || 36.5,
           points: career.points,
           faults: career.faults,
@@ -560,8 +565,12 @@ export default function RankingScreen() {
                   
                   <View style={styles.teamInfo}>
                     <View style={styles.teamNameRow}>
-                      <Text style={styles.teamName}>{getTeamIcon(item.type)} {formatTeamDisplayName(getSafeTeamName(item), item.status)}</Text>
-                      <View style={styles.blueRibbonMini}><Text style={{ fontSize: 12 }}>🟦</Text></View>
+                      <Text style={styles.teamName} numberOfLines={1}>
+                        {getTeamIcon(item.type)} {formatTeamDisplayName(getSafeTeamName(item), item.status)}
+                      </Text>
+                      <View style={styles.officialBadge}>
+                        <Text style={styles.officialBadgeText}>💎 공식인증</Text>
+                      </View>
                     </View>
                     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 2 }}>
                       <Text style={styles.recordText}>
@@ -621,23 +630,23 @@ export default function RankingScreen() {
                       onPress={() => openTeamReport(item.team_name)}
                       activeOpacity={0.8}
                     >
-                      <View style={{ flex: 1, paddingRight: 8 }}>
-                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
-                          <Text style={styles.pendingTeamName}>
+                      <View style={styles.pendingInfo}>
+                        <View style={styles.teamNameRow}>
+                          <Text style={styles.pendingTeamName} numberOfLines={1}>
                             {getTeamIcon(item.type)} {formatTeamDisplayName(getSafeTeamName(item), item.status)}
                           </Text>
-                          {item.isOfficial && (
-                            <View style={{ paddingHorizontal: 2 }}>
-                              <Text style={{ fontSize: 11 }}>🟦</Text>
+                          {item.isOfficial ? (
+                            <View style={styles.officialBadge}>
+                              <Text style={styles.officialBadgeText}>💎 공식인증</Text>
                             </View>
-                          )}
+                          ) : null}
                         </View>
                         <Text style={styles.pendingReason}>
                           {pendingReasonStr}
                         </Text>
                       </View>
                       
-                      <View style={{ alignItems: 'flex-end' }}>
+                      <View style={styles.pendingRecordBox}>
                         {item.total_games > 0 ? (
                           <Text style={styles.pendingRecord}>
                             {item.total_wins}승 {item.total_losses}패 ({item.win_rate}%)
@@ -689,13 +698,7 @@ export default function RankingScreen() {
                   <TouchableOpacity key={item.userId} style={styles.rankCard} onPress={() => openUserProfile(item.userId)} activeOpacity={0.8}>
                     <Text style={styles.rankBadgeText}>{getRankBadge(index)}</Text>
                     
-                    <View style={styles.avatarMiniCircle}>
-                      {item.avatarUrl ? (
-                        <Image source={{ uri: item.avatarUrl }} style={styles.avatarMiniImage} />
-                      ) : (
-                        <Text style={{ fontSize: 18 }}>{item.avatarIcon}</Text>
-                      )}
-                    </View>
+                    <MiniAvatar uri={item.avatarUrl} emoji={item.avatarIcon} size={40} />
 
                     <View style={{ flex: 1, marginHorizontal: 10 }}>
                       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, flexWrap: 'wrap' }}>
@@ -729,11 +732,12 @@ export default function RankingScreen() {
 
                     <View style={styles.personalWinBox}>
                       <Text style={[styles.winRateNum, { color: '#0284C7' }]}>
-                        {formatSetWinAppearance(item.wins, item.setsPlayed)}
+                        {item.wins}승 {item.losses}패
                       </Text>
                       <Text style={styles.winRateLabel}>
-                        {formatSetRecordLabel(item.setWins, item.setDraws, item.setLosses)} · 세트승률 {item.setWinRate}%
+                        {formatSetRecordLabel(item.wins, item.draws, item.losses)} · 경기승률 {item.winRate}%
                       </Text>
+                      <Text style={styles.personalStatLine}>{item.totalMatches}경기 출전</Text>
                       <Text style={styles.personalStatLine}>득점 {item.points} · 범실 {item.faults}</Text>
                       <Text style={styles.mannerTempTag}>🌡️ {item.mannerTemp.toFixed(1)}°C</Text>
                     </View>
@@ -875,16 +879,17 @@ const styles = StyleSheet.create({
   avatarMiniCircle: { width: 40, height: 40, borderRadius: 20, backgroundColor: '#EFF6FF', alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: '#BFDBFE', overflow: 'hidden' },
   avatarMiniImage: { width: 40, height: 40, borderRadius: 20 },
 
-  teamInfo: { flex: 1, paddingHorizontal: 12 },
-  teamNameRow: { flexDirection: 'row', alignItems: 'center', gap: 4 },
-  teamName: { fontSize: 15, fontWeight: '800', color: Colors.text },
-  blueRibbonMini: { paddingHorizontal: 2 },
+  teamInfo: { flex: 1, minWidth: 0, paddingHorizontal: 12 },
+  teamNameRow: { flexDirection: 'row', alignItems: 'center', gap: 6, minWidth: 0 },
+  teamName: { flexShrink: 1, fontSize: 15, fontWeight: '800', color: Colors.text },
+  officialBadge: { flexShrink: 0, backgroundColor: '#EFF6FF', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4, borderWidth: 1, borderColor: '#3B82F6' },
+  officialBadgeText: { fontSize: 10, fontWeight: '800', color: '#1D4ED8' },
   recordText: { fontSize: 12, color: Colors.textMuted },
   
   mannerTempBadge: { backgroundColor: '#FFFBEB', borderWidth: 1, borderColor: '#FDE68A', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 6 },
   mannerTempBadgeText: { fontSize: 10, fontWeight: '800', color: '#D97706' },
 
-  winRateBox: { alignItems: 'flex-end', minWidth: 80, flexShrink: 0 },
+  winRateBox: { alignItems: 'flex-end', marginLeft: 8, flexShrink: 0 },
   personalWinBox: { alignItems: 'flex-end', width: 118, flexShrink: 0 },
   winRateNum: { fontSize: 13, lineHeight: 18, fontWeight: '900', color: Colors.primary, includeFontPadding: false, textAlign: 'right' },
   winRateLabel: { fontSize: 11, lineHeight: 14, color: Colors.textMuted, marginTop: 2, includeFontPadding: false },
@@ -899,8 +904,10 @@ const styles = StyleSheet.create({
   femaleTag: { backgroundColor: '#FDF2F8', borderColor: '#FBCFE8' },
   femaleText: { color: '#DB2777', fontSize: 10, fontWeight: '800' },
 
-  pendingCard: { backgroundColor: '#F8FAFC', borderRadius: 12, padding: 14, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', borderWidth: 1, borderColor: Colors.border, marginBottom: 8 },
-  pendingTeamName: { fontSize: 14, fontWeight: '800', color: Colors.text },
+  pendingCard: { backgroundColor: '#F8FAFC', borderRadius: 12, padding: 14, flexDirection: 'row', alignItems: 'center', borderWidth: 1, borderColor: Colors.border, marginBottom: 8 },
+  pendingInfo: { flex: 1, minWidth: 0, paddingRight: 8 },
+  pendingTeamName: { flexShrink: 1, fontSize: 14, fontWeight: '800', color: Colors.text },
+  pendingRecordBox: { alignItems: 'flex-end', flexShrink: 0 },
   pendingReason: { fontSize: 11, color: '#B45309', fontWeight: '700', marginTop: 2 },
   pendingRecord: { fontSize: 12, fontWeight: '700', color: Colors.textMuted },
 

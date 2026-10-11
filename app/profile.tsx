@@ -29,20 +29,25 @@ import {
 } from '../lib/playerAppearance';
 import { parseMatchScoreLogs } from '../lib/rankingService';
 import { aggregatePlayerProStats } from '../lib/proStats';
-import { buildPersonalReportAnalytics } from '../lib/personalReportAnalytics';
+import { buildPersonalReportAnalytics, emptySkillStatCounts } from '../lib/personalReportAnalytics';
 import { buildTeamReportAnalytics, listIntramuralTeamMatches, listOfficialTeamMatches } from '../lib/teamReportAnalytics';
 import { hydrateMatchesWithSetScores } from '../lib/matchSets';
 import { Colors } from '../constants/Colors';
 import StickyAdBanner from '../components/StickyAdBanner';
 
 import PersonalReportModal from '../components/PersonalReportModal';
+import ReportScopeTabs, { type ReportScopeTab } from '../components/ReportScopeTabs';
+import { loadPersonalDetailStats, PlayerAnalysisReport } from '../components/UserProfileModal';
 import TeamReportModal from '../components/TeamReportModal';
 import MercenaryReportModal from '../components/MercenaryReportModal';
 import { getSafeDisplayName, getSafeTeamName } from '../lib/utils';
+import { ownProfileName } from '../lib/profilePrivacy';
+import { formatTeamDisplayName } from '../lib/teamStatus';
 
 interface ProfileData {
   full_name: string;
   school_name?: string;
+  school_region?: string | null;
   position?: string;
   gender?: string;
   region?: string;
@@ -134,8 +139,13 @@ export default function ProfileScreen() {
 
   const [mercenaryModalVisible, setMercenaryModalVisible] = useState(false);
 
+  const [reportScope, setReportScope] = useState<ReportScopeTab>('official');
+  const [selectedTeamId, setSelectedTeamId] = useState<string | null>(null);
+  const [detailStats, setDetailStats] = useState({ official: emptySkillStatCounts(), intramural: emptySkillStatCounts() });
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [deleteModalVisible, setDeleteModalVisible] = useState(false);
+  const [deletingAccount, setDeletingAccount] = useState(false);
 
   const parseMatchDate = (dateStr: string | undefined | null) => {
     if (!dateStr) return { year: 0, month: 0 };
@@ -251,6 +261,7 @@ export default function ProfileScreen() {
 
       const { data: allMatches } = await supabase.from('matches').select('*, match_sets(*)').in('status', ['completed', 'friendly', 'intramural']);
       if (allMatches) setRawMatches(await hydrateMatchesWithSetScores(allMatches));
+      setDetailStats(await loadPersonalDetailStats(currentUserId));
 
     } catch (err) {
       console.error('프로필 조회 오류:', err);
@@ -291,31 +302,25 @@ export default function ProfileScreen() {
   };
 
   const handleDeleteAccount = () => {
-    Alert.alert(
-      '회원 탈퇴',
-      '정말 탈퇴하시겠습니까?\n탈퇴 시 프로필 정보가 완전히 삭제됩니다.',
-      [
-        { text: '취소', style: 'cancel' },
-        {
-          text: '탈퇴하기',
-          style: 'destructive',
-          onPress: async () => {
-            try {
-              setLoading(true);
-              const { error } = await supabase.from('profiles').delete().eq('id', currentUserId);
-              if (error) throw error;
+    if (!currentUserId || deletingAccount) return;
+    setDeleteModalVisible(true);
+  };
 
-              Alert.alert('탈퇴 완료', '회원 탈퇴가 성공적으로 완료되었습니다.');
-              await signOut();
-            } catch (err: any) {
-              Alert.alert('탈퇴 오류', err.message || '처리 중 오류가 발생했습니다.');
-            } finally {
-              setLoading(false);
-            }
-          },
-        },
-      ]
-    );
+  const confirmDeleteAccount = async () => {
+    if (!currentUserId || deletingAccount) return;
+
+    try {
+      setDeletingAccount(true);
+      const { error } = await supabase.rpc('delete_own_account');
+      if (error) throw error;
+
+      setDeleteModalVisible(false);
+      await signOut();
+    } catch (err: any) {
+      Alert.alert('탈퇴 오류', err.message || '처리 중 오류가 발생했습니다.');
+    } finally {
+      setDeletingAccount(false);
+    }
   };
 
   const auraInfo = useMemo(() => {
@@ -669,11 +674,30 @@ export default function ProfileScreen() {
     };
   }, [rawMatches, selectedSeason, currentUserId, profilesMap, myTeamsList]);
 
-  const displayName = getSafeDisplayName(profile || session?.user?.user_metadata);
+  const displayName = ownProfileName(profile || { full_name: session?.user?.user_metadata?.full_name });
   const avatarIco = profile?.avatar_icon || '🏐';
   const avatarUrl = profile?.avatar_url;
   const myGender = profile?.gender || '남성';
   const myTeamsNameList = myTeamsList.map(t => getSafeTeamName(t)).filter(Boolean);
+  const selectedReportTeam = selectedTeamId
+    ? myTeamsList.find((t) => t.id === selectedTeamId) || null
+    : null;
+  const profileAnalysis = useMemo(() => {
+    if (!currentUserId) return null;
+    const seasonMatches = rawMatches.filter((m) => {
+      if (selectedSeason === 'all') return true;
+      const { year } = parseMatchDate(m.match_date || m.created_at);
+      return year === Number(selectedSeason);
+    });
+    return buildPersonalReportAnalytics({
+      userId: currentUserId,
+      playerName: profilesMap[currentUserId] || profile?.full_name,
+      matches: seasonMatches,
+      profilesMap,
+      teamName: selectedReportTeam?.name || null,
+    });
+  }, [currentUserId, rawMatches, selectedSeason, profilesMap, profile?.full_name, selectedReportTeam]);
+
   const grapeCount = profile?.grape_count || 0;
   const mannerTemp = profile?.manner_temp || 36.5;
 
@@ -730,7 +754,7 @@ export default function ProfileScreen() {
                     <Text style={[styles.bcTitleText, { color: autoTitleBadge.style.color }]}>{autoTitleBadge.label}</Text>
                   </View>
                   
-                  <Text style={styles.bcDetailText}>🏫 {profile?.school_name || '학교 미설정'} · 👟 {profile?.position || '포지션 미설정'}</Text>
+                  <Text style={styles.bcDetailText}>🏫 {profile?.school_name || '학교 미설정'}{profile?.school_region ? ` · ${profile.school_region}` : ''} · 👟 {profile?.position || '포지션 미설정'}</Text>
                   <Text style={styles.bcDetailText}>📍 주 활동: {formattedRegions}</Text>
                 </View>
               </View>
@@ -818,6 +842,53 @@ export default function ProfileScreen() {
                 </Text>
                 <Text style={styles.seasonPickerArrow}>▾</Text>
               </TouchableOpacity>
+            </View>
+
+            <Text style={styles.sectionTitle}>선수 분석 리포트</Text>
+            <View style={styles.analysisCard}>
+              <Text style={styles.analysisHint}>
+                {selectedReportTeam
+                  ? `[${formatTeamDisplayName(selectedReportTeam.name, selectedReportTeam.status)}] 교류전·청백전을 나눠 봅니다`
+                  : '교류전·청백전을 나눠 봅니다. 팀을 고르면 해당 팀 기록만 봅니다.'}
+              </Text>
+              {myTeamsList.length > 0 ? (
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.teamChipRow}>
+                  <TouchableOpacity
+                    style={[styles.teamChip, !selectedReportTeam && styles.teamChipActive]}
+                    onPress={() => setSelectedTeamId(null)}
+                  >
+                    <Text style={[styles.teamChipText, !selectedReportTeam && styles.teamChipTextActive]}>전체</Text>
+                  </TouchableOpacity>
+                  {myTeamsList.map((team) => {
+                    const active = selectedTeamId === team.id;
+                    return (
+                      <TouchableOpacity
+                        key={team.id}
+                        style={[styles.teamChip, active && styles.teamChipActive]}
+                        onPress={() => setSelectedTeamId(team.id)}
+                      >
+                        <Text style={[styles.teamChipText, active && styles.teamChipTextActive]} numberOfLines={1}>
+                          {formatTeamDisplayName(team.name, team.status)}
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </ScrollView>
+              ) : null}
+              <ReportScopeTabs value={reportScope} onChange={setReportScope} showIntramural />
+              <PlayerAnalysisReport
+                pro={profileAnalysis ? (reportScope === 'intramural' ? profileAnalysis.intramural.proStats : profileAnalysis.official.proStats) : null}
+                detail={reportScope === 'intramural' ? detailStats.intramural : detailStats.official}
+                intramural={reportScope === 'intramural'}
+              />
+              <View style={styles.partnerBox}>
+                <Text style={styles.partnerLabel}>
+                  {reportScope === 'intramural' ? '함께 세트판 가져간 짝꿍' : '함께 경기를 가져간 짝꿍'}
+                </Text>
+                <Text style={styles.partnerValue}>
+                  {(reportScope === 'intramural' ? profileAnalysis?.intramural.bestPartnerName : profileAnalysis?.official.bestPartnerName) || '데이터 없음'}
+                </Text>
+              </View>
             </View>
 
             <Text style={styles.sectionTitle}>
@@ -983,7 +1054,12 @@ export default function ProfileScreen() {
               <TouchableOpacity style={styles.logoutBtn} onPress={handleLogout} activeOpacity={0.8}>
                 <Text style={styles.logoutBtnText}>로그아웃</Text>
               </TouchableOpacity>
-              <TouchableOpacity style={styles.deleteAccountBtn} onPress={handleDeleteAccount} activeOpacity={0.8}>
+              <TouchableOpacity
+                style={styles.deleteAccountBtn}
+                onPress={handleDeleteAccount}
+                activeOpacity={0.8}
+                disabled={deletingAccount}
+              >
                 <Text style={styles.deleteAccountBtnText}>회원 탈퇴</Text>
               </TouchableOpacity>
             </View>
@@ -992,6 +1068,46 @@ export default function ProfileScreen() {
       </ScrollView>
 
       <StickyAdBanner />
+
+      <Modal
+        visible={deleteModalVisible}
+        animationType="fade"
+        transparent={true}
+        onRequestClose={() => {
+          if (!deletingAccount) setDeleteModalVisible(false);
+        }}
+      >
+        <View style={[styles.modalOverlay, { paddingTop: Math.max(insets.top, 16), paddingBottom: Math.max(insets.bottom, 16) }]}>
+          <View style={styles.deleteModalContent}>
+            <Text style={styles.deleteModalTitle}>회원 탈퇴</Text>
+            <Text style={styles.deleteModalWarning}>
+              탈퇴 시 모든 경기 기록 및 개인 정보가 삭제되며 복구할 수 없습니다.
+            </Text>
+            <View style={styles.deleteModalActions}>
+              <TouchableOpacity
+                style={styles.deleteModalCancelBtn}
+                onPress={() => setDeleteModalVisible(false)}
+                activeOpacity={0.8}
+                disabled={deletingAccount}
+              >
+                <Text style={styles.deleteModalCancelText}>취소</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.deleteModalConfirmBtn}
+                onPress={() => { void confirmDeleteAccount(); }}
+                activeOpacity={0.8}
+                disabled={deletingAccount}
+              >
+                {deletingAccount ? (
+                  <ActivityIndicator color="#FFFFFF" size="small" />
+                ) : (
+                  <Text style={styles.deleteModalConfirmText}>탈퇴하기</Text>
+                )}
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
 
       <Modal visible={seasonPickerModalVisible} animationType="fade" transparent={true} onRequestClose={() => setSeasonPickerModalVisible(false)}>
         <View style={[styles.modalOverlay, { paddingTop: Math.max(insets.top, 16), paddingBottom: Math.max(insets.bottom, 16) }]}>
@@ -1224,6 +1340,23 @@ const styles = StyleSheet.create({
   seasonOptionTextActive: { color: '#1D4ED8', fontWeight: '800' },
   checkMark: { fontSize: 14 },
 
+  analysisCard: { backgroundColor: '#FFFFFF', borderRadius: 16, borderWidth: 1, borderColor: '#E2E8F0', padding: 12, marginBottom: 16 },
+  analysisHint: { fontSize: 11, lineHeight: 15, color: '#64748B', fontWeight: '600', marginBottom: 8 },
+  teamChipRow: { gap: 6, paddingBottom: 8 },
+  teamChip: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 14,
+    backgroundColor: '#F8FAFC',
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+  },
+  teamChipActive: { backgroundColor: '#EFF6FF', borderColor: '#3B82F6' },
+  teamChipText: { fontSize: 11, fontWeight: '700', color: '#64748B' },
+  teamChipTextActive: { color: '#1D4ED8', fontWeight: '800' },
+  partnerBox: { marginTop: 10, backgroundColor: '#F8FAFC', borderRadius: 10, padding: 10, borderWidth: 1, borderColor: '#E2E8F0' },
+  partnerLabel: { fontSize: 11, fontWeight: '800', color: '#64748B' },
+  partnerValue: { fontSize: 16, fontWeight: '900', color: '#0F172A', marginTop: 2 },
   sectionTitle: { fontSize: 15, lineHeight: 20, fontWeight: '800', color: Colors.text, marginBottom: 8, marginTop: 4, includeFontPadding: false },
   statsContainer: { gap: 8, marginBottom: 16 },
   statCard: { backgroundColor: '#EFF6FF', borderRadius: 12, padding: 14, borderWidth: 1, borderColor: '#BFDBFE' },
@@ -1252,11 +1385,19 @@ const styles = StyleSheet.create({
   historyNavSub: { fontSize: 11, color: Colors.textMuted, marginTop: 2, fontWeight: '600' },
   historyNavArrow: { fontSize: 20, color: Colors.textMuted, fontWeight: '300' },
 
-  accountActionSection: { flexDirection: 'row', gap: 10, marginTop: 8, marginBottom: 20 },
-  logoutBtn: { flex: 1, backgroundColor: '#F1F5F9', borderRadius: 12, paddingVertical: 12, alignItems: 'center', borderWidth: 1, borderColor: '#CBD5E1' },
+  accountActionSection: { gap: 10, marginTop: 8, marginBottom: 20 },
+  logoutBtn: { backgroundColor: '#F1F5F9', borderRadius: 12, paddingVertical: 12, alignItems: 'center', borderWidth: 1, borderColor: '#CBD5E1' },
   logoutBtnText: { color: '#475569', fontSize: 13, fontWeight: '800' },
-  deleteAccountBtn: { flex: 1, backgroundColor: '#FEF2F2', borderRadius: 12, paddingVertical: 12, alignItems: 'center', borderWidth: 1, borderColor: '#FECACA' },
+  deleteAccountBtn: { backgroundColor: '#FEF2F2', borderRadius: 12, paddingVertical: 12, alignItems: 'center', borderWidth: 1, borderColor: '#FECACA' },
   deleteAccountBtnText: { color: '#DC2626', fontSize: 13, fontWeight: '800' },
+  deleteModalContent: { backgroundColor: Colors.surface, borderRadius: 20, padding: 20, width: '100%', maxWidth: 400 },
+  deleteModalTitle: { fontSize: 18, fontWeight: '900', color: Colors.text, textAlign: 'center' },
+  deleteModalWarning: { fontSize: 14, lineHeight: 22, fontWeight: '600', color: Colors.error, textAlign: 'center', marginTop: 12, marginBottom: 20 },
+  deleteModalActions: { flexDirection: 'row', gap: 10 },
+  deleteModalCancelBtn: { flex: 1, backgroundColor: '#F1F5F9', borderRadius: 12, paddingVertical: 13, alignItems: 'center', borderWidth: 1, borderColor: '#CBD5E1' },
+  deleteModalCancelText: { color: '#475569', fontSize: 14, fontWeight: '800' },
+  deleteModalConfirmBtn: { flex: 1, backgroundColor: '#DC2626', borderRadius: 12, paddingVertical: 13, alignItems: 'center', justifyContent: 'center', minHeight: 46 },
+  deleteModalConfirmText: { color: '#FFFFFF', fontSize: 14, fontWeight: '800' },
 
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center', padding: 16 },
   modalContent: { backgroundColor: Colors.surface, borderRadius: 20, padding: 16, width: '100%', maxHeight: '90%', elevation: 5 },

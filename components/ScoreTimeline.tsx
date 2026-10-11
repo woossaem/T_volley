@@ -1,12 +1,13 @@
 import React, { useRef, useEffect, useMemo } from 'react';
 import { View, Text, ScrollView, TouchableOpacity, StyleSheet } from 'react-native';
 import { formatPlayerDisplayName } from '../lib/tempPlayer';
+import { voiceStatLabelOf } from '../lib/voiceParser';
 
 export interface MatchEvent {
   id: string;
   match_id?: string;
   set_index: number;
-  event_type: 'score' | 'sub' | 'manual' | 'fault';
+  event_type: 'score' | 'sub' | 'manual' | 'fault' | 'dig' | 'block' | 'ace' | 'receive' | 'assist';
   team_type: 'host' | 'away';
   player_id?: string | null;
   player_name?: string | null;
@@ -58,6 +59,17 @@ export default function ScoreTimeline({
     return () => clearTimeout(timer);
   }, [currentSetEvents.length, setKey, currentSetEvents.map((e) => e.id).join('|')]);
 
+  const chipText = (ev: MatchEvent) => {
+    const isHost = ev.team_type === 'host';
+    const name = formatPlayerDisplayName(ev.player_id, ev.player_name);
+    const statLabel = voiceStatLabelOf(ev.event_type);
+    if (ev.event_type === 'score') return `${isHost ? ev.host_score : ev.away_score} (${name})`;
+    if (ev.event_type === 'fault') return `${isHost ? ev.host_score : ev.away_score} ⚠${name}`;
+    if (ev.event_type === 'sub') return '🔄 교체';
+    if (statLabel) return `${statLabel} ${name}`;
+    return '✏️ 보정';
+  };
+
   const renderChip = (ev: MatchEvent, content: string, isHost: boolean, isCanceled: boolean) => (
     <TouchableOpacity
       style={[
@@ -102,12 +114,7 @@ export default function ScoreTimeline({
           {currentSetEvents.map((ev, index) => {
             const isHost = ev.team_type === 'host';
             const isCanceled = ev.is_canceled;
-            const name = formatPlayerDisplayName(ev.player_id, ev.player_name);
-            let content = '';
-            if (ev.event_type === 'score') content = `${isHost ? ev.host_score : ev.away_score} (${name})`;
-            else if (ev.event_type === 'fault') content = `${isHost ? ev.host_score : ev.away_score} ⚠${name}`;
-            else if (ev.event_type === 'sub') content = `🔄 교체`;
-            else content = `✏️ 보정`;
+            const content = chipText(ev);
             return (
               <View key={`${ev.id}-${setKey}-${index}`} style={styles.compactChipWrap}>
                 {renderChip(ev, content, isHost, isCanceled)}
@@ -124,18 +131,7 @@ export default function ScoreTimeline({
           {currentSetEvents.map((ev, index) => {
             const isHost = ev.team_type === 'host';
             const isCanceled = ev.is_canceled;
-            const name = formatPlayerDisplayName(ev.player_id, ev.player_name);
-
-            let content = '';
-            if (ev.event_type === 'score') {
-              content = `${isHost ? ev.host_score : ev.away_score} (${name})`;
-            } else if (ev.event_type === 'fault') {
-              content = `${isHost ? ev.host_score : ev.away_score} ⚠${name}`;
-            } else if (ev.event_type === 'sub') {
-              content = `🔄 교체`;
-            } else {
-              content = `✏️ 보정`;
-            }
+            const content = chipText(ev);
 
             const chip = (
               <TouchableOpacity

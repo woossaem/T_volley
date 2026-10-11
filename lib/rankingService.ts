@@ -2,6 +2,8 @@ import {
   ANONYMOUS_PLAYER_NAME,
   assignedUserId,
   isAnonymousSlotId,
+  isGuestDisplayName,
+  isMemberUserId,
   listHasUser,
   parseRosterUserIds,
   parseSetRosterMap,
@@ -239,7 +241,7 @@ export function collectLineupPlayerIds(match: any): string[] {
   });
   parseRosterUserIds(match?.host_roster).forEach((id) => ids.add(id));
   parseRosterUserIds(match?.away_roster).forEach((id) => ids.add(id));
-  return Array.from(ids);
+  return Array.from(ids).filter((id) => isMemberUserId(id));
 }
 
 export function collectScoreLogPlayerIds(match: any, extraLogs?: ScoreLogLike[]): string[] {
@@ -247,7 +249,7 @@ export function collectScoreLogPlayerIds(match: any, extraLogs?: ScoreLogLike[])
   parseMatchScoreLogs(match, extraLogs).forEach((log) => {
     if (scoreLogIsCanceled(log) || isAnonymousScoreLog(log)) return;
     const id = readLogPlayerId(log);
-    if (id && !isAnonymousSlotId(id)) ids.add(id);
+    if (id && isMemberUserId(id) && !isGuestDisplayName(readLogPlayerName(log))) ids.add(id);
   });
   return Array.from(ids);
 }
@@ -258,6 +260,23 @@ export function collectScoreLogPlayerIds(match: any, extraLogs?: ScoreLogLike[])
  * 2) 라인업에 없어도 matches.score_logs(및 동일 의미의 득점 로그)에 해당 세트 행동이 있으면 출전
  * 무기명 로그는 무시한다.
  */
+function setRowLineupSide(match: any, setNumber: number, playerId: string): SetPlaySide | 'both' | null {
+  const idx = Math.max(0, setNumber - 1);
+  const rows = rawMatchSets(match);
+  const row = rows.find((s: any) => Number(s?.set_number ?? s?.setNumber) === setNumber) || rows[idx];
+  const onHost = listHasUser(lineupIds(row?.host_lineup ?? row?.hostLineup), playerId);
+  const onAway = listHasUser(lineupIds(row?.away_lineup ?? row?.awayLineup), playerId);
+  if (onHost && onAway) return 'both';
+  if (onHost) return 'host';
+  if (onAway) return 'away';
+  return null;
+}
+
+/**
+ * 세트 출전 진영.
+ * 그 세트 기록의 team_type(assigned side)을 먼저 보고, 없으면 그 세트 라인업만 본다.
+ * 소속 team_id 나 호스트 명단 기본값으로 B팀 출전을 A팀으로 바꾸지 않는다.
+ */
 export function resolvePlayerSetPlay(
   match: any,
   setNumber: number,
@@ -267,22 +286,31 @@ export function resolvePlayerSetPlay(
 ): SetPlayResult {
   if (!playerId || !match) return { played: false, side: null, source: null };
 
-  const lineups = resolveSetLineups(match, setNumber);
-  const onHost = listHasUser(lineups.host, playerId);
-  const onAway = listHasUser(lineups.away, playerId);
-  if (onHost || onAway) {
-    return { played: true, side: onHost ? 'host' : 'away', source: 'lineup' };
-  }
-
   const hit = playerScoreLogInSet(
     parseMatchScoreLogs(match, extraLogs),
     setNumber,
     playerId,
     playerName,
   );
-  if (hit.appeared) {
-    return { played: true, side: hit.side, source: 'score_logs' };
-  }
+  const rowSide = setRowLineupSide(match, setNumber, playerId);
+  const lineups = resolveSetLineups(match, setNumber);
+  const onHost = listHasUser(lineups.host, playerId);
+  const onAway = listHasUser(lineups.away, playerId);
 
-  return { played: false, side: null, source: null };
+  let side: SetPlaySide | null = null;
+  if (rowSide === 'away') side = 'away';
+  else if (rowSide === 'host') side = 'host';
+  else if (rowSide === 'both') side = hit.side === 'host' ? 'host' : 'away';
+  else if (hit.side) side = hit.side;
+  else if (onAway && !onHost) side = 'away';
+  else if (onHost && !onAway) side = 'host';
+  else if (onAway) side = 'away';
+
+  const played = hit.appeared || rowSide != null || onHost || onAway;
+  if (!played) return { played: false, side: null, source: null };
+  return {
+    played: true,
+    side,
+    source: hit.side ? 'score_logs' : 'lineup',
+  };
 }

@@ -107,6 +107,7 @@ function RootLayoutContent() {
         <Stack.Screen name="teams" />
         <Stack.Screen name="rankings" />
         <Stack.Screen name="profile-setup" />
+        <Stack.Screen name="onboarding" />
         <Stack.Screen name="release-notes" />
         <Stack.Screen name="feedback" />
       </Stack>

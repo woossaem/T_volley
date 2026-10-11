@@ -94,8 +94,8 @@ export default function CreateMatchScreen() {
         .map((t: any) => ({ id: t.id, name: getSafeTeamName(t), region: t.region }));
 
       if (teamsList.length === 0) {
-        Alert.alert('알림', '활동 중인 소속 팀이 없습니다. 휴면/삭제된 팀으로는 신규 매치를 등록할 수 없습니다.');
-        router.replace('/profile-setup');
+        Alert.alert('알림', '소속 팀이 없습니다. 학교 팀을 먼저 배치한 뒤 경기를 등록해 주세요.');
+        router.replace('/onboarding');
       } else {
         setMyTeams(teamsList);
         setSelectedTeam(teamsList[0]);

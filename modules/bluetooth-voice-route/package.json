@@ -1,0 +1,14 @@
+{
+  "name": "bluetooth-voice-route",
+  "version": "1.0.0",
+  "description": "Routes speech input to a connected Bluetooth headset microphone.",
+  "main": "index.ts",
+  "license": "MIT",
+  "author": "T-Volley",
+  "homepage": "https://github.com/expo/expo",
+  "peerDependencies": {
+    "expo": "*",
+    "react": "*",
+    "react-native": "*"
+  }
+}
